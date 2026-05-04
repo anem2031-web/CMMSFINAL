@@ -787,6 +787,12 @@ function DashboardLayoutContent({ children, setSidebarWidth }: { children: React
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            {/* ── Version indicator ── */}
+            {!isCollapsed && (
+              <p className="text-[10px] text-sidebar-foreground/30 text-center mt-1 select-none">
+                v{__APP_VERSION__}
+              </p>
+            )}
           </SidebarFooter>
         </Sidebar>
 
