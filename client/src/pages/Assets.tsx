@@ -398,10 +398,6 @@ export default function Assets() {
               <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
             </div>
             <div>
-              <Label>{t.assets.category}</Label>
-              <Input value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} />
-            </div>
-            <div>
               <Label>الفئة</Label>
               <Select value={form.categoryId || "none"} onValueChange={v => setForm(f => ({ ...f, categoryId: v === "none" ? "" : v }))}>
                 <SelectTrigger><SelectValue placeholder="اختر الفئة (اختياري)" /></SelectTrigger>
