@@ -714,15 +714,3 @@ export const assetCategories = mysqlTable("asset_categories", {
 });
 export type AssetCategory = typeof assetCategories.$inferSelect;
 export type InsertAssetCategory = typeof assetCategories.$inferInsert;
-
-
-// ============================================================
-// ASSET CATEGORIES TABLE
-// ============================================================
-export const assetCategories = mysqlTable("asset_categories", {
-  id:        int("id").primaryKey().autoincrement(),
-  name:      varchar("name", { length: 255 }).notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
-export type AssetCategory = typeof assetCategories.$inferSelect;
-export type InsertAssetCategory = typeof assetCategories.$inferInsert;
