@@ -27,6 +27,7 @@ const ar = {
     technicians: "الفنيون",
     aiAssistant: "المساعد الذكي",
     assets: "إدارة الأصول",
+    assetCategories: "إدارة الفئات",
     preventiveMaintenance: "الصيانة الوقائية",
     preventive: "الصيانة الدورية",
     predictiveMaint: "الصيانة التنبؤية قيد التطوير",

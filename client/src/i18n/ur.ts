@@ -25,6 +25,7 @@ const ur: TranslationKeys = {
     technicians: "ٹیکنیشینز",
     aiAssistant: "AI معاون",
     assets: "اثاثہ مینیجمنٹ",
+    assetCategories: "اثاثہ کیٹیگریز",
     preventiveMaintenance: "احتیاطی دیکھ بھال",
     preventive: "معیادی دیکھ بھال",
     predictiveMaint: "قیاسی دیکھ بھال (زیر ترقی)",

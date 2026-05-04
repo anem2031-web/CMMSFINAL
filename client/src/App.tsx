@@ -42,6 +42,7 @@ import ScanAsset from "./pages/ScanAsset";
 import CostReport from "./pages/CostReport";
 import Dashboard from "./pages/Dashboard";
 import AssetDetail from "./pages/AssetDetail";
+import AssetCategories from "./pages/AssetCategories";
 
 function Router() {
   return (
@@ -87,6 +88,7 @@ function Router() {
             <Route path="/scan-asset" component={ScanAsset} />
             <Route path="/reports/cost" component={CostReport} />
             <Route path="/asset/:id" component={AssetDetail} />
+            <Route path="/asset-categories" component={AssetCategories} />
             <Route path="/inspection-dashboard" component={Dashboard} />
             <Route path="/404" component={NotFound} />
             <Route component={NotFound} />

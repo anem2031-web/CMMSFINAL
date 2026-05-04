@@ -27,6 +27,7 @@ const en: TranslationKeys = {
     technicians: "Technicians",
     aiAssistant: "AI Assistant",
     assets: "Asset Management",
+    assetCategories: "Asset Categories",
     preventiveMaintenance: "Preventive Maintenance",
     preventive: "Periodic Maintenance",
     predictiveMaint: "Predictive Maintenance (Coming Soon)",

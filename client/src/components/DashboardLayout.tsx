@@ -26,7 +26,7 @@ import {
   LayoutDashboard, LogOut, PanelLeft, ClipboardList, ShoppingCart,
   Package, BarChart3, Users, Bell, MapPin, Wrench, Shield,
   Brain, ShoppingBag, Truck, Languages, Database,
-  HardDrive, CalendarClock, ScanSearch, DoorOpen, Nfc,
+  HardDrive, CalendarClock, ScanSearch, DoorOpen, Nfc, Tag,
   ChevronDown, Search, X, Building2, UserCog, Download, Smartphone, DollarSign
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState, useMemo, useCallback } from "react";
@@ -121,6 +121,8 @@ const NAV_SECTIONS: NavSection[] = [
       { icon: UserCog,   labelKey: "nav.technicians",   path: "/technicians",
         roles: ["owner","admin","maintenance_manager","supervisor"] },
       { icon: HardDrive, labelKey: "nav.assets",        path: "/assets",
+        roles: ["owner","admin","maintenance_manager"] },
+      { icon: Tag,       labelKey: "nav.assetCategories", path: "/asset-categories",
         roles: ["owner","admin","maintenance_manager"] },
     ],
   },
