@@ -341,7 +341,7 @@ export default function CreateTicket() {
           )}
           {/* Location Detail */}
           <div className="space-y-2">
-            <Label>{"تفاصيل الموقع"}</Label>
+            <Label>{"أخرى"}</Label>
             <Input value={form.locationDetail} onChange={e => setForm(f => ({ ...f, locationDetail: e.target.value }))} />
           </div>
 
