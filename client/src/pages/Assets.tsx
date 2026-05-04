@@ -74,6 +74,7 @@ export default function Assets() {
   const [editCategoryName, setEditCategoryName] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [warrantyFilter, setWarrantyFilter] = useState(false);
 
   const utils = trpc.useUtils();
   const { data: categories = [] } = trpc.assetCategories.list.useQuery();
@@ -189,7 +190,7 @@ export default function Assets() {
     warrantyExpiringSoon: assets.filter((a: any) => {
       if (!a.warrantyExpiry) return false;
       const days = (new Date(a.warrantyExpiry).getTime() - Date.now()) / (1000 * 60 * 60 * 24);
-      return days > 0 && days <= 30;
+      return days > 0 && days <= 90;
     }).length,
   }), [assets]);
 
@@ -232,7 +233,10 @@ export default function Assets() {
             </div>
           </CardContent>
         </Card>
-        <Card>
+        <Card
+          className={`cursor-pointer transition-all ${statusFilter === "under_maintenance" ? "ring-2 ring-yellow-400" : "hover:shadow-md"}`}
+          onClick={() => { setWarrantyFilter(false); setStatusFilter(prev => prev === "under_maintenance" ? "all" : "under_maintenance"); }}
+        >
           <CardContent className="p-4 flex items-center gap-3">
             <Wrench className="h-8 w-8 text-yellow-500" />
             <div>
@@ -241,7 +245,10 @@ export default function Assets() {
             </div>
           </CardContent>
         </Card>
-        <Card>
+        <Card
+          className={`cursor-pointer transition-all ${warrantyFilter ? "ring-2 ring-orange-400" : "hover:shadow-md"}`}
+          onClick={() => { setStatusFilter("all"); setWarrantyFilter(prev => !prev); }}
+        >
           <CardContent className="p-4 flex items-center gap-3">
             <AlertTriangle className="h-8 w-8 text-orange-500" />
             <div>
@@ -331,7 +338,15 @@ export default function Assets() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {assets.filter((asset: any) => categoryFilter === "all" || String(asset.categoryId) === categoryFilter).map((asset: any) => {
+          {assets.filter((asset: any) => {
+            if (categoryFilter !== "all" && String(asset.categoryId) !== categoryFilter) return false;
+            if (warrantyFilter) {
+              if (!asset.warrantyExpiry) return false;
+              const days = (new Date(asset.warrantyExpiry).getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+              return days > 0 && days <= 90;
+            }
+            return true;
+          }).map((asset: any) => {
             const cfg = statusConfig[asset.status as AssetStatus] ?? statusConfig.active;
             const StatusIcon = cfg.icon;
             const wExpired = isWarrantyExpired(asset.warrantyExpiry);
