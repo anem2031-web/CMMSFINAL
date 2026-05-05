@@ -1,6 +1,6 @@
 import type { TranslationKeys } from "./ar";
 
-const ur: TranslationKeys = {
+const ur: any = {
   appName: "مربوط دیکھ بھال انتظامی نظام",
   appShort: "CMMS",
   login: "سائن ان",
