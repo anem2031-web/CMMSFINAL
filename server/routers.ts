@@ -2952,7 +2952,7 @@ ${JSON.stringify(recentAudit.map((a: any) => ({ action: a.action, entity: a.enti
             const { url: newUrl } = await storageRename(oldKey, newKey);
             const proxyUrl = `/api/media?key=${encodeURIComponent(newKey)}`;
             await db.updateAsset(result.id, { photoUrl: proxyUrl });
-            result.photoUrl = proxyUrl;
+            (result as any).photoUrl = proxyUrl;
           }
         } catch (e) {
           console.error("[Asset] RFID photo rename failed (create):", e);
