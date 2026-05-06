@@ -138,7 +138,7 @@ export default function TicketDetail() {
   // Supervisor (Khaled)
   const canTriage = isSupervisor && ticket?.status === "pending_triage";
   const canInspect = isSupervisor && ticket?.status === "under_inspection";
-  const canClosePathA = isSupervisor && ticket?.status === "ready_for_closure" && ticket?.maintenancePath === "A";
+  const canClosePathA = (isSupervisor || isManager) && ticket?.status === "ready_for_closure" && ticket?.maintenancePath === "A";
 
   // Maintenance Manager (Abdel Fattah)
   const canApproveWork = isManager && ticket?.status === "under_inspection";
