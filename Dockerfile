@@ -4,7 +4,7 @@ WORKDIR /app
 # Install pnpm
 RUN npm install -g pnpm@10.15.1
 
-# Copy package.json only (no lockfile)
+# Copy package.json only (no lockfile, no patches)
 COPY package.json ./
 
 # Install ALL dependencies (dev needed for build step)
