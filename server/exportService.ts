@@ -1,5 +1,7 @@
 import ExcelJS from "exceljs";
 import * as db from "./db";
+import fs from "fs";
+import path from "path";
 
 // ============================================================
 // EXCEL EXPORT HELPERS
@@ -335,6 +337,10 @@ export async function exportPMWorkOrdersToExcel(): Promise<Buffer> {
 // ============================================================
 const DELEGATE_ACTIVE_STATUSES = new Set(["pending", "estimated", "approved", "purchased"]);
 
+// Amiri font path — bundled in server/fonts for Railway deployment
+const AMIRI_REGULAR = path.join(__dirname, "../fonts/Amiri-Regular.ttf");
+const AMIRI_BOLD    = path.join(__dirname, "../fonts/Amiri-Bold.ttf");
+
 export async function generateDelegateItemsPDF(delegateId: number): Promise<Buffer> {
   const PDFDocument = (await import("pdfkit")).default;
   const allItems = await db.getPOItemsByDelegate(delegateId);
@@ -364,9 +370,19 @@ export async function generateDelegateItemsPDF(delegateId: number): Promise<Buff
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
 
+    // Register Amiri font for Unicode-safe Arabic/English/mixed rendering
+    // Amiri supports full Arabic shaping, Latin characters, and mixed BiDi text
+    const amiriFontAvailable = fs.existsSync(AMIRI_REGULAR);
+    if (amiriFontAvailable) {
+      doc.registerFont("Amiri", AMIRI_REGULAR);
+      doc.registerFont("Amiri-Bold", AMIRI_BOLD);
+    }
+    const bodyFont  = amiriFontAvailable ? "Amiri"      : "Helvetica";
+    const boldFont  = amiriFontAvailable ? "Amiri-Bold" : "Helvetica-Bold";
+
     const W = doc.page.width - 80; // usable width
 
-    // ── Header ──────────────────────────────────────────────
+    // ── Header (Latin text only — safe with Helvetica) ────────────
     doc.rect(40, 40, W, 56).fill("#1e40af");
     doc.fillColor("#ffffff").fontSize(17).font("Helvetica-Bold")
       .text("Active Purchasing Items Report", 50, 52, { align: "center", width: W });
@@ -374,7 +390,7 @@ export async function generateDelegateItemsPDF(delegateId: number): Promise<Buff
       .text(`Delegate ID: ${delegateId}  |  Active items only  |  Generated: ${new Date().toLocaleDateString("en-GB")}`, 50, 76, { align: "center", width: W });
     doc.moveDown(3);
 
-    // ── Table header ─────────────────────────────────────────
+    // ── Table header (Latin column labels — Helvetica-Bold) ───────
     const cols = { poNumber: 65, itemName: 140, qty: 40, department: 100, cost: 85, total: 85 };
     const headers = ["PO #", "Item Name", "Qty", "Department", "Unit Cost (SAR)", "Total (SAR)"];
     const colKeys = Object.keys(cols) as (keyof typeof cols)[];
@@ -390,7 +406,7 @@ export async function generateDelegateItemsPDF(delegateId: number): Promise<Buff
     });
     doc.y = headerY + 22;
 
-    // ── Table rows ───────────────────────────────────────────
+    // ── Table rows (data values use Amiri for Unicode safety) ─────
     let grandTotal = 0;
     enriched.forEach((item: any, idx: number) => {
       const rowY = doc.y;
@@ -402,6 +418,7 @@ export async function generateDelegateItemsPDF(delegateId: number): Promise<Buff
       const rowTotal = unitCost * qty;
       grandTotal += rowTotal;
 
+      // Preserve raw database values exactly — no translation, no reshaping
       const values = [
         item.poNumber,
         item.itemName || "-",
@@ -413,7 +430,8 @@ export async function generateDelegateItemsPDF(delegateId: number): Promise<Buff
 
       x = 40;
       colKeys.forEach((_, i) => {
-        doc.fillColor("#1e293b").fontSize(8).font("Helvetica")
+        // Use Amiri for all data cells — handles Arabic, English, and mixed text correctly
+        doc.fillColor("#1e293b").fontSize(8).font(bodyFont)
           .text(values[i], x + 3, rowY + 4, { width: colWidths[i] - 6, lineBreak: false });
         x += colWidths[i];
       });
@@ -429,7 +447,7 @@ export async function generateDelegateItemsPDF(delegateId: number): Promise<Buff
     // ── Total row ────────────────────────────────────────────
     const totalY = doc.y + 4;
     doc.rect(40, totalY, W, 22).fill("#1e40af");
-    doc.fillColor("#ffffff").fontSize(10).font("Helvetica-Bold")
+    doc.fillColor("#ffffff").fontSize(10).font(boldFont)
       .text(`Total: ${grandTotal.toLocaleString("en-SA", { minimumFractionDigits: 2 })} SAR`, 50, totalY + 6, { align: "right", width: W - 10 });
 
     doc.moveDown(2);
