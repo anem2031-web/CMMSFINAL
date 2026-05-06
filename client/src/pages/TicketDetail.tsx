@@ -36,6 +36,8 @@ export default function TicketDetail() {
   const { data: ticket, isLoading, refetch } = trpc.tickets.getById.useQuery({ id: ticketId }, { enabled: !!ticketId });
   const { data: history } = trpc.tickets.history.useQuery({ ticketId }, { enabled: !!ticketId });
   const { data: users } = trpc.users.list.useQuery();
+  // Phase 2: listTechnicians gives users with specialty; legacy technicians.list kept for external-only assignments
+  const { data: userTechniciansList } = trpc.users.listTechnicians.useQuery();
   const { data: externalTechs } = trpc.technicians.list.useQuery({ activeOnly: true });
   const { data: allSections } = trpc.sections.list.useQuery(undefined);
   const { data: allSites } = trpc.sites.list.useQuery();
@@ -106,8 +108,11 @@ export default function TicketDetail() {
     }
   }, [addAttachMut, ticketId]);
 
-  // For triage assignment: include technicians, supervisors, and maintenance managers
-  const technicians = users?.filter(u => ["technician", "supervisor", "maintenance_manager"].includes(u.role)) || [];
+  // Phase 2: use listTechnicians as primary source for assignment dropdown (includes specialty)
+  // Fallback to users.filter if listTechnicians is not yet populated
+  const technicians = (userTechniciansList && userTechniciansList.length > 0)
+    ? userTechniciansList
+    : (users?.filter(u => ["technician", "supervisor", "maintenance_manager"].includes(u.role)) || []);
   const role = user?.role || "";
 
   const linkedPOs = allPOs?.filter(po => po.ticketId === ticketId) || [];
@@ -425,7 +430,7 @@ export default function TicketDetail() {
                         {technicians.length > 0 && (
                           <>
                             <div className="px-2 py-1 text-xs font-semibold text-muted-foreground">مستخدمو النظام</div>
-                            {technicians.map(tech => <SelectItem key={tech.id} value={String(tech.id)}>{tech.name || tech.email}</SelectItem>)}
+                            {technicians.map((tech: any) => <SelectItem key={tech.id} value={String(tech.id)}>{tech.name || tech.email}{tech.specialty ? ` (${tech.specialty})` : ""}</SelectItem>)}
                           </>
                         )}
                       </SelectContent>

@@ -432,6 +432,7 @@ export const appRouter = router({
       search: z.string().optional(),
       category: z.string().optional(),
       assignedTechnicianId: z.number().optional(),
+      assignedToId: z.number().optional(), // Phase 2: filter by user-based assignment
     }).optional()).query(async ({ input, ctx }) => {
       const role = ctx.user.role;
       let filters: any = input || {};

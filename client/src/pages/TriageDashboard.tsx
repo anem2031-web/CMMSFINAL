@@ -79,6 +79,8 @@ export default function TriageDashboard() {
     trpc.tickets.list.useQuery({ status: "under_inspection" });
 
   const { data: users = [] } = trpc.users.list.useQuery();
+  // Phase 2: use users.listTechnicians as primary source; legacy technicians.list kept for compatibility
+  const { data: userTechniciansList = [] } = trpc.users.listTechnicians.useQuery();
   const { data: techniciansList = [] } = trpc.technicians.list.useQuery(undefined);
   const { data: sites = [] } = trpc.sites.list.useQuery();
 
@@ -146,12 +148,15 @@ export default function TriageDashboard() {
   });
 
   // ── Derived data ──────────────────────────────────────────────────────────
-  // Use dedicated technicians table; fallback to users with technician roles
-  const technicians = techniciansList.length > 0
-    ? techniciansList.map((tech: any) => ({ ...tech, id: tech.id, name: tech.name, role: "technician" }))
-    : users.filter((u: any) =>
-        ["technician", "maintenance_manager", "supervisor"].includes(u.role)
-      );
+  // Phase 2: primary source is users with technician roles (via listTechnicians)
+  // Legacy technicians.list kept as fallback for backward compatibility
+  const technicians = userTechniciansList.length > 0
+    ? userTechniciansList.map((u: any) => ({ ...u, id: u.id, name: u.name || u.email, role: u.role, specialty: u.specialty }))
+    : techniciansList.length > 0
+      ? techniciansList.map((tech: any) => ({ ...tech, id: tech.id, name: tech.name, role: "technician" }))
+      : users.filter((u: any) =>
+          ["technician", "maintenance_manager", "supervisor"].includes(u.role)
+        );
 
   const criticalPending = useMemo(
     () => pendingTickets.filter((t: any) => t.priority === "critical"),

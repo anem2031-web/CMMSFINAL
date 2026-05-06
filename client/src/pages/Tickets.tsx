@@ -42,7 +42,17 @@ export default function Tickets() {
 
   const { data: sites = [] } = trpc.sites.list.useQuery();
   const { data: allSections } = trpc.sections.list.useQuery(undefined);
-  const { data: allTechnicians = [] } = trpc.technicians.list.useQuery({ activeOnly: false });
+  // Phase 2: use users.listTechnicians as primary source; legacy technicians.list kept for compatibility
+  const { data: userTechniciansList = [] } = trpc.users.listTechnicians.useQuery();
+  const { data: legacyTechnicians = [] } = trpc.technicians.list.useQuery({ activeOnly: false });
+  // Merge: users-based technicians first, then any legacy-only entries
+  const userTechIds = new Set(userTechniciansList.map((u: any) => String(u.id)));
+  const allTechnicians = [
+    ...userTechniciansList.map((u: any) => ({ id: u.id, name: u.name || u.email, source: 'user' as const })),
+    ...legacyTechnicians
+      .filter((t: any) => !userTechIds.has(String(t.id)))
+      .map((t: any) => ({ id: t.id, name: t.name, source: 'legacy' as const })),
+  ];
   const { data: tickets, isLoading } = trpc.tickets.list.useQuery({
     status: statusFilter !== "all" ? statusFilter : undefined,
     priority: priorityFilter !== "all" ? priorityFilter : undefined,
