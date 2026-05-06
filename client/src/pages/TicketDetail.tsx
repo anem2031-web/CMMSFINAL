@@ -38,6 +38,7 @@ export default function TicketDetail() {
   const { data: users } = trpc.users.list.useQuery();
   // Phase 2: listTechnicians gives users with specialty; legacy technicians.list kept for external-only assignments
   const { data: userTechniciansList } = trpc.users.listTechnicians.useQuery();
+  // Phase 5: externalTechs query kept for backend compatibility (historical data, fallback). Hidden from UI dropdowns.
   const { data: externalTechs } = trpc.technicians.list.useQuery({ activeOnly: true });
   const { data: allSections } = trpc.sections.list.useQuery(undefined);
   const { data: allSites } = trpc.sites.list.useQuery();
@@ -409,39 +410,26 @@ export default function TicketDetail() {
                 <div className="space-y-2 border rounded-xl p-3 bg-muted/20">
                   <p className="text-sm font-semibold text-muted-foreground">🔄 إعادة إسناد الفني:</p>
                   <div className="flex gap-2">
-                    <Select value={selectedExternalTech || selectedTech} onValueChange={(val) => {
-                      // Check if it's an external tech (prefixed with "ext_")
-                      if (val.startsWith("ext_")) {
-                        setSelectedExternalTech(val.replace("ext_", ""));
-                        setSelectedTech("");
-                      } else {
+                    {/* Phase 5: Assignment dropdown shows only internal users (users.listTechnicians). */}
+                    {/* External technicians (externalTechs) hidden from UI; backend assignment via externalTechnicianId preserved. */}
+                    <Select value={selectedTech} onValueChange={(val) => {
                         setSelectedTech(val);
-                        setSelectedExternalTech("");
-                      }
+                        setSelectedExternalTech(""); // Phase 5: external tech selection cleared
                     }}>
                       <SelectTrigger className="flex-1"><SelectValue placeholder={t.tickets.assignTechnician} /></SelectTrigger>
                       <SelectContent>
-                        {(externalTechs && externalTechs.length > 0) && (
-                          <>
-                            <div className="px-2 py-1 text-xs font-semibold text-muted-foreground">الفنيون الميدانيون</div>
-                            {externalTechs.map(tech => <SelectItem key={"ext_" + tech.id} value={"ext_" + String(tech.id)}>{tech.name}{tech.specialty ? ` (${tech.specialty})` : ""}</SelectItem>)}
-                          </>
-                        )}
-                        {technicians.length > 0 && (
-                          <>
-                            <div className="px-2 py-1 text-xs font-semibold text-muted-foreground">مستخدمو النظام</div>
-                            {technicians.map((tech: any) => <SelectItem key={tech.id} value={String(tech.id)}>{tech.name || tech.email}{tech.specialty ? ` (${tech.specialty})` : ""}</SelectItem>)}
-                          </>
-                        )}
+                        {technicians.map((tech: any) => (
+                          <SelectItem key={tech.id} value={String(tech.id)}>
+                            {tech.name || tech.email}{tech.specialty ? ` (${tech.specialty})` : ""}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                     <Button onClick={() => {
-                      if (selectedExternalTech) {
-                        assignMut.mutate({ id: ticket.id, externalTechnicianId: parseInt(selectedExternalTech) });
-                      } else if (selectedTech) {
+                      if (selectedTech) {
                         assignMut.mutate({ id: ticket.id, technicianId: parseInt(selectedTech) });
                       }
-                    }} disabled={(!selectedTech && !selectedExternalTech) || assignMut.isPending}>
+                    }} disabled={!selectedTech || assignMut.isPending}>
                       {assignMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "إعادة الإسناد"}
                     </Button>
                   </div>

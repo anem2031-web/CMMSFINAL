@@ -73,6 +73,15 @@ export default function Technicians() {
 
   return (
     <div className="p-6 space-y-6">
+      {/* Phase 5: Legacy archive notice — this page is preserved for historical data and rollback only */}
+      <div className="flex items-center gap-3 p-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800">
+        <UserCog className="h-5 w-5 shrink-0" />
+        <div className="text-sm">
+          <span className="font-semibold">ملاحظة: </span>
+          هذه الصفحة محفوظة للسجلات التاريخية فقط. لإدارة الفنيين الداخليين، يرجى استخدام صفحة
+          {" "}<a href="/users" className="underline font-medium">إدارة المستخدمين</a>.
+        </div>
+      </div>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -82,10 +91,8 @@ export default function Technicians() {
       <p className="text-sm text-muted-foreground">{t.techniciansPage.subtitle}</p>
           </div>
         </div>
-        <Button onClick={openCreate}>
-          <Plus className="h-4 w-4 ml-2" />
-          إضافة فني
-        </Button>
+        {/* Phase 5: Create button hidden from normal workflow — legacy data preserved */}
+        {/* <Button onClick={openCreate}><Plus className="h-4 w-4 ml-2" />إضافة فني</Button> */}
       </div>
 
       {/* Stats */}

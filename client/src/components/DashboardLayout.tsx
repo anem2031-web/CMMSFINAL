@@ -118,8 +118,8 @@ const NAV_SECTIONS: NavSection[] = [
         roles: ["owner","admin","maintenance_manager"] },
       { icon: Building2, labelKey: "nav.sectionsPage",  path: "/sections",
         roles: ["owner","admin","maintenance_manager"] },
-      { icon: UserCog,   labelKey: "nav.technicians",   path: "/technicians",
-        roles: ["owner","admin","maintenance_manager","supervisor"] },
+      // Phase 5: Legacy external technicians page hidden from sidebar (infrastructure preserved, route still accessible via direct URL)
+      // { icon: UserCog, labelKey: "nav.technicians", path: "/technicians", roles: ["owner","admin","maintenance_manager","supervisor"] },
       { icon: HardDrive, labelKey: "nav.assets",        path: "/assets",
         roles: ["owner","admin","maintenance_manager"] },
       { icon: Tag,       labelKey: "nav.assetCategories", path: "/asset-categories",

@@ -80,6 +80,7 @@ export default function TriageDashboard() {
 
   const { data: users = [] } = trpc.users.list.useQuery();
   // Phase 2: use users.listTechnicians as primary source; legacy technicians.list kept for compatibility
+  // Phase 5: techniciansList (legacy) kept as silent fallback only — not shown as separate UI group
   const { data: userTechniciansList = [] } = trpc.users.listTechnicians.useQuery();
   const { data: techniciansList = [] } = trpc.technicians.list.useQuery(undefined);
   const { data: sites = [] } = trpc.sites.list.useQuery();
