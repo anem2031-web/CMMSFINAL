@@ -20,10 +20,6 @@ export const users = mysqlTable("users", {
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["user", "admin", ...userRoles]).default("user").notNull(),
   department: varchar("department", { length: 100 }),
-  // Phase 1: Technician preparation layer — specialty fields (additive, nullable, backward-compatible)
-  specialty: varchar("specialty", { length: 200 }),
-  specialtyEn: varchar("specialtyEn", { length: 200 }),
-  specialtyUr: varchar("specialtyUr", { length: 200 }),
   preferredLanguage: mysqlEnum("preferredLanguage", ["ar", "en", "ur"]).default("ar").notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -166,7 +162,7 @@ export const tickets = mysqlTable("tickets", {
 // ============================================================
 export const poStatuses = [
   "draft", "pending_review", "pending_estimate", "pending_accounting", "pending_management",
-  "approved", "partial_purchase", "purchased", "received", "closed", "rejected"
+  "approved", "partial_purchase", "purchased", "received", "closed", "rejected", "revision_needed"
 ] as const;
 
 export const purchaseOrders = mysqlTable("purchase_orders", {
@@ -211,7 +207,6 @@ export const purchaseOrderItems = mysqlTable("purchase_order_items", {
   photoUrl: text("photoUrl"),
   notes: text("notes"),
   delegateId: int("delegateId"),
-  rejectionReason: text("rejectionReason"),
   estimatedUnitCost: decimal("estimatedUnitCost", { precision: 12, scale: 2 }),
   estimatedTotalCost: decimal("estimatedTotalCost", { precision: 12, scale: 2 }),
   actualUnitCost: decimal("actualUnitCost", { precision: 12, scale: 2 }),
@@ -235,6 +230,23 @@ export const purchaseOrderItems = mysqlTable("purchase_order_items", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
+
+// ============================================================
+// 5b. PROCUREMENT COMMENTS (Immutable Revision Notes)
+// ============================================================
+export const procurementComments = mysqlTable("procurement_comments", {
+  id: int("id").autoincrement().primaryKey(),
+  purchaseOrderId: int("purchaseOrderId").notNull(),
+  userId: int("userId").notNull(),
+  userName: text("userName").notNull(),
+  userRole: varchar("userRole", { length: 50 }).notNull(),
+  actionType: varchar("actionType", { length: 50 }).notNull(), // "return_for_revision", "resubmitted", "comment"
+  note: text("note").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type ProcurementComment = typeof procurementComments.$inferSelect;
+export type InsertProcurementComment = typeof procurementComments.$inferInsert;
 
 // ============================================================
 // 6. INVENTORY
@@ -591,6 +603,8 @@ export const twoFactorSecrets = mysqlTable("two_factor_secrets", {
 export type TwoFactorSecret = typeof twoFactorSecrets.$inferSelect;
 export type InsertTwoFactorSecret = typeof twoFactorSecrets.$inferInsert;
 
+
+
 // ============================================================
 // 15. TWO-FACTOR AUTHENTICATION AUDIT LOG
 // ============================================================
@@ -609,7 +623,7 @@ export type TwoFactorAuditLog = typeof twoFactorAuditLogs.$inferSelect;
 export type InsertTwoFactorAuditLog = typeof twoFactorAuditLogs.$inferInsert;
 
 // ============================================================
-// 18. WEB PUSH SUBSCRIPTIONS
+// 16. WEB PUSH SUBSCRIPTIONS
 // ============================================================
 export const pushSubscriptions = mysqlTable("push_subscriptions", {
   id: int("id").autoincrement().primaryKey(),
@@ -625,7 +639,7 @@ export type PushSubscription = typeof pushSubscriptions.$inferSelect;
 export type InsertPushSubscription = typeof pushSubscriptions.$inferInsert;
 
 // ============================================================
-// 19. PM CHECKLIST ITEMS (بنود قائمة الفحص المنفصلة)
+// 17. PM CHECKLIST ITEMS (بنود قائمة الفحص المنفصلة)
 // ============================================================
 // Each preventive plan can have multiple checklist items stored as rows
 export const pmChecklistItems = mysqlTable("pm_checklist_items", {
@@ -643,7 +657,7 @@ export type PMChecklistItem = typeof pmChecklistItems.$inferSelect;
 export type InsertPMChecklistItem = typeof pmChecklistItems.$inferInsert;
 
 // ============================================================
-// 20. PM EXECUTION RESULTS (نتائج تنفيذ بنود الفحص)
+// 18. PM EXECUTION RESULTS (نتائج تنفيذ بنود الفحص)
 // ============================================================
 // Each work order execution stores per-item results
 export const pmItemResultStatuses = ["ok", "fixed", "issue"] as const;
@@ -665,7 +679,7 @@ export type PMExecutionResult = typeof pmExecutionResults.$inferSelect;
 export type InsertPMExecutionResult = typeof pmExecutionResults.$inferInsert;
 
 // ============================================================
-// 21. PM EXECUTION SESSIONS (جلسات تنفيذ الفحص)
+// 19. PM EXECUTION SESSIONS (جلسات تنفيذ الفحص)
 // ============================================================
 // Tracks the overall execution session (start/end time, duration)
 export const pmExecutionSessionStatuses = ["in_progress", "completed", "paused"] as const;
@@ -690,6 +704,8 @@ export const pmExecutionSessions = mysqlTable("pm_execution_sessions", {
 export type PMExecutionSession = typeof pmExecutionSessions.$inferSelect;
 export type InsertPMExecutionSession = typeof pmExecutionSessions.$inferInsert;
 
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Inspection Results — structured corrective maintenance inspection records
 // ─────────────────────────────────────────────────────────────────────────────
@@ -709,7 +725,7 @@ export type InspectionResult = typeof inspectionResults.$inferSelect;
 export type InsertInspectionResult = typeof inspectionResults.$inferInsert;
 
 // ============================================================
-// ASSET CATEGORIES TABLE
+// 20. ASSET CATEGORIES TABLE
 // ============================================================
 export const assetCategories = mysqlTable("asset_categories", {
   id:        int("id").primaryKey().autoincrement(),

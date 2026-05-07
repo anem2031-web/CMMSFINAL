@@ -194,6 +194,7 @@ const ar = {
     received: "تم الاستلام",
     closed: "مغلق",
     rejected: "مرفوض",
+    revision_needed: "يحتاج مراجعة",
   },
 
   // PO Item statuses

@@ -190,6 +190,7 @@ const en: TranslationKeys = {
     received: "Received",
     closed: "Closed",
     rejected: "Rejected",
+    revision_needed: "Revision Needed",
   },
 
   poItemStatus: {

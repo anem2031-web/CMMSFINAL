@@ -33,6 +33,7 @@ const PO_STATUS_COLORS: Record<string, string> = {
   received: "bg-green-100 text-green-700",
   closed: "bg-gray-100 text-gray-700",
   rejected: "bg-red-100 text-red-700",
+  revision_needed: "bg-rose-100 text-rose-700",
 };
 
 const ITEM_STATUS_COLORS: Record<string, string> = {
@@ -101,6 +102,24 @@ export default function PurchaseOrderDetail() {
   const [editingItem, setEditingItem] = useState<any>(null);
   const [editForm, setEditForm] = useState<{ itemName: string; description: string; quantity: number; estimatedUnitCost: string }>({ itemName: "", description: "", quantity: 1, estimatedUnitCost: "" });
   const [reviewDecisions, setReviewDecisions] = useState<Record<number, { action: "approve" | "reject"; delegateId?: number; rejectionReason?: string }>>({});
+  const [revisionNote, setRevisionNote] = useState("");
+  const [isRevisionDialogOpen, setIsRevisionDialogOpen] = useState(false);
+  const [resubmitNote, setResubmitNote] = useState("");
+
+  const requestRevisionMut = trpc.purchaseOrders.requestRevision.useMutation({
+    onSuccess: () => { toast.success("تم إرسال الطلب للمراجعة"); setIsRevisionDialogOpen(false); setRevisionNote(""); refetch(); },
+    onError: (e) => toast.error(e.message)
+  });
+
+  const resubmitMut = trpc.purchaseOrders.resubmit.useMutation({
+    onSuccess: () => { toast.success("تم إعادة تقديم الطلب"); setResubmitNote(""); refetch(); },
+    onError: (e) => toast.error(e.message)
+  });
+
+  const closeMut = trpc.purchaseOrders.close.useMutation({
+    onSuccess: () => { toast.success("تم إغلاق الطلب"); refetch(); },
+    onError: (e) => toast.error(e.message)
+  });
 
   const isAdminOrOwner = role === "admin" || role === "owner";
   const isDelegate = role === "delegate" || isAdminOrOwner;
@@ -143,10 +162,10 @@ export default function PurchaseOrderDetail() {
 
   const steps = [
     { key: "draft", label: getPOStatusLabel("draft"), done: true },
-    { key: "pending_review", label: getPOStatusLabel("pending_review"), done: !["draft"].includes(po.status) },
-    { key: "pending_estimate", label: getPOStatusLabel("pending_estimate"), done: !["draft", "pending_review"].includes(po.status) },
-    { key: "pending_accounting", label: getPOStatusLabel("pending_accounting"), done: !["draft", "pending_review", "pending_estimate"].includes(po.status) },
-    { key: "pending_management", label: getPOStatusLabel("pending_management"), done: !["draft", "pending_review", "pending_estimate", "pending_accounting"].includes(po.status) },
+    { key: "pending_review", label: getPOStatusLabel("pending_review"), done: !["draft", "revision_needed"].includes(po.status) },
+    { key: "pending_estimate", label: getPOStatusLabel("pending_estimate"), done: !["draft", "pending_review", "revision_needed"].includes(po.status) },
+    { key: "pending_accounting", label: getPOStatusLabel("pending_accounting"), done: !["draft", "pending_review", "pending_estimate", "revision_needed"].includes(po.status) },
+    { key: "pending_management", label: getPOStatusLabel("pending_management"), done: !["draft", "pending_review", "pending_estimate", "pending_accounting", "revision_needed"].includes(po.status) },
     { key: "approved", label: getPOStatusLabel("approved"), done: ["approved", "partial_purchase", "purchased", "received", "closed"].includes(po.status) },
     { key: "purchased", label: getPOStatusLabel("purchased"), done: ["purchased", "received", "closed"].includes(po.status) },
     { key: "received", label: getPOStatusLabel("received"), done: ["received", "closed"].includes(po.status) },
@@ -168,7 +187,56 @@ export default function PurchaseOrderDetail() {
           </div>
           <h1 className="text-xl font-bold mt-1">{t.purchaseOrders.title}</h1>
         </div>
+        <div className="flex gap-2">
+          {isDelegate && po.status === "pending_estimate" && (
+            <Button variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => setIsRevisionDialogOpen(true)}>
+              <AlertCircle className="w-4 h-4 mr-1.5" /> طلب مراجعة
+            </Button>
+          )}
+          {po.status !== "closed" && (isAdminOrOwner || po.requestedById === userId) && (
+            <Button variant="outline" className="text-muted-foreground" onClick={() => { if (confirm("هل أنت متأكد من إغلاق هذا الطلب؟")) closeMut.mutate({ id: po.id }); }}>
+              <XCircle className="w-4 h-4 mr-1.5" /> إغلاق الطلب
+            </Button>
+          )}
+        </div>
       </div>
+
+      {po.status === "revision_needed" && (
+        <Card className="border-rose-200 bg-rose-50">
+          <CardContent className="p-4 flex flex-col gap-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+              <div>
+                <h3 className="text-sm font-bold text-rose-900">الطلب يحتاج إلى مراجعة وتعديل</h3>
+                <p className="text-xs text-rose-700 mt-1">
+                  قام المندوب بإعادة الطلب إليك للمراجعة. يرجى تعديل البيانات المطلوبة (الأصناف، الكميات، إلخ) ثم النقر على "إعادة التقديم".
+                </p>
+              </div>
+            </div>
+            {po.requestedById === userId && (
+              <div className="flex flex-col gap-2 border-t border-rose-200 pt-3">
+                <Label className="text-xs text-rose-800">ملاحظات إعادة التقديم (اختياري)</Label>
+                <div className="flex gap-2">
+                  <Input 
+                    placeholder="مثال: تم تعديل الكميات كما هو مطلوب..." 
+                    value={resubmitNote} 
+                    onChange={e => setResubmitNote(e.target.value)}
+                    className="bg-white border-rose-200"
+                  />
+                  <Button 
+                    onClick={() => resubmitMut.mutate({ id: po.id, note: resubmitNote })}
+                    disabled={resubmitMut.isPending}
+                    className="bg-rose-600 hover:bg-rose-700"
+                  >
+                    {resubmitMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1.5" />}
+                    إعادة التقديم
+                  </Button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent className="p-4">
@@ -706,6 +774,69 @@ export default function PurchaseOrderDetail() {
           </CardContent>
         </Card>
       )}
+
+      {po.comments && po.comments.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-bold flex items-center gap-2">
+              <FileText className="w-4 h-4 text-muted-foreground" />
+              سجل الملاحظات والتعديلات
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="divide-y">
+              {po.comments.map((comment: any) => (
+                <div key={comment.id} className="p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold">{comment.userName}</span>
+                      <Badge variant="outline" className="text-[10px] py-0 h-4">{comment.userRole}</Badge>
+                      {comment.actionType === "return_for_revision" && <Badge className="bg-rose-100 text-rose-700 text-[10px] py-0 h-4">طلب مراجعة</Badge>}
+                      {comment.actionType === "resubmitted" && <Badge className="bg-blue-100 text-blue-700 text-[10px] py-0 h-4">إعادة تقديم</Badge>}
+                    </div>
+                    <span className="text-[10px] text-muted-foreground">{new Date(comment.createdAt).toLocaleString(locale)}</span>
+                  </div>
+                  <p className="text-sm text-muted-foreground bg-muted/30 p-2 rounded-lg border-l-2 border-primary/20">
+                    {comment.note}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <Dialog open={isRevisionDialogOpen} onOpenChange={setIsRevisionDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>طلب مراجعة طلب الشراء</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              سيتم إعادة الطلب للمنشئ لتعديله. يرجى توضيح الأسباب أو التعديلات المطلوبة بدقة.
+            </p>
+            <div className="space-y-2">
+              <Label>سبب طلب المراجعة *</Label>
+              <Textarea 
+                placeholder="مثال: يرجى تعديل الكمية في الصنف الأول لتكون 5 بدلاً من 10..." 
+                value={revisionNote}
+                onChange={e => setRevisionNote(e.target.value)}
+                rows={4}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsRevisionDialogOpen(false)}>{t.common.cancel}</Button>
+            <Button 
+              variant="destructive" 
+              disabled={revisionNote.length < 5 || requestRevisionMut.isPending}
+              onClick={() => requestRevisionMut.mutate({ id: po.id, note: revisionNote })}
+            >
+              {requestRevisionMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "إرسال للمراجعة"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Edit Item Dialog */}
       <Dialog open={!!editingItem} onOpenChange={(open) => { if (!open) setEditingItem(null); }}>

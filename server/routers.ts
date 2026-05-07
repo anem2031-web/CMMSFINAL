@@ -1275,7 +1275,105 @@ export const appRouter = router({
       const po = await db.getPurchaseOrderById(input.id);
       if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
       const items = await db.getPOItems(input.id);
-      return { ...po, items };
+      const comments = await db.getProcurementComments(input.id);
+      return { ...po, items, comments };
+    }),
+
+    requestRevision: delegateProcedure.input(z.object({
+      id: z.number(),
+      note: z.string().min(5, "يجب كتابة سبب طلب المراجعة (بحد أدنى 5 أحرف)"),
+    })).mutation(async ({ input, ctx }) => {
+      const po = await db.getPurchaseOrderById(input.id);
+      if (!po) throw new TRPCError({ code: "NOT_FOUND" });
+
+      // Reset all approvals and set to revision_needed
+      await db.updatePurchaseOrder(input.id, {
+        status: "revision_needed",
+        accountingApprovedById: null,
+        accountingApprovedAt: null,
+        managementApprovedById: null,
+        managementApprovedAt: null,
+        totalEstimatedCost: null,
+      });
+
+      // Reset all items status to pending
+      const items = await db.getPOItems(input.id);
+      for (const item of items) {
+        await db.updatePOItem(item.id, { status: "pending", estimatedUnitCost: null, estimatedTotalCost: null });
+      }
+
+      // Add immutable comment
+      await db.createProcurementComment({
+        purchaseOrderId: input.id,
+        userId: ctx.user.id,
+        userName: ctx.user.name || "User",
+        userRole: ctx.user.role,
+        actionType: "return_for_revision",
+        note: input.note,
+      });
+
+      // Notify the creator
+      await db.createNotification({
+        userId: po.requestedById,
+        title: "⚠️ طلب مراجعة لطلب شراء",
+        message: `قام المندوب ${ctx.user.name} بإعادة طلب الشراء #${po.poNumber} للمراجعة: ${input.note}`,
+        type: "warning",
+        relatedPOId: input.id
+      });
+
+      await db.createAuditLog({ userId: ctx.user.id, action: "request_revision", entityType: "purchase_order", entityId: input.id, newValues: { status: "revision_needed", note: input.note } });
+      return { success: true };
+    }),
+
+    resubmit: protectedProcedure.input(z.object({
+      id: z.number(),
+      note: z.string().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const po = await db.getPurchaseOrderById(input.id);
+      if (!po) throw new TRPCError({ code: "NOT_FOUND" });
+      if (po.requestedById !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "فقط منشئ الطلب يمكنه إعادة التقديم" });
+      if (po.status !== "revision_needed") throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب ليس في حالة مراجعة" });
+
+      await db.updatePurchaseOrder(input.id, { status: "pending_review" });
+
+      await db.createProcurementComment({
+        purchaseOrderId: input.id,
+        userId: ctx.user.id,
+        userName: ctx.user.name || "User",
+        userRole: ctx.user.role,
+        actionType: "resubmitted",
+        note: input.note || "تم تعديل الطلب وإعادة التقديم",
+      });
+
+      await db.createAuditLog({ userId: ctx.user.id, action: "resubmit_po", entityType: "purchase_order", entityId: input.id });
+      return { success: true };
+    }),
+
+    close: protectedProcedure.input(z.object({
+      id: z.number(),
+      note: z.string().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const po = await db.getPurchaseOrderById(input.id);
+      if (!po) throw new TRPCError({ code: "NOT_FOUND" });
+      if (po.requestedById !== ctx.user.id && !["admin", "owner"].includes(ctx.user.role)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "ليس لديك صلاحية لإغلاق هذا الطلب" });
+      }
+
+      await db.updatePurchaseOrder(input.id, { status: "closed" });
+
+      if (input.note) {
+        await db.createProcurementComment({
+          purchaseOrderId: input.id,
+          userId: ctx.user.id,
+          userName: ctx.user.name || "User",
+          userRole: ctx.user.role,
+          actionType: "closed",
+          note: `إغلاق الطلب: ${input.note}`,
+        });
+      }
+
+      await db.createAuditLog({ userId: ctx.user.id, action: "close_po", entityType: "purchase_order", entityId: input.id });
+      return { success: true };
     }),
 
     create: protectedProcedure.input(z.object({

@@ -148,6 +148,13 @@
       "when": 1777128148014,
       "tag": "0020_nosy_jane_foster",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "5",
+      "when": 1778142892644,
+      "tag": "0021_slim_angel",
+      "breakpoints": true
     }
   ]
 }

@@ -10,7 +10,9 @@ import {
   pushSubscriptions, sections, technicians, inspectionResults,
   type InsertAsset, type InsertPreventivePlan, type InsertPMWorkOrder,
   type InsertSection, type InsertInspectionResult,
-  assetCategories
+  assetCategories,
+  procurementComments,
+  type InsertProcurementComment
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
@@ -98,7 +100,25 @@ export async function updateUserPassword(userId: number, passwordHash: string) {
 export async function getAllUsers() {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(users).orderBy(desc(users.createdAt));
+  return db.select().from(users);
+}
+
+// ============================================================
+// PROCUREMENT COMMENT OPERATIONS
+// ============================================================
+export async function createProcurementComment(data: InsertProcurementComment) {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db.insert(procurementComments).values(data);
+  return result[0].insertId;
+}
+
+export async function getProcurementComments(purchaseOrderId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(procurementComments)
+    .where(eq(procurementComments.purchaseOrderId, purchaseOrderId))
+    .orderBy(asc(procurementComments.createdAt));
 }
 
 export async function getUsersByRole(role: string) {
