@@ -241,10 +241,30 @@ export async function getTechnicianOpenTicketCounts(): Promise<Record<number, nu
 export async function getNextTicketNumber() {
   const db = await getDb();
   if (!db) return "MT-2026-00001";
+  
   const year = new Date().getFullYear();
-  const result = await db.select({ cnt: count() }).from(tickets);
-  const num = (result[0]?.cnt || 0) + 1;
-  return `MT-${year}-${String(num).padStart(5, "0")}`;
+  const prefix = `MT-${year}-`;
+
+  // Find the last ticket created in the current year
+  const lastTicket = await db
+    .select({ ticketNumber: tickets.ticketNumber })
+    .from(tickets)
+    .where(like(tickets.ticketNumber, `${prefix}%`))
+    .orderBy(desc(tickets.ticketNumber))
+    .limit(1);
+
+  let nextNum = 1;
+  if (lastTicket && lastTicket.length > 0) {
+    // Extract the numeric part (e.g., from MT-2026-00014 we get 14)
+    const parts = lastTicket[0].ticketNumber.split("-");
+    const lastNumStr = parts[parts.length - 1];
+    const lastNum = parseInt(lastNumStr || "0", 10);
+    if (!isNaN(lastNum)) {
+      nextNum = lastNum + 1;
+    }
+  }
+
+  return `${prefix}${String(nextNum).padStart(5, "0")}`;
 }
 
 export async function createTicket(data: any) {
