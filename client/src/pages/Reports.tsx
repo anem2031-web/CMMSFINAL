@@ -50,7 +50,7 @@ export default function Reports() {
           value={openTickets} 
           icon={<Wrench className="w-5 h-5 text-blue-500" />}
           loading={l1}
-          onClick={() => setLocation('/tickets')}
+          onClick={() => setLocation('/tickets?status=open')}
           clickable
         />
         <SummaryCard 
@@ -59,7 +59,7 @@ export default function Reports() {
           icon={<AlertCircle className="w-5 h-5 text-red-500" />}
           loading={l3}
           highlight={criticalTickets > 0}
-          onClick={() => setLocation('/tickets')}
+          onClick={() => setLocation('/tickets?priority=critical')}
           clickable
         />
         <SummaryCard 

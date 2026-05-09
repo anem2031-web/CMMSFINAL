@@ -1,5 +1,5 @@
 import { trpc } from "@/lib/trpc";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { STATUS_COLORS, PRIORITY_COLORS } from "@shared/types";
 import { Plus, Search, ClipboardList, Pencil, Trash2 } from "lucide-react";
 import { ExportButton } from "@/components/ExportButton";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useTranslation } from "@/contexts/LanguageContext";
 import { useStaticLabels } from "@/hooks/useContentTranslation";
@@ -21,12 +21,26 @@ import { toast } from "sonner";
 
 export default function Tickets() {
   const [, setLocation] = useLocation();
+  const searchParams = new URLSearchParams(useSearch());
+  
+  // Whitelist Validation & Initial Hydration (One-time only)
+  const initialFilters = useMemo(() => {
+    const status = searchParams.get("status");
+    const priority = searchParams.get("priority");
+    
+    return {
+      status: ["open", "all"].includes(status || "") ? status : "all",
+      priority: ["critical", "all"].includes(priority || "") ? priority : "all"
+    };
+  }, []); // Empty dependency array ensures this only runs once on mount
+
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [priorityFilter, setPriorityFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState(initialFilters.status || "all");
+  const [priorityFilter, setPriorityFilter] = useState(initialFilters.priority || "all");
   const [siteFilter, setSiteFilter] = useState("all");
   const [sectionFilter, setSectionFilter] = useState("all");
   const [technicianFilter, setTechnicianFilter] = useState("all");
+  
   const { t, language } = useTranslation();
   const { getStatusLabel, getPriorityLabel, getCategoryLabel } = useStaticLabels();
   const { getField } = useTranslatedField();
@@ -42,18 +56,15 @@ export default function Tickets() {
 
   const { data: sites = [] } = trpc.sites.list.useQuery();
   const { data: allSections } = trpc.sections.list.useQuery(undefined);
-  // Phase 4: use users.listTechnicians as the SOLE internal source for the technician filter dropdown.
-  // Legacy technicians.list is NOT used for filtering because the filter now targets assignedToId (internal users).
-  // External technicians remain accessible via the legacy path in TicketDetail reassignment.
   const { data: userTechniciansList = [] } = trpc.users.listTechnicians.useQuery();
   const allTechnicians = userTechniciansList.map((u: any) => ({ id: u.id, name: u.name || u.email }));
+  
   const { data: tickets, isLoading } = trpc.tickets.list.useQuery({
     status: statusFilter !== "all" ? statusFilter : undefined,
     priority: priorityFilter !== "all" ? priorityFilter : undefined,
     siteId: siteFilter !== "all" ? Number(siteFilter) : undefined,
     sectionId: sectionFilter !== "all" ? Number(sectionFilter) : undefined,
     search: search || undefined,
-    // Phase 4: filter by assignedToId (internal user) — was incorrectly using assignedTechnicianId
     assignedToId: technicianFilter !== "all" ? Number(technicianFilter) : undefined,
   });
 
@@ -212,7 +223,6 @@ export default function Tickets() {
                     <div className="flex items-center gap-3 mt-1.5 text-xs text-muted-foreground flex-wrap">
                       <span>{getCategoryLabel(ticket.category)}</span>
                       <span>{new Date(ticket.createdAt).toLocaleDateString(locale)}</span>
-                      {/* Phase 4: show internal user name first (assignedToId), fallback to external technician name */}
                       {((ticket as any).assignedToUserName || (ticket as any).assignedTechnicianName) && (
                         <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400 font-medium">
                           <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400" />
@@ -248,21 +258,21 @@ export default function Tickets() {
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
             <DialogTitle>{t.common.edit} - {selectedTicket?.ticketNumber}</DialogTitle>
-            <DialogDescription>{t.tickets.title}</DialogDescription>
+            <DialogDescription>{t.tickets.description}</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-2">
-            <div>
-              <Label>{t.tickets.ticketTitle}</Label>
-              <Input value={editData.title} onChange={e => setEditData(prev => ({ ...prev, title: e.target.value }))} />
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label>{t.tickets.title}</Label>
+              <Input value={editData.title} onChange={e => setEditData({ ...editData, title: e.target.value })} />
             </div>
-            <div>
-              <Label>{t.common.description}</Label>
-              <Textarea value={editData.description} onChange={e => setEditData(prev => ({ ...prev, description: e.target.value }))} rows={3} />
+            <div className="grid gap-2">
+              <Label>{t.tickets.description}</Label>
+              <Textarea value={editData.description} onChange={e => setEditData({ ...editData, description: e.target.value })} />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-2">
                 <Label>{t.tickets.priority}</Label>
-                <Select value={editData.priority} onValueChange={v => setEditData(prev => ({ ...prev, priority: v }))}>
+                <Select value={editData.priority} onValueChange={v => setEditData({ ...editData, priority: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {Object.keys(t.priority).map(k => (
@@ -271,9 +281,9 @@ export default function Tickets() {
                   </SelectContent>
                 </Select>
               </div>
-              <div>
+              <div className="grid gap-2">
                 <Label>{t.tickets.category}</Label>
-                <Select value={editData.category} onValueChange={v => setEditData(prev => ({ ...prev, category: v }))}>
+                <Select value={editData.category} onValueChange={v => setEditData({ ...editData, category: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {Object.keys(t.category).map(k => (
@@ -287,25 +297,23 @@ export default function Tickets() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditOpen(false)}>{t.common.cancel}</Button>
             <Button onClick={() => updateMutation.mutate({ id: selectedTicket.id, ...editData })} disabled={updateMutation.isPending}>
-              {updateMutation.isPending ? t.common.saving : t.common.save}
+              {t.common.save}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation Dialog */}
+      {/* Delete Dialog */}
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <DialogContent className="sm:max-w-[400px]">
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle className="text-destructive">{t.common.confirmDelete}</DialogTitle>
-            <DialogDescription>
-              {t.common.deleteWarning} <strong>{selectedTicket?.ticketNumber} - {selectedTicket?.title}</strong>
-            </DialogDescription>
+            <DialogTitle>{t.common.delete} - {selectedTicket?.ticketNumber}</DialogTitle>
+            <DialogDescription>{t.common.deleteWarning}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteOpen(false)}>{t.common.cancel}</Button>
-            <Button variant="destructive" onClick={() => deleteMutation.mutate({ id: selectedTicket.id })} disabled={deleteMutation.isPending}>
-              {deleteMutation.isPending ? t.common.deleting : t.common.delete}
+            <Button variant="destructive" onClick={() => deleteMutation.mutate(selectedTicket.id)} disabled={deleteMutation.isPending}>
+              {t.common.delete}
             </Button>
           </DialogFooter>
         </DialogContent>
