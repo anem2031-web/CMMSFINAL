@@ -950,47 +950,111 @@ export default function TicketDetail() {
       <div id="print-task-section" style={{ display: "none" }}>
         <style>{`
           @media print {
-            body > * { display: none !important; }
-            #print-task-section { display: block !important; }
-            #print-task-section * { display: revert !important; }
-            .print\\:hidden { display: none !important; }
-          }
-          @media print {
+            body * { visibility: hidden; }
+            #print-task-section, #print-task-section * { visibility: visible; }
             #print-task-section {
+              position: absolute;
+              left: 0;
+              top: 0;
+              width: 100%;
+              display: block !important;
               font-family: Arial, sans-serif;
               direction: rtl;
-              padding: 32px;
-              color: #111;
+              padding: 20px;
+              color: #000;
+              background: #fff;
             }
+            .print\:hidden { display: none !important; }
             #print-task-section h1 {
-              font-size: 22px;
+              font-size: 24px;
               font-weight: bold;
-              margin-bottom: 24px;
-              border-bottom: 2px solid #333;
-              padding-bottom: 8px;
+              margin-bottom: 20px;
+              border-bottom: 2px solid #000;
+              padding-bottom: 10px;
+              text-align: center;
+            }
+            #print-task-section .print-grid {
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 15px;
+              margin-bottom: 20px;
             }
             #print-task-section .print-row {
               display: flex;
               gap: 8px;
-              margin-bottom: 12px;
+              margin-bottom: 10px;
               font-size: 14px;
+              border-bottom: 1px solid #eee;
+              padding-bottom: 5px;
             }
             #print-task-section .print-label {
               font-weight: bold;
-              min-width: 140px;
+              min-width: 120px;
+              color: #333;
+            }
+            #print-task-section .section-title {
+              font-weight: bold;
+              font-size: 16px;
+              margin: 20px 0 10px 0;
+              background: #f5f5f5;
+              padding: 5px 10px;
+              border-right: 4px solid #000;
             }
           }
         `}</style>
-        <h1>مهمة صيانة</h1>
-        <div className="print-row"><span className="print-label">رقم البلاغ:</span><span>{ticket.ticketNumber}</span></div>
-        <div className="print-row"><span className="print-label">العنوان:</span><span>{ticket.title}</span></div>
+        <h1>تفاصيل مهمة الصيانة</h1>
+        
+        <div className="print-grid">
+          <div className="print-row"><span className="print-label">رقم البلاغ:</span><span>{ticket.ticketNumber}</span></div>
+          <div className="print-row"><span className="print-label">تاريخ الإنشاء:</span><span>{new Date(ticket.createdAt).toLocaleString("ar-SA")}</span></div>
+          <div className="print-row"><span className="print-label">الحالة:</span><span>{getStatusLabel(ticket.status)}</span></div>
+          <div className="print-row"><span className="print-label">الأولوية:</span><span>{getPriorityLabel(ticket.priority)}</span></div>
+        </div>
+
+        <div className="section-title">معلومات البلاغ</div>
+        <div className="print-row"><span className="print-label">العنوان:</span><span>{getField(ticket, "title")}</span></div>
+        <div className="print-row"><span className="print-label">الوصف:</span><span>{getField(ticket, "description") || "-"}</span></div>
+        <div className="print-row"><span className="print-label">التصنيف:</span><span>{getCategoryLabel(ticket.category)}</span></div>
+        <div className="print-row">
+          <span className="print-label">الموقع:</span>
+          <span>
+            {ticket.siteId ? (getLocalizedName(allSites?.find((s: any) => s.id === ticket.siteId), language) || ticket.locationDetail || "-") : (ticket.locationDetail || "-")}
+            {ticket.sectionId && allSections?.find((s: any) => s.id === ticket.sectionId) && (
+              <span> / {getLocalizedName(allSections.find((s: any) => s.id === ticket.sectionId), language)}</span>
+            )}
+          </span>
+        </div>
+
+        <div className="section-title">الأطراف المعنية</div>
+        <div className="print-row"><span className="print-label">مقدم البلاغ:</span><span>{reportedBy?.name || "-"}</span></div>
         <div className="print-row"><span className="print-label">الفني المسند إليه:</span><span>{assignedTo?.name || "-"}</span></div>
-        <div className="print-row"><span className="print-label">وصف العطل:</span><span>{ticket.description || "-"}</span></div>
-        {ticket.inspectionNotes && (
-          <div className="print-row"><span className="print-label">ملاحظات الفحص:</span><span>{ticket.inspectionNotes}</span></div>
+
+        {(ticket.inspectionNotes || ticket.repairNotes || ticket.materialsUsed) && (
+          <>
+            <div className="section-title">تفاصيل العمل</div>
+            {ticket.inspectionNotes && (
+              <div className="print-row"><span className="print-label">ملاحظات الفحص:</span><span>{ticket.inspectionNotes}</span></div>
+            )}
+            {ticket.repairNotes && (
+              <div className="print-row"><span className="print-label">ملاحظات الإصلاح:</span><span>{getField(ticket, "repairNotes")}</span></div>
+            )}
+            {ticket.materialsUsed && (
+              <div className="print-row"><span className="print-label">المواد المستخدمة:</span><span>{ticket.materialsUsed}</span></div>
+            )}
+          </>
         )}
-        <div className="print-row"><span className="print-label">تاريخ الإنشاء:</span><span>{new Date(ticket.createdAt).toLocaleDateString("ar-SA")}</span></div>
-        <div className="print-row"><span className="print-label">الحالة:</span><span>{ticket.status}</span></div>
+
+        {linkedPOs.length > 0 && (
+          <>
+            <div className="section-title">طلبات الشراء المرتبطة</div>
+            {linkedPOs.map(po => (
+              <div key={po.id} className="print-row" style={{ borderBottom: '1px dashed #ccc' }}>
+                <span className="print-label">{po.poNumber}:</span>
+                <span>{getPOStatusLabel(po.status)} - {po.totalActualCost ? `${Number(po.totalActualCost).toLocaleString("ar-SA")} ر.س` : "قيد التقدير"}</span>
+              </div>
+            ))}
+          </>
+        )}
       </div>
     </>
   );
