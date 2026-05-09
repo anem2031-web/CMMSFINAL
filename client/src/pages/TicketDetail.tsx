@@ -961,16 +961,18 @@ export default function TicketDetail() {
               padding: 0 !important;
               background: #fff !important;
             }
-            #root { display: none !important; }
+            body > *:not(#print-task-section) { display: none !important; }
             #print-task-section {
               display: block !important;
               visibility: visible !important;
-              position: static !important;
+              position: absolute !important;
+              left: 0 !important;
+              top: 0 !important;
               width: 100% !important;
               font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
               direction: rtl;
-              color: #000;
-              background: #fff;
+              color: #000 !important;
+              background: #fff !important;
             }
             #print-task-section * { visibility: visible !important; }
             .print-header {
