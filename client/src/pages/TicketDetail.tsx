@@ -947,28 +947,24 @@ export default function TicketDetail() {
       </Dialog>
 
       {/* Printable Task Section — hidden on screen, shown only on print */}
-      <div id="print-task-section" style={{ display: "none" }}>
+      <div id="print-task-section" className="hidden print:block">
         <style>{`
           @media print {
             @page {
-              margin: 10mm;
-              size: auto;
+              margin: 15mm;
+              size: A4;
             }
-            html, body {
-              height: auto !important;
-              overflow: visible !important;
-              margin: 0 !important;
-              padding: 0 !important;
-              background: #fff !important;
-            }
-            body > *:not(#print-task-section) { display: none !important; }
+            /* Hide the entire React root during print */
+            #root { display: none !important; }
+            
+            /* Show our print section at the top level */
             #print-task-section {
               display: block !important;
               visibility: visible !important;
-              position: absolute !important;
-              left: 0 !important;
-              top: 0 !important;
+              position: static !important;
               width: 100% !important;
+              margin: 0 !important;
+              padding: 0 !important;
               font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
               direction: rtl;
               color: #000 !important;
