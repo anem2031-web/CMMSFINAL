@@ -65,12 +65,6 @@ export default function Reports() {
 
   // PHASE 3B: Micro Operational Interpretation Logic
   const criticalAwaitingAssignment = criticalList?.filter(t => t.status === 'new').length || 0;
-  
-  // Find category with highest number of new tickets
-  // Note: The byCategory query currently returns counts by category, 
-  // but to be precise for "new" tickets we'd need more granular data.
-  // For Phase 3B deterministic logic, we'll use the most active category as a proxy 
-  // or focus on general volume if specific "new" per category isn't available.
   const topCategory = byCategory?.sort((a, b) => b.count - a.count)[0];
 
   // Components as variables for spatial reordering
@@ -79,7 +73,7 @@ export default function Reports() {
       <SummaryCard 
         title="البلاغات المفتوحة" 
         value={openTickets} 
-        icon={<Wrench className="w-5 h-5 text-blue-500" />}
+        icon={<Wrench className="w-5 h-5 text-blue-500/80" />}
         loading={l1}
         onClick={() => setLocation('/tickets?status=open')}
         clickable
@@ -87,7 +81,7 @@ export default function Reports() {
       <SummaryCard 
         title="البلاغات الحرجة" 
         value={criticalCount} 
-        icon={<AlertCircle className="w-5 h-5 text-red-500" />}
+        icon={<AlertCircle className="w-5 h-5 text-red-500/80" />}
         loading={l3}
         highlight={criticalCount > 0}
         onClick={() => setLocation('/tickets?priority=critical')}
@@ -96,13 +90,13 @@ export default function Reports() {
       <SummaryCard 
         title="أنجز هذا الشهر" 
         value={completedThisMonth} 
-        icon={<CheckCircle2 className="w-5 h-5 text-emerald-500" />}
+        icon={<CheckCircle2 className="w-5 h-5 text-emerald-500/80" />}
         loading={l5}
       />
       <SummaryCard 
         title="بلاغات جديدة (شهر)" 
         value={createdThisMonth} 
-        icon={<Clock className="w-5 h-5 text-amber-500" />}
+        icon={<Clock className="w-5 h-5 text-amber-500/80" />}
         loading={l5}
       />
     </div>
@@ -125,18 +119,18 @@ export default function Reports() {
         )}
       </div>
       
-      {/* PHASE 3B: Micro Operational Interpretations */}
-      <div className="px-2 space-y-1.5">
+      {/* PHASE 3B & 4A: Micro Operational Interpretations with refined rhythm */}
+      <div className="px-2 space-y-2">
         {criticalAwaitingAssignment > 0 && (
           <p 
-            className="text-[11px] text-slate-500 leading-relaxed cursor-pointer hover:text-slate-700 transition-colors"
+            className="text-[11px] text-slate-400 leading-relaxed cursor-pointer hover:text-slate-600 transition-colors"
             onClick={() => setLocation('/tickets?priority=critical')}
           >
             {criticalAwaitingAssignment} بلاغات حرجة لم يتم إسنادها لأي فني حتى الآن.
           </p>
         )}
         {topCategory && (
-          <p className="text-[11px] text-slate-500 leading-relaxed">
+          <p className="text-[11px] text-slate-400 leading-relaxed">
             أعلى عدد من البلاغات الجديدة حالياً في فئة {topCategory.category}.
           </p>
         )}
@@ -145,28 +139,28 @@ export default function Reports() {
   );
 
   const OperationalAttentionPanel = (
-    <Card className="border-slate-200/60 shadow-sm">
-      <CardHeader className="pb-3 border-b border-slate-50 flex flex-row items-center justify-between space-y-0">
-        <CardTitle className="text-sm font-semibold flex items-center gap-2 text-slate-800">
-          <ListFilter className="w-4 h-4 text-red-500" />
+    <Card className="border-slate-100/80 shadow-sm">
+      <CardHeader className="pb-3 border-b border-slate-50 flex flex-row items-center justify-between space-y-0 px-5">
+        <CardTitle className="text-sm font-semibold flex items-center gap-2 text-slate-700">
+          <ListFilter className="w-4 h-4 text-red-400" />
           لوحة الانتباه التشغيلي: بلاغات حرجة
         </CardTitle>
         {criticalCount > 5 && (
           <button 
             onClick={() => setLocation('/tickets?priority=critical')}
-            className="text-[10px] font-medium text-slate-400 hover:text-slate-600 uppercase tracking-tighter"
+            className="text-[10px] font-medium text-slate-400 hover:text-slate-500 uppercase tracking-tighter transition-colors"
           >
             عرض الكل ({criticalCount})
           </button>
         )}
       </CardHeader>
-      <CardContent className="pt-2 px-0">
+      <CardContent className="pt-1 px-0">
         {lCritical ? (
           <div className="p-4 space-y-3">
             {[1, 2, 3].map(i => <Skeleton key={i} className="h-10 w-full" />)}
           </div>
         ) : topCriticalTickets.length > 0 ? (
-          <div className="divide-y divide-slate-50">
+          <div className="divide-y divide-slate-50/50">
             {topCriticalTickets.map((ticket) => (
               <AttentionRow 
                 key={ticket.id}
@@ -191,16 +185,16 @@ export default function Reports() {
   const OperationalPanels = (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       {/* Status Distribution Table */}
-      <Card className="lg:col-span-1 border-slate-200/60 shadow-sm">
-        <CardHeader className="pb-3 border-b border-slate-50">
-          <CardTitle className="text-sm font-medium flex items-center gap-2 text-slate-700">
-            <BarChart3 className="w-4 h-4 text-slate-400" />
+      <Card className="lg:col-span-1 border-slate-100/80 shadow-sm">
+        <CardHeader className="pb-3 border-b border-slate-50 px-5">
+          <CardTitle className="text-sm font-medium flex items-center gap-2 text-slate-600">
+            <BarChart3 className="w-4 h-4 text-slate-300" />
             {t.reports.ticketsByStatus}
           </CardTitle>
         </CardHeader>
-        <CardContent className="pt-4">
+        <CardContent className="pt-4 px-4 pb-5">
           {l1 ? <SkeletonList /> : (
-            <div className="space-y-1">
+            <div className="space-y-0.5">
               {statusData.length > 0 ? statusData.map((item, i) => (
                 <OperationalRow 
                   key={i} 
@@ -216,16 +210,16 @@ export default function Reports() {
       </Card>
 
       {/* Priority Distribution Table */}
-      <Card className="lg:col-span-1 border-slate-200/60 shadow-sm">
-        <CardHeader className="pb-3 border-b border-slate-50">
-          <CardTitle className="text-sm font-medium flex items-center gap-2 text-slate-700">
-            <AlertCircle className="w-4 h-4 text-slate-400" />
+      <Card className="lg:col-span-1 border-slate-100/80 shadow-sm">
+        <CardHeader className="pb-3 border-b border-slate-50 px-5">
+          <CardTitle className="text-sm font-medium flex items-center gap-2 text-slate-600">
+            <AlertCircle className="w-4 h-4 text-slate-300" />
             {t.reports.ticketsByPriority}
           </CardTitle>
         </CardHeader>
-        <CardContent className="pt-4">
+        <CardContent className="pt-4 px-4 pb-5">
           {l3 ? <SkeletonList /> : (
-            <div className="space-y-1">
+            <div className="space-y-0.5">
               {priorityData.length > 0 ? priorityData.map((item, i) => (
                 <OperationalRow 
                   key={i} 
@@ -241,46 +235,46 @@ export default function Reports() {
       </Card>
 
       {/* 3. SIMPLIFIED VISUAL HIERARCHY - Monthly Operational Trend */}
-      <Card className="lg:col-span-1 border-slate-200/60 shadow-sm">
-        <CardHeader className="pb-3 border-b border-slate-50">
-          <CardTitle className="text-sm font-medium flex items-center gap-2 text-slate-700">
-            <TrendingUp className="w-4 h-4 text-slate-400" />
+      <Card className="lg:col-span-1 border-slate-100/80 shadow-sm">
+        <CardHeader className="pb-3 border-b border-slate-50 px-5">
+          <CardTitle className="text-sm font-medium flex items-center gap-2 text-slate-600">
+            <TrendingUp className="w-4 h-4 text-slate-300" />
             {t.reports.monthlyTrend}
           </CardTitle>
         </CardHeader>
-        <CardContent className="pt-6">
+        <CardContent className="pt-6 px-4 pb-6">
           {l5 ? <Skeleton className="h-40 w-full" /> : monthly && monthly.length > 0 ? (
             <div className="h-40 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={monthly} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f8fafc" />
                   <XAxis 
                     dataKey="month" 
                     hide={false} 
                     axisLine={false} 
                     tickLine={false} 
-                    tick={{ fontSize: 10, fill: '#94a3b8' }}
+                    tick={{ fontSize: 10, fill: '#cbd5e1' }}
                     dy={10}
                   />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#cbd5e1' }} />
                   <Tooltip 
-                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.05)', fontSize: '12px' }}
+                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.03)', fontSize: '11px' }}
                   />
                   <Line 
                     type="monotone" 
                     dataKey="created" 
-                    stroke="#94a3b8" 
-                    strokeWidth={1.5} 
+                    stroke="#cbd5e1" 
+                    strokeWidth={1} 
                     dot={false} 
-                    activeDot={{ r: 4, strokeWidth: 0 }} 
+                    activeDot={{ r: 3, strokeWidth: 0 }} 
                   />
                   <Line 
                     type="monotone" 
                     dataKey="closed" 
                     stroke="#10b981" 
-                    strokeWidth={2} 
+                    strokeWidth={1.5} 
                     dot={false} 
-                    activeDot={{ r: 4, strokeWidth: 0 }} 
+                    activeDot={{ r: 3, strokeWidth: 0 }} 
                   />
                 </LineChart>
               </ResponsiveContainer>
@@ -292,23 +286,23 @@ export default function Reports() {
   );
 
   return (
-    <div className="space-y-8 max-w-7xl mx-auto pb-10">
+    <div className="space-y-8 max-w-7xl mx-auto pb-12 px-4 md:px-6">
       {/* Page Header */}
-      <div className="flex items-start justify-between flex-wrap gap-3 px-1">
+      <div className="flex items-start justify-between flex-wrap gap-4 pt-2">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">{t.reports.title}</h1>
-          <p className="text-sm text-muted-foreground mt-1">{t.reports.overview}</p>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-800 dark:text-slate-100">{t.reports.title}</h1>
+          <p className="text-sm text-slate-400 mt-1">{t.reports.overview}</p>
         </div>
 
         {/* PHASE 3A: Minimalist Focus Selector */}
-        <div className="flex items-center gap-4 bg-slate-50/50 dark:bg-slate-900/50 p-1 rounded-lg border border-slate-100/50">
+        <div className="flex items-center gap-1 bg-slate-50/80 dark:bg-slate-900/50 p-1 rounded-lg border border-slate-100/50">
           <button 
             onClick={() => setFocusMode('general')}
             className={cn(
-              "text-[11px] font-medium px-3 py-1.5 rounded-md transition-all duration-200",
+              "text-[10px] uppercase tracking-wider font-semibold px-3 py-1.5 rounded-md transition-all duration-200",
               focusMode === 'general' 
-                ? "text-slate-900 bg-white shadow-sm border border-slate-200/50" 
-                : "text-slate-400 hover:text-slate-600"
+                ? "text-slate-700 bg-white shadow-sm border border-slate-100" 
+                : "text-slate-400 hover:text-slate-500"
             )}
           >
             عمليات عامة
@@ -316,10 +310,10 @@ export default function Reports() {
           <button 
             onClick={() => setFocusMode('maintenance')}
             className={cn(
-              "text-[11px] font-medium px-3 py-1.5 rounded-md transition-all duration-200",
+              "text-[10px] uppercase tracking-wider font-semibold px-3 py-1.5 rounded-md transition-all duration-200",
               focusMode === 'maintenance' 
-                ? "text-slate-900 bg-white shadow-sm border border-slate-200/50" 
-                : "text-slate-400 hover:text-slate-600"
+                ? "text-slate-700 bg-white shadow-sm border border-slate-100" 
+                : "text-slate-400 hover:text-slate-500"
             )}
           >
             تركيز الصيانة
@@ -327,49 +321,49 @@ export default function Reports() {
         </div>
       </div>
 
-      {/* SPATIAL PRIORITIZATION LOGIC */}
+      {/* SPATIAL PRIORITIZATION LOGIC - Natural adaptation */}
       {focusMode === 'maintenance' ? (
-        <>
+        <div className="space-y-8">
           {ExecutiveSummary}
           {ContextSummaries}
           {OperationalAttentionPanel}
           {OperationalPanels}
-        </>
+        </div>
       ) : (
-        <>
+        <div className="space-y-8">
           {ExecutiveSummary}
           {OperationalPanels}
           {OperationalAttentionPanel}
           {ContextSummaries}
-        </>
+        </div>
       )}
     </div>
   );
 }
 
-// --- Sub-components for Cleanliness ---
+// --- Sub-components with refined rhythm ---
 
 function SummaryCard({ title, value, icon, loading, highlight, onClick, clickable }: any) {
   return (
     <Card 
       className={cn(
-        "border-slate-200/60 shadow-sm overflow-hidden transition-all duration-200", 
-        highlight && "border-red-100 bg-red-50/30",
-        clickable && "cursor-pointer hover:bg-slate-50/80 dark:hover:bg-slate-800/50 active:scale-[0.98]"
+        "border-slate-100/80 shadow-sm overflow-hidden transition-all duration-200", 
+        highlight && "border-red-50/50 bg-red-50/10",
+        clickable && "cursor-pointer hover:bg-slate-50/50 dark:hover:bg-slate-800/30 active:scale-[0.99]"
       )}
       onClick={onClick}
     >
       <CardContent className="p-5">
         <div className="flex items-center justify-between">
           <div className="space-y-1">
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">{title}</p>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest">{title}</p>
             {loading ? <Skeleton className="h-8 w-16" /> : (
-              <p className={cn("text-2xl font-bold text-slate-900 dark:text-slate-100", highlight && "text-red-600")}>
+              <p className={cn("text-2xl font-bold text-slate-800 dark:text-slate-100", highlight && "text-red-500/90")}>
                 {value}
               </p>
             )}
           </div>
-          <div className="p-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl">
+          <div className="p-2.5 bg-slate-50/50 dark:bg-slate-800 rounded-xl">
             {icon}
           </div>
         </div>
@@ -382,15 +376,15 @@ function OperationalRow({ label, value, onClick, clickable }: { label: string, v
   return (
     <div 
       className={cn(
-        "flex items-center justify-between py-2 px-2 rounded-md transition-colors duration-150",
-        clickable ? "cursor-pointer hover:bg-slate-50/80 dark:hover:bg-slate-800/50" : "border-b border-slate-50 last:border-0"
+        "flex items-center justify-between py-2 px-2.5 rounded-md transition-colors duration-150",
+        clickable ? "cursor-pointer hover:bg-slate-50/50 dark:hover:bg-slate-800/30" : "border-b border-slate-50/30 last:border-0"
       )}
       onClick={onClick}
     >
-      <span className={cn("text-sm", clickable ? "text-slate-900 dark:text-slate-100 font-medium" : "text-slate-600 dark:text-slate-400")}>
+      <span className={cn("text-sm leading-relaxed", clickable ? "text-slate-700 dark:text-slate-100 font-medium" : "text-slate-500 dark:text-slate-400")}>
         {label}
       </span>
-      <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">{value}</span>
+      <span className="text-sm font-semibold text-slate-700 dark:text-slate-100 tabular-nums">{value}</span>
     </div>
   );
 }
@@ -401,24 +395,24 @@ function AttentionRow({ id, ticketNumber, title, createdAt, status, onClick }: a
   return (
     <div 
       onClick={onClick}
-      className="group flex items-center justify-between py-3 px-5 cursor-pointer hover:bg-slate-50/50 transition-colors duration-150"
+      className="group flex items-center justify-between py-3 px-6 cursor-pointer hover:bg-slate-50/30 transition-colors duration-150"
     >
       <div className="flex flex-col min-w-0 flex-1">
-        <div className="flex items-center gap-2 mb-0.5">
-          <span className="text-[10px] font-bold text-slate-400 tabular-nums">{ticketNumber}</span>
-          <h4 className="text-sm font-medium text-slate-700 truncate group-hover:text-slate-900 transition-colors">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-[9px] font-bold text-slate-300 tabular-nums tracking-tight">{ticketNumber}</span>
+          <h4 className="text-sm font-medium text-slate-600 truncate group-hover:text-slate-800 transition-colors leading-snug">
             {title}
           </h4>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-[11px] text-slate-400 flex items-center gap-1">
-            <Clock className="w-3 h-3 opacity-40" />
+          <span className="text-[10px] text-slate-400 flex items-center gap-1 opacity-80">
+            <Clock className="w-2.5 h-2.5 opacity-30" />
             {timeAgo}
           </span>
         </div>
       </div>
       <div className="flex items-center gap-4 ml-4">
-        <span className="text-[10px] font-semibold text-red-500/80 bg-red-50 px-2 py-0.5 rounded-full border border-red-100/50">
+        <span className="text-[9px] font-bold text-red-400/80 bg-red-50/50 px-2 py-0.5 rounded-full border border-red-100/30 uppercase tracking-tighter">
           {status}
         </span>
       </div>
@@ -431,11 +425,11 @@ function ContextSummary({ text, onClick }: { text: string, onClick?: () => void 
     <div 
       onClick={onClick}
       className={cn(
-        "flex items-center gap-2 py-2 px-3 rounded-lg border border-slate-100 bg-slate-50/30 transition-all duration-150",
-        onClick && "cursor-pointer hover:bg-slate-50 hover:border-slate-200"
+        "flex items-center gap-2 py-2.5 px-4 rounded-lg border border-slate-50 bg-slate-50/20 transition-all duration-150",
+        onClick && "cursor-pointer hover:bg-slate-50/50 hover:border-slate-100"
       )}
     >
-      <span className="text-xs text-slate-600 font-medium leading-tight">
+      <span className="text-xs text-slate-500 font-medium leading-relaxed">
         {text}
       </span>
     </div>
@@ -444,12 +438,12 @@ function ContextSummary({ text, onClick }: { text: string, onClick?: () => void 
 
 function SkeletonList() {
   return (
-    <div className="space-y-4">
-      {[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-5 w-full" />)}
+    <div className="space-y-3">
+      {[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-5 w-full opacity-50" />)}
     </div>
   );
 }
 
 function EmptyState() {
-  return <p className="text-xs text-muted-foreground text-center py-8 italic opacity-60">لا توجد بيانات كافية</p>;
+  return <p className="text-xs text-slate-400 text-center py-10 italic opacity-50">لا توجد بيانات كافية</p>;
 }
