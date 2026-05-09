@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { STATUS_COLORS, PRIORITY_COLORS } from "@shared/types";
 import {
   ArrowRight, Clock, User, MapPin, CheckCircle2, Wrench, ShoppingCart,
-  Camera, Loader2, FileText, AlertCircle, ExternalLink, Upload, X, ZoomIn
+  Camera, Loader2, FileText, AlertCircle, ExternalLink, Upload, X, ZoomIn, Download
 } from "lucide-react";
 import { useState, useMemo, useCallback } from "react";
 import { toast } from "sonner";
@@ -86,6 +86,31 @@ export default function TicketDetail() {
   const [showAttachDropZone, setShowAttachDropZone] = useState(false);
   // Lightbox state
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+
+  const handleDownloadPDF = useCallback(async () => {
+    if (!ticket?.id) return;
+    try {
+      setDownloadingPdf(true);
+      const response = await fetch(`/api/tickets/${ticket.id}/pdf`);
+      if (!response.ok) throw new Error("Failed to generate PDF");
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `ticket-${ticket.ticketNumber}-${Date.now()}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      toast.success("تم تحميل التقرير بنجاح");
+    } catch (error) {
+      console.error(error);
+      toast.error("فشل تحميل التقرير");
+    } finally {
+      setDownloadingPdf(false);
+    }
+  }, [ticket?.id, ticket?.ticketNumber]);
 
   const addAttachMut = trpc.attachments.add.useMutation({
     onSuccess: () => { refetch(); },
@@ -190,19 +215,35 @@ export default function TicketDetail() {
   return (
     <>
     <div className="space-y-6 max-w-5xl">
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" size="icon" onClick={() => setLocation("/tickets")}>
-          <ArrowRight className="w-5 h-5" />
-        </Button>
-        <div className="flex-1">
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-sm font-mono text-muted-foreground">{ticket.ticketNumber}</span>
-            <Badge className={`${STATUS_COLORS[ticket.status]}`}>{getStatusLabel(ticket.status)}</Badge>
-            <Badge variant="outline" className={PRIORITY_COLORS[ticket.priority]}>{getPriorityLabel(ticket.priority)}</Badge>
-            <Badge variant="outline">{getCategoryLabel(ticket.category)}</Badge>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 flex-1">
+          <Button variant="ghost" size="icon" onClick={() => setLocation("/tickets")}>
+            <ArrowRight className="w-5 h-5" />
+          </Button>
+          <div className="flex-1">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-sm font-mono text-muted-foreground">{ticket.ticketNumber}</span>
+              <Badge className={`${STATUS_COLORS[ticket.status]}`}>{getStatusLabel(ticket.status)}</Badge>
+              <Badge variant="outline" className={PRIORITY_COLORS[ticket.priority]}>{getPriorityLabel(ticket.priority)}</Badge>
+              <Badge variant="outline">{getCategoryLabel(ticket.category)}</Badge>
+            </div>
+            <h1 className="text-xl font-bold mt-1">{getField(ticket, "title")}</h1>
           </div>
-          <h1 className="text-xl font-bold mt-1">{getField(ticket, "title")}</h1>
         </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleDownloadPDF}
+          disabled={downloadingPdf || !ticket}
+          className="gap-2 shrink-0"
+        >
+          {downloadingPdf ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Download className="w-4 h-4" />
+          )}
+          <span className="hidden sm:inline">تحميل التقرير</span>
+        </Button>
       </div>
 
       <Card>
@@ -816,10 +857,11 @@ export default function TicketDetail() {
               {assignedTo && (
                 <button
                   type="button"
-                  onClick={() => window.print()}
-                  className="mt-1 w-full flex items-center justify-center gap-2 border border-gray-300 rounded-lg px-3 py-2 text-sm font-medium hover:bg-gray-50 transition-colors print:hidden"
+                  onClick={handleDownloadPDF}
+                  disabled={downloadingPdf}
+                  className="mt-1 w-full flex items-center justify-center gap-2 border border-gray-300 rounded-lg px-3 py-2 text-sm font-medium hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  🖨️ طباعة المهمة
+                  {downloadingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : "🖨️"} طباعة المهمة
                 </button>
               )}
               <div className="flex items-center gap-2">
