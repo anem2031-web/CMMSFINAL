@@ -1469,12 +1469,20 @@ export const appRouter = router({
       itemName: z.string().optional(),
       description: z.string().optional(),
       quantity: z.number().optional(),
+      unit: z.string().optional(),
+      photoUrl: z.string().optional(),
+      notes: z.string().optional(),
       estimatedUnitCost: z.string().optional(),
     })).mutation(async ({ input, ctx }) => {
       const po = await db.getPurchaseOrderById(input.purchaseOrderId);
       if (!po) throw new TRPCError({ code: "NOT_FOUND" });
-      if (!['pending_estimate', 'pending_accounting', 'draft'].includes(po.status)) {
+      if (!['pending_estimate', 'pending_accounting', 'draft', 'revision_needed'].includes(po.status)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعديل صنف في طلب معتمد أو ممول" });
+      }
+
+      // Enforce creator-only editing when status is 'revision_needed'
+      if (po.status === 'revision_needed' && po.requestedById !== ctx.user.id) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "فقط منشئ الطلب يمكنه تعديل الأصناف عند طلب المراجعة" });
       }
       const oldItem = await db.getPOItemById(input.id);
       if (!oldItem) throw new TRPCError({ code: "NOT_FOUND" });
@@ -1482,6 +1490,9 @@ export const appRouter = router({
       if (input.itemName !== undefined) updates.itemName = input.itemName;
       if (input.description !== undefined) updates.description = input.description;
       if (input.quantity !== undefined) updates.quantity = input.quantity;
+      if (input.unit !== undefined) updates.unit = input.unit;
+      if (input.photoUrl !== undefined) updates.photoUrl = input.photoUrl;
+      if (input.notes !== undefined) updates.notes = input.notes;
       if (input.estimatedUnitCost !== undefined) {
         updates.estimatedUnitCost = input.estimatedUnitCost;
         updates.estimatedTotalCost = String(parseFloat(input.estimatedUnitCost) * (input.quantity || oldItem.quantity));
@@ -1491,7 +1502,7 @@ export const appRouter = router({
       await db.updatePOItem(input.id, updates);
       await db.createAuditLog({
         userId: ctx.user.id, action: "update", entityType: "purchase_order_item", entityId: input.id,
-        oldValues: { itemName: oldItem.itemName, description: oldItem.description, quantity: oldItem.quantity, estimatedUnitCost: oldItem.estimatedUnitCost },
+        oldValues: { itemName: oldItem.itemName, description: oldItem.description, quantity: oldItem.quantity, unit: oldItem.unit, estimatedUnitCost: oldItem.estimatedUnitCost, photoUrl: oldItem.photoUrl, notes: oldItem.notes },
         newValues: updates,
 
       });

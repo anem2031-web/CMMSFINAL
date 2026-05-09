@@ -100,7 +100,7 @@ export default function PurchaseOrderDetail() {
   const [dropZoneFor, setDropZoneFor] = useState<string | null>(null); // e.g. "123-invoice" or "123-purchased";
   const [receiveData, setReceiveData] = useState<Record<number, { cost: string; supplier: string; supplierItemName: string; warehousePhotoUrl: string }>>({});
   const [editingItem, setEditingItem] = useState<any>(null);
-  const [editForm, setEditForm] = useState<{ itemName: string; description: string; quantity: number; estimatedUnitCost: string }>({ itemName: "", description: "", quantity: 1, estimatedUnitCost: "" });
+  const [editForm, setEditForm] = useState<{ itemName: string; description: string; quantity: number; estimatedUnitCost: string; unit: string; photoUrl: string; notes: string }>({ itemName: "", description: "", quantity: 1, estimatedUnitCost: "", unit: "", photoUrl: "", notes: "" });
   const [reviewDecisions, setReviewDecisions] = useState<Record<number, { action: "approve" | "reject"; delegateId?: number; rejectionReason?: string }>>({});
   const [revisionNote, setRevisionNote] = useState("");
   const [isRevisionDialogOpen, setIsRevisionDialogOpen] = useState(false);
@@ -323,7 +323,7 @@ export default function PurchaseOrderDetail() {
                   {po && ['draft', 'pending_estimate', 'pending_accounting'].includes(po.status) && ['pending', 'estimated'].includes(item.status) && (
                     <Button variant="ghost" size="icon" className="shrink-0 h-8 w-8" onClick={() => {
                       setEditingItem(item);
-                      setEditForm({ itemName: item.itemName, description: item.description || "", quantity: item.quantity, estimatedUnitCost: item.estimatedUnitCost || "" });
+                      setEditForm({ itemName: item.itemName, description: item.description || "", quantity: item.quantity, estimatedUnitCost: item.estimatedUnitCost || "", unit: item.unit || "", photoUrl: item.photoUrl || "", notes: item.notes || "" });
                     }}>
                       <Pencil className="w-3.5 h-3.5 text-muted-foreground" />
                     </Button>
@@ -865,6 +865,18 @@ export default function PurchaseOrderDetail() {
                 <Label>{t.purchaseOrders.estimatedUnitCost}</Label>
                 <Input type="number" step="0.01" value={editForm.estimatedUnitCost} onChange={e => setEditForm(p => ({ ...p, estimatedUnitCost: e.target.value }))} placeholder="0.00" />
               </div>
+              <div className="space-y-2">
+                <Label>{t.purchaseOrders.unit}</Label>
+                <Input value={editForm.unit} onChange={e => setEditForm(p => ({ ...p, unit: e.target.value }))} />
+              </div>
+              <div className="space-y-2">
+                <Label>Photo URL</Label>
+                <Input value={editForm.photoUrl} onChange={e => setEditForm(p => ({ ...p, photoUrl: e.target.value }))} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>{t.common.notes}</Label>
+              <Textarea value={editForm.notes} onChange={e => setEditForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
             </div>
           </div>
           <DialogFooter>
@@ -878,6 +890,9 @@ export default function PurchaseOrderDetail() {
                 description: editForm.description,
                 quantity: editForm.quantity,
                 estimatedUnitCost: editForm.estimatedUnitCost || undefined,
+                unit: editForm.unit || undefined,
+                photoUrl: editForm.photoUrl || undefined,
+                notes: editForm.notes || undefined,
               });
             }} disabled={editItemMut.isPending}>
               {editItemMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : t.common.save}
