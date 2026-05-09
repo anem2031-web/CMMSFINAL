@@ -1,123 +1,209 @@
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, LineChart, Line } from "recharts";
+import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useTranslation } from "@/contexts/LanguageContext";
 import { useStaticLabels } from "@/hooks/useContentTranslation";
-
-const COLORS = ["#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316"];
+import { AlertCircle, CheckCircle2, Clock, Wrench, TrendingUp, BarChart3 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export default function Reports() {
   const { t } = useTranslation();
-  const { getStatusLabel, getPriorityLabel, getCategoryLabel } = useStaticLabels();
+  const { getStatusLabel, getPriorityLabel } = useStaticLabels();
+  
+  // Data Queries
   const { data: byStatus, isLoading: l1 } = trpc.reports.ticketsByStatus.useQuery();
   const { data: byCategory, isLoading: l2 } = trpc.reports.ticketsByCategory.useQuery();
   const { data: byPriority, isLoading: l3 } = trpc.reports.ticketsByPriority.useQuery();
-  const { data: costData, isLoading: l4 } = trpc.reports.costComparison.useQuery();
   const { data: monthly, isLoading: l5 } = trpc.reports.monthlySummary.useQuery();
 
-  const statusData = byStatus?.map(d => ({ name: getStatusLabel(d.status), value: d.count })) || [];
-  const categoryData = byCategory?.map(d => ({ name: getCategoryLabel(d.category), value: d.count })) || [];
-  const priorityData = byPriority?.map(d => ({ name: getPriorityLabel(d.priority), value: d.count })) || [];
+  // Summary Calculations
+  const openTickets = byStatus?.filter(d => d.status !== 'closed' && d.status !== 'cancelled')
+    .reduce((sum, d) => sum + d.count, 0) || 0;
+  
+  const criticalTickets = byPriority?.find(d => d.priority === 'critical')?.count || 0;
+  
+  const currentMonthData = monthly?.[monthly.length - 1];
+  const completedThisMonth = currentMonthData?.closed || 0;
+  const createdThisMonth = currentMonthData?.created || 0;
+
+  // Formatted Data for Tables
+  const statusData = byStatus?.map(d => ({ label: getStatusLabel(d.status), value: d.count })) || [];
+  const priorityData = byPriority?.map(d => ({ label: getPriorityLabel(d.priority), value: d.count })) || [];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between flex-wrap gap-3">
+    <div className="space-y-8 max-w-7xl mx-auto pb-10">
+      {/* Page Header */}
+      <div className="flex items-start justify-between flex-wrap gap-3 px-1">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">{t.reports.title}</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">{t.reports.title}</h1>
           <p className="text-sm text-muted-foreground mt-1">{t.reports.overview}</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
-          <CardHeader><CardTitle className="text-base">{t.reports.ticketsByStatus}</CardTitle></CardHeader>
-          <CardContent>
-            {l1 ? <Skeleton className="h-64 w-full" /> : (
-              <ResponsiveContainer width="100%" height={280}>
-                <PieChart>
-                  <Pie data={statusData} cx="50%" cy="50%" outerRadius={100} dataKey="value" label={({ name, value }) => `${name}: ${value}`} labelLine={false}>
-                    {statusData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
+      {/* 1. EXECUTIVE SUMMARY STRIP */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <SummaryCard 
+          title="البلاغات المفتوحة" 
+          value={openTickets} 
+          icon={<Wrench className="w-5 h-5 text-blue-500" />}
+          loading={l1}
+        />
+        <SummaryCard 
+          title="البلاغات الحرجة" 
+          value={criticalTickets} 
+          icon={<AlertCircle className="w-5 h-5 text-red-500" />}
+          loading={l3}
+          highlight={criticalTickets > 0}
+        />
+        <SummaryCard 
+          title="أنجز هذا الشهر" 
+          value={completedThisMonth} 
+          icon={<CheckCircle2 className="w-5 h-5 text-emerald-500" />}
+          loading={l5}
+        />
+        <SummaryCard 
+          title="بلاغات جديدة (شهر)" 
+          value={createdThisMonth} 
+          icon={<Clock className="w-5 h-5 text-amber-500" />}
+          loading={l5}
+        />
+      </div>
+
+      {/* 2. CALM OPERATIONAL PANELS */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Status Distribution Table */}
+        <Card className="lg:col-span-1 border-slate-200/60 shadow-sm">
+          <CardHeader className="pb-3 border-b border-slate-50">
+            <CardTitle className="text-sm font-medium flex items-center gap-2 text-slate-700">
+              <BarChart3 className="w-4 h-4 text-slate-400" />
+              {t.reports.ticketsByStatus}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4">
+            {l1 ? <SkeletonList /> : (
+              <div className="space-y-3">
+                {statusData.length > 0 ? statusData.map((item, i) => (
+                  <OperationalRow key={i} label={item.label} value={item.value} />
+                )) : <EmptyState />}
+              </div>
             )}
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader><CardTitle className="text-base">{t.reports.ticketsByCategory}</CardTitle></CardHeader>
-          <CardContent>
-            {l2 ? <Skeleton className="h-64 w-full" /> : (
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={categoryData} layout="vertical">
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis type="number" />
-                  <YAxis dataKey="name" type="category" width={80} tick={{ fontSize: 12 }} />
-                  <Tooltip />
-                  <Bar dataKey="value" fill="#0ea5e9" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+        {/* Priority Distribution Table */}
+        <Card className="lg:col-span-1 border-slate-200/60 shadow-sm">
+          <CardHeader className="pb-3 border-b border-slate-50">
+            <CardTitle className="text-sm font-medium flex items-center gap-2 text-slate-700">
+              <AlertCircle className="w-4 h-4 text-slate-400" />
+              {t.reports.ticketsByPriority}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4">
+            {l3 ? <SkeletonList /> : (
+              <div className="space-y-3">
+                {priorityData.length > 0 ? priorityData.map((item, i) => (
+                  <OperationalRow key={i} label={item.label} value={item.value} />
+                )) : <EmptyState />}
+              </div>
             )}
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader><CardTitle className="text-base">{t.reports.ticketsByPriority}</CardTitle></CardHeader>
-          <CardContent>
-            {l3 ? <Skeleton className="h-64 w-full" /> : (
-              <ResponsiveContainer width="100%" height={280}>
-                <PieChart>
-                  <Pie data={priorityData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} dataKey="value" label>
-                    {priorityData.map((_, i) => <Cell key={i} fill={["#10b981", "#f59e0b", "#f97316", "#ef4444"][i] || COLORS[i]} />)}
-                  </Pie>
-                  <Tooltip />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader><CardTitle className="text-base">{t.reports.comparison}</CardTitle></CardHeader>
-          <CardContent>
-            {l4 ? <Skeleton className="h-64 w-full" /> : costData && costData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={costData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="poNumber" tick={{ fontSize: 10 }} />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Bar dataKey="estimated" name={t.purchaseOrders.totalEstimated} fill="#f59e0b" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="actual" name={t.purchaseOrders.totalActual} fill="#10b981" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : <p className="text-sm text-muted-foreground text-center py-12">{t.common.noData}</p>}
-          </CardContent>
-        </Card>
-
-        <Card className="lg:col-span-2">
-          <CardHeader><CardTitle className="text-base">{t.reports.monthlyTrend}</CardTitle></CardHeader>
-          <CardContent>
-            {l5 ? <Skeleton className="h-64 w-full" /> : monthly && monthly.length > 0 ? (
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={monthly}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Line type="monotone" dataKey="created" name={t.reports.completionRate} stroke="#0ea5e9" strokeWidth={2} dot={{ r: 4 }} />
-                  <Line type="monotone" dataKey="closed" name={t.reports.completed} stroke="#10b981" strokeWidth={2} dot={{ r: 4 }} />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : <p className="text-sm text-muted-foreground text-center py-12">{t.common.noData}</p>}
+        {/* 3. SIMPLIFIED VISUAL HIERARCHY - Monthly Operational Trend */}
+        <Card className="lg:col-span-1 border-slate-200/60 shadow-sm">
+          <CardHeader className="pb-3 border-b border-slate-50">
+            <CardTitle className="text-sm font-medium flex items-center gap-2 text-slate-700">
+              <TrendingUp className="w-4 h-4 text-slate-400" />
+              {t.reports.monthlyTrend}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-6">
+            {l5 ? <Skeleton className="h-40 w-full" /> : monthly && monthly.length > 0 ? (
+              <div className="h-40 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={monthly} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis 
+                      dataKey="month" 
+                      hide={false} 
+                      axisLine={false} 
+                      tickLine={false} 
+                      tick={{ fontSize: 10, fill: '#94a3b8' }}
+                      dy={10}
+                    />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                    <Tooltip 
+                      contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.05)', fontSize: '12px' }}
+                    />
+                    <Line 
+                      type="monotone" 
+                      dataKey="created" 
+                      stroke="#94a3b8" 
+                      strokeWidth={1.5} 
+                      dot={false} 
+                      activeDot={{ r: 4, strokeWidth: 0 }} 
+                    />
+                    <Line 
+                      type="monotone" 
+                      dataKey="closed" 
+                      stroke="#10b981" 
+                      strokeWidth={2} 
+                      dot={false} 
+                      activeDot={{ r: 4, strokeWidth: 0 }} 
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            ) : <EmptyState />}
           </CardContent>
         </Card>
       </div>
     </div>
   );
+}
+
+// --- Sub-components for Cleanliness ---
+
+function SummaryCard({ title, value, icon, loading, highlight }: any) {
+  return (
+    <Card className={cn("border-slate-200/60 shadow-sm overflow-hidden", highlight && "border-red-100 bg-red-50/30")}>
+      <CardContent className="p-5">
+        <div className="flex items-center justify-between">
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">{title}</p>
+            {loading ? <Skeleton className="h-8 w-16" /> : (
+              <p className={cn("text-2xl font-bold text-slate-900 dark:text-slate-100", highlight && "text-red-600")}>
+                {value}
+              </p>
+            )}
+          </div>
+          <div className="p-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl">
+            {icon}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function OperationalRow({ label, value }: { label: string, value: number }) {
+  return (
+    <div className="flex items-center justify-between py-1 border-b border-slate-50 last:border-0">
+      <span className="text-sm text-slate-600 dark:text-slate-400">{label}</span>
+      <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">{value}</span>
+    </div>
+  );
+}
+
+function SkeletonList() {
+  return (
+    <div className="space-y-4">
+      {[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-5 w-full" />)}
+    </div>
+  );
+}
+
+function EmptyState() {
+  return <p className="text-xs text-muted-foreground text-center py-8 italic opacity-60">لا توجد بيانات كافية</p>;
 }
