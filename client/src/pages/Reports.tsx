@@ -4,9 +4,11 @@ import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, L
 import { Skeleton } from "@/components/ui/skeleton";
 import { useTranslation } from "@/contexts/LanguageContext";
 import { useStaticLabels } from "@/hooks/useContentTranslation";
-import { AlertCircle, CheckCircle2, Clock, Wrench, TrendingUp, BarChart3 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Clock, Wrench, TrendingUp, BarChart3, ListFilter } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLocation } from "wouter";
+import { formatDistanceToNow } from "date-fns";
+import { ar } from "date-fns/locale";
 
 export default function Reports() {
   const { t } = useTranslation();
@@ -15,21 +17,25 @@ export default function Reports() {
   
   // Data Queries
   const { data: byStatus, isLoading: l1 } = trpc.reports.ticketsByStatus.useQuery();
-  const { data: byCategory, isLoading: l2 } = trpc.reports.ticketsByCategory.useQuery();
   const { data: byPriority, isLoading: l3 } = trpc.reports.ticketsByPriority.useQuery();
   const { data: monthly, isLoading: l5 } = trpc.reports.monthlySummary.useQuery();
+  
+  // Phase 2A: Fetch only critical tickets for attention panel
+  const { data: criticalList, isLoading: lCritical } = trpc.tickets.list.useQuery({ 
+    priority: 'critical' 
+  });
 
   // Summary Calculations
   const openTickets = byStatus?.filter(d => d.status !== 'closed' && d.status !== 'cancelled')
     .reduce((sum, d) => sum + d.count, 0) || 0;
   
-  const criticalTickets = byPriority?.find(d => d.priority === 'critical')?.count || 0;
+  const criticalCount = byPriority?.find(d => d.priority === 'critical')?.count || 0;
   
   const currentMonthData = monthly?.[monthly.length - 1];
   const completedThisMonth = currentMonthData?.closed || 0;
   const createdThisMonth = currentMonthData?.created || 0;
 
-  // Formatted Data for Tables - Preserve original keys for stable interaction logic
+  // Formatted Data for Tables
   const statusData = byStatus?.map(d => ({ 
     key: d.status, 
     label: getStatusLabel(d.status), 
@@ -41,6 +47,9 @@ export default function Reports() {
     label: getPriorityLabel(d.priority), 
     value: d.count 
   })) || [];
+
+  // Limit critical tickets to 5 max
+  const topCriticalTickets = criticalList?.slice(0, 5) || [];
 
   return (
     <div className="space-y-8 max-w-7xl mx-auto pb-10">
@@ -64,10 +73,10 @@ export default function Reports() {
         />
         <SummaryCard 
           title="البلاغات الحرجة" 
-          value={criticalTickets} 
+          value={criticalCount} 
           icon={<AlertCircle className="w-5 h-5 text-red-500" />}
           loading={l3}
-          highlight={criticalTickets > 0}
+          highlight={criticalCount > 0}
           onClick={() => setLocation('/tickets?priority=critical')}
           clickable
         />
@@ -103,7 +112,7 @@ export default function Reports() {
                     key={i} 
                     label={item.label} 
                     value={item.value} 
-                    clickable={item.key === 'new' || item.key === 'assigned' || item.key === 'in_progress'} // Any 'open' status
+                    clickable={item.key === 'new' || item.key === 'assigned' || item.key === 'in_progress'}
                     onClick={item.key === 'new' || item.key === 'assigned' || item.key === 'in_progress' ? () => setLocation('/tickets?status=open') : undefined}
                   />
                 )) : <EmptyState />}
@@ -186,6 +195,49 @@ export default function Reports() {
           </CardContent>
         </Card>
       </div>
+
+      {/* PHASE 2A: OPERATIONAL ATTENTION PANEL - Critical Tickets Only */}
+      <Card className="border-slate-200/60 shadow-sm">
+        <CardHeader className="pb-3 border-b border-slate-50 flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="text-sm font-semibold flex items-center gap-2 text-slate-800">
+            <ListFilter className="w-4 h-4 text-red-500" />
+            لوحة الانتباه التشغيلي: بلاغات حرجة
+          </CardTitle>
+          {criticalCount > 5 && (
+            <button 
+              onClick={() => setLocation('/tickets?priority=critical')}
+              className="text-[10px] font-medium text-slate-400 hover:text-slate-600 uppercase tracking-tighter"
+            >
+              عرض الكل ({criticalCount})
+            </button>
+          )}
+        </CardHeader>
+        <CardContent className="pt-2 px-0">
+          {lCritical ? (
+            <div className="p-4 space-y-3">
+              {[1, 2, 3].map(i => <Skeleton key={i} className="h-10 w-full" />)}
+            </div>
+          ) : topCriticalTickets.length > 0 ? (
+            <div className="divide-y divide-slate-50">
+              {topCriticalTickets.map((ticket) => (
+                <AttentionRow 
+                  key={ticket.id}
+                  id={ticket.id}
+                  ticketNumber={ticket.ticketNumber}
+                  title={ticket.title}
+                  createdAt={ticket.createdAt}
+                  status={getStatusLabel(ticket.status)}
+                  onClick={() => setLocation(`/tickets/${ticket.id}`)}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="py-10 text-center">
+              <p className="text-xs text-muted-foreground italic opacity-60">لا توجد بلاغات حرجة حالياً</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -234,6 +286,37 @@ function OperationalRow({ label, value, onClick, clickable }: { label: string, v
         {label}
       </span>
       <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">{value}</span>
+    </div>
+  );
+}
+
+function AttentionRow({ id, ticketNumber, title, createdAt, status, onClick }: any) {
+  const timeAgo = formatDistanceToNow(new Date(createdAt), { addSuffix: true, locale: ar });
+  
+  return (
+    <div 
+      onClick={onClick}
+      className="group flex items-center justify-between py-3 px-5 cursor-pointer hover:bg-slate-50/50 transition-colors duration-150"
+    >
+      <div className="flex flex-col min-w-0 flex-1">
+        <div className="flex items-center gap-2 mb-0.5">
+          <span className="text-[10px] font-bold text-slate-400 tabular-nums">{ticketNumber}</span>
+          <h4 className="text-sm font-medium text-slate-700 truncate group-hover:text-slate-900 transition-colors">
+            {title}
+          </h4>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-[11px] text-slate-400 flex items-center gap-1">
+            <Clock className="w-3 h-3 opacity-40" />
+            {timeAgo}
+          </span>
+        </div>
+      </div>
+      <div className="flex items-center gap-4 ml-4">
+        <span className="text-[10px] font-semibold text-red-500/80 bg-red-50 px-2 py-0.5 rounded-full border border-red-100/50">
+          {status}
+        </span>
+      </div>
     </div>
   );
 }
