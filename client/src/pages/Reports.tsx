@@ -29,9 +29,18 @@ export default function Reports() {
   const completedThisMonth = currentMonthData?.closed || 0;
   const createdThisMonth = currentMonthData?.created || 0;
 
-  // Formatted Data for Tables
-  const statusData = byStatus?.map(d => ({ label: getStatusLabel(d.status), value: d.count })) || [];
-  const priorityData = byPriority?.map(d => ({ label: getPriorityLabel(d.priority), value: d.count })) || [];
+  // Formatted Data for Tables - Preserve original keys for stable interaction logic
+  const statusData = byStatus?.map(d => ({ 
+    key: d.status, 
+    label: getStatusLabel(d.status), 
+    value: d.count 
+  })) || [];
+
+  const priorityData = byPriority?.map(d => ({ 
+    key: d.priority, 
+    label: getPriorityLabel(d.priority), 
+    value: d.count 
+  })) || [];
 
   return (
     <div className="space-y-8 max-w-7xl mx-auto pb-10">
@@ -88,9 +97,15 @@ export default function Reports() {
           </CardHeader>
           <CardContent className="pt-4">
             {l1 ? <SkeletonList /> : (
-              <div className="space-y-3">
+              <div className="space-y-1">
                 {statusData.length > 0 ? statusData.map((item, i) => (
-                  <OperationalRow key={i} label={item.label} value={item.value} />
+                  <OperationalRow 
+                    key={i} 
+                    label={item.label} 
+                    value={item.value} 
+                    clickable={item.key === 'new' || item.key === 'assigned' || item.key === 'in_progress'} // Any 'open' status
+                    onClick={item.key === 'new' || item.key === 'assigned' || item.key === 'in_progress' ? () => setLocation('/tickets?status=open') : undefined}
+                  />
                 )) : <EmptyState />}
               </div>
             )}
@@ -107,9 +122,15 @@ export default function Reports() {
           </CardHeader>
           <CardContent className="pt-4">
             {l3 ? <SkeletonList /> : (
-              <div className="space-y-3">
+              <div className="space-y-1">
                 {priorityData.length > 0 ? priorityData.map((item, i) => (
-                  <OperationalRow key={i} label={item.label} value={item.value} />
+                  <OperationalRow 
+                    key={i} 
+                    label={item.label} 
+                    value={item.value} 
+                    clickable={item.key === 'critical'}
+                    onClick={item.key === 'critical' ? () => setLocation('/tickets?priority=critical') : undefined}
+                  />
                 )) : <EmptyState />}
               </div>
             )}
@@ -200,10 +221,18 @@ function SummaryCard({ title, value, icon, loading, highlight, onClick, clickabl
   );
 }
 
-function OperationalRow({ label, value }: { label: string, value: number }) {
+function OperationalRow({ label, value, onClick, clickable }: { label: string, value: number, onClick?: () => void, clickable?: boolean }) {
   return (
-    <div className="flex items-center justify-between py-1 border-b border-slate-50 last:border-0">
-      <span className="text-sm text-slate-600 dark:text-slate-400">{label}</span>
+    <div 
+      className={cn(
+        "flex items-center justify-between py-2 px-2 rounded-md transition-colors duration-150",
+        clickable ? "cursor-pointer hover:bg-slate-50/80 dark:hover:bg-slate-800/50" : "border-b border-slate-50 last:border-0"
+      )}
+      onClick={onClick}
+    >
+      <span className={cn("text-sm", clickable ? "text-slate-900 dark:text-slate-100 font-medium" : "text-slate-600 dark:text-slate-400")}>
+        {label}
+      </span>
       <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">{value}</span>
     </div>
   );
