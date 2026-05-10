@@ -6,7 +6,7 @@ module.exports = {
     env: {
       NODE_ENV: 'production',
       PORT: 8080,
-      DATABASE_URL: 'mysql://3UmgapDHiQE9iXi.56f75e8cce98:92uuM3DmiG8CM72TDSBC@gateway03.us-east-1.prod.aws.tidbcloud.com:4000/iLVeDbY8mxvY5mUVofWZbE?ssl={"rejectUnauthorized":true}',
+      DATABASE_URL: 'mysql://4QLyZNrgTT18fMs.root:P4U13RrqYbofEO2y@gateway01.ap-southeast-1.prod.aws.tidbcloud.com:4000/cmms?ssl={"rejectUnauthorized":true}',
       JWT_SECRET: 'cmms-super-secret-jwt-key-2026',
       VITE_APP_ID: 'cmms-app',
       OAUTH_SERVER_URL: 'http://localhost:8080',
