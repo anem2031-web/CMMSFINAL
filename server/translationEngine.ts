@@ -162,7 +162,7 @@ ${context ? `Context: ${context}` : ""}`;
     }
     throw new Error("No translation content in LLM response");
   } catch (error: any) {
-    console.error(`[TranslationEngine] LLM translation failed: ${error.message}`);
+
     throw error;
   }
 }
@@ -177,7 +177,10 @@ ${context ? `Context: ${context}` : ""}`;
  */
 export async function queueTranslation(request: TranslationRequest): Promise<number[]> {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) {
+    console.error("[TranslationEngine] Failed to get database connection for queueTranslation. Job aborted.");
+    return [];
+  }
 
   const targetLangs = request.targetLanguages ||
     supportedLanguages.filter(l => l !== request.sourceLanguage);
@@ -261,7 +264,7 @@ export async function queueTranslation(request: TranslationRequest): Promise<num
   // Process jobs asynchronously (fire and forget)
   if (jobIds.length > 0) {
     processTranslationJobs(jobIds).catch(err =>
-      console.error("[TranslationEngine] Background job processing error:", err)
+      console.error("[TranslationEngine] Background job processing error for jobIds:", jobIds, err)
     );
   }
 
@@ -273,7 +276,10 @@ export async function queueTranslation(request: TranslationRequest): Promise<num
  */
 async function processTranslationJobs(jobIds: number[]): Promise<void> {
   const db = await getDb();
-  if (!db) return;
+  if (!db) {
+    console.error("[TranslationEngine] Failed to get database connection for processTranslationJobs. Job aborted.");
+    return;
+  }
 
   for (const jobId of jobIds) {
     try {
@@ -498,7 +504,10 @@ export async function manualOverrideTranslation(
   userId: number
 ): Promise<void> {
   const db = await getDb();
-  if (!db) return;
+  if (!db) {
+    console.error("[TranslationEngine] Failed to get database connection for processTranslationJobs. Job aborted.");
+    return;
+  }
 
   const [existing] = await db.select().from(entityTranslations).where(
     and(
@@ -577,7 +586,10 @@ export async function getTranslationVersions(
   languageCode: SupportedLanguage
 ) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) {
+    console.error("[TranslationEngine] Failed to get database connection for queueTranslation. Job aborted.");
+    return [];
+  }
 
   const [etRecord] = await db.select().from(entityTranslations).where(
     and(
@@ -706,7 +718,10 @@ export async function getTranslationJobsList(filters?: {
   limit?: number;
 }) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) {
+    console.error("[TranslationEngine] Failed to get database connection for queueTranslation. Job aborted.");
+    return [];
+  }
 
   const conditions: any[] = [];
   if (filters?.status) conditions.push(eq(translationJobs.status, filters.status as any));
@@ -724,7 +739,10 @@ export async function getTranslationJobsList(filters?: {
  */
 export async function updateUserLanguage(userId: number, language: SupportedLanguage) {
   const db = await getDb();
-  if (!db) return;
+  if (!db) {
+    console.error("[TranslationEngine] Failed to get database connection for processTranslationJobs. Job aborted.");
+    return;
+  }
   const { users } = await import("../drizzle/schema");
   await db.update(users).set({ preferredLanguage: language }).where(eq(users.id, userId));
 }
