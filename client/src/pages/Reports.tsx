@@ -25,9 +25,9 @@ export default function Reports() {
   const { data: monthly, isLoading: l5 } = trpc.reports.monthlySummary.useQuery();
   const { data: byCategory } = trpc.reports.ticketsByCategory.useQuery();
 
-  // PHASE 5A: Cross-module operational awareness (Ticket-Procurement dependencies)
-  const { data: poList } = trpc.purchaseOrders.list.useQuery();
-  
+  // Phase 5B: Ambient Operational Procurement Awareness - Material Pending Tickets
+  const { data: needsPurchaseTickets } = trpc.tickets.list.useQuery({ status: 'needs_purchase' });
+
   // Phase 2A: Fetch only critical tickets for attention panel
   const { data: criticalList, isLoading: lCritical } = trpc.tickets.list.useQuery({ 
     priority: 'critical' 
@@ -69,15 +69,6 @@ export default function Reports() {
   // PHASE 3B: Micro Operational Interpretation Logic
   const criticalAwaitingAssignment = criticalList?.filter(t => t.status === 'new').length || 0;
   const topCategory = byCategory?.sort((a, b) => b.count - a.count)[0];
-
-  // PHASE 5A: Dependency Logic (Outcome-Oriented)
-  const criticalBlockedByMaterials = criticalList?.filter(t => 
-    ['needs_purchase', 'purchase_pending_estimate', 'purchase_pending_accounting', 'purchase_pending_management', 'purchase_approved', 'partial_purchase'].includes(t.status)
-  ).length || 0;
-
-  const poAffectingMaintenance = poList?.filter(po => 
-    po.ticketId && !['received', 'closed', 'cancelled'].includes(po.status)
-  ).length || 0;
 
   // Components as variables for spatial reordering
   const ExecutiveSummary = (
@@ -146,16 +137,9 @@ export default function Reports() {
             أعلى عدد من البلاغات الجديدة حالياً في فئة {topCategory.category}.
           </p>
         )}
-
-        {/* PHASE 5A: Dependency Whispers (Informational Only) */}
-        {criticalBlockedByMaterials > 0 && (
-          <p className="text-[11px] text-slate-400/80 leading-relaxed italic">
-            {criticalBlockedByMaterials} بلاغات حرجة مرتبطة بمواد غير متوفرة حالياً.
-          </p>
-        )}
-        {poAffectingMaintenance > 0 && (
-          <p className="text-[11px] text-slate-400/80 leading-relaxed italic">
-            {poAffectingMaintenance > 1 ? `${poAffectingMaintenance} طلبات شراء تؤثر` : 'طلب شراء واحد يؤثر'} حالياً على أعمال صيانة مفتوحة.
+        {needsPurchaseTickets && needsPurchaseTickets.length > 0 && (
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            {needsPurchaseTickets.length} عمل ينتظر مواد.
           </p>
         )}
       </div>
@@ -266,39 +250,45 @@ export default function Reports() {
             {t.reports.monthlyTrend}
           </CardTitle>
         </CardHeader>
-        <CardContent className="pt-6 px-4 pb-6">
+        <CardContent className="pt-6 px-4 pb-5">
           {l5 ? <Skeleton className="h-40 w-full" /> : monthly && monthly.length > 0 ? (
             <div className="h-40 w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={monthly} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f8fafc" />
+                <LineChart data={monthly}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                   <XAxis 
                     dataKey="month" 
-                    hide={false} 
                     axisLine={false} 
                     tickLine={false} 
-                    tick={{ fontSize: 10, fill: '#cbd5e1' }}
+                    tick={{fontSize: 10, fill: '#94a3b8'}}
                     dy={10}
                   />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#cbd5e1' }} />
-                  <Tooltip 
-                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.03)', fontSize: '11px' }}
+                  <YAxis 
+                    axisLine={false} 
+                    tickLine={false} 
+                    tick={{fontSize: 10, fill: '#94a3b8'}}
                   />
-                  <Line 
-                    type="monotone" 
-                    dataKey="created" 
-                    stroke="#cbd5e1" 
-                    strokeWidth={1} 
-                    dot={false} 
-                    activeDot={{ r: 3, strokeWidth: 0 }} 
+                  <Tooltip 
+                    contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.05)'}}
+                    labelStyle={{fontWeight: 'bold', marginBottom: '4px'}}
                   />
                   <Line 
                     type="monotone" 
                     dataKey="closed" 
+                    name={t.reports.completed}
                     stroke="#10b981" 
-                    strokeWidth={1.5} 
-                    dot={false} 
-                    activeDot={{ r: 3, strokeWidth: 0 }} 
+                    strokeWidth={2} 
+                    dot={{r: 4, fill: '#10b981', strokeWidth: 2, stroke: '#fff'}}
+                    activeDot={{r: 6}}
+                  />
+                  <Line 
+                    type="monotone" 
+                    dataKey="created" 
+                    name={t.reports.new}
+                    stroke="#3b82f6" 
+                    strokeWidth={2} 
+                    dot={{r: 4, fill: '#3b82f6', strokeWidth: 2, stroke: '#fff'}}
+                    activeDot={{r: 6}}
                   />
                 </LineChart>
               </ResponsiveContainer>
@@ -310,152 +300,128 @@ export default function Reports() {
   );
 
   return (
-    <div className="space-y-8 max-w-7xl mx-auto pb-12 px-4 md:px-6">
-      {/* Page Header */}
-      <div className="flex items-start justify-between flex-wrap gap-4 pt-2">
+    <div className="space-y-8 pb-12 animate-in fade-in duration-700">
+      {/* Header Section with calm focus toggle */}
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-slate-100 pb-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-800 dark:text-slate-100">{t.reports.title}</h1>
-          <p className="text-sm text-slate-400 mt-1">{t.reports.overview}</p>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">{t.reports.title}</h1>
+          <p className="text-slate-500 text-sm mt-1">{t.reports.subtitle}</p>
         </div>
-
-        {/* PHASE 3A: Minimalist Focus Selector */}
-        <div className="flex items-center gap-1 bg-slate-50/80 dark:bg-slate-900/50 p-1 rounded-lg border border-slate-100/50">
+        
+        <div className="flex bg-slate-100/50 p-1 rounded-lg self-start md:self-auto">
           <button 
             onClick={() => setFocusMode('general')}
             className={cn(
-              "text-[10px] uppercase tracking-wider font-semibold px-3 py-1.5 rounded-md transition-all duration-200",
-              focusMode === 'general' 
-                ? "text-slate-700 bg-white shadow-sm border border-slate-100" 
-                : "text-slate-400 hover:text-slate-500"
+              "px-4 py-1.5 text-xs font-medium rounded-md transition-all duration-200",
+              focusMode === 'general' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
             )}
           >
-            عمليات عامة
+            نظرة عامة
           </button>
           <button 
             onClick={() => setFocusMode('maintenance')}
             className={cn(
-              "text-[10px] uppercase tracking-wider font-semibold px-3 py-1.5 rounded-md transition-all duration-200",
-              focusMode === 'maintenance' 
-                ? "text-slate-700 bg-white shadow-sm border border-slate-100" 
-                : "text-slate-400 hover:text-slate-500"
+              "px-4 py-1.5 text-xs font-medium rounded-md transition-all duration-200",
+              focusMode === 'maintenance' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
             )}
           >
-            تركيز الصيانة
+            الأداء التشغيلي
           </button>
         </div>
       </div>
 
-      {/* SPATIAL PRIORITIZATION LOGIC - Natural adaptation */}
-      {focusMode === 'maintenance' ? (
-        <div className="space-y-8">
-          {ExecutiveSummary}
-          {ContextSummaries}
-          {OperationalAttentionPanel}
-          {OperationalPanels}
-        </div>
-      ) : (
-        <div className="space-y-8">
-          {ExecutiveSummary}
-          {OperationalPanels}
-          {OperationalAttentionPanel}
+      {ExecutiveSummary}
+      
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 items-start">
+        <div className="xl:col-span-4 space-y-6">
           {ContextSummaries}
         </div>
-      )}
+        
+        <div className="xl:col-span-8">
+          {OperationalAttentionPanel}
+        </div>
+      </div>
+
+      {OperationalPanels}
     </div>
   );
 }
 
-// --- Sub-components with natural operational rhythm ---
-
+// Minimalistic Sub-components for visual consistency
 function SummaryCard({ title, value, icon, loading, highlight, onClick, clickable }: any) {
   return (
     <Card 
       className={cn(
-        "border-slate-100/80 shadow-sm overflow-hidden transition-all duration-200", 
-        highlight && "border-red-50/50 bg-red-50/10",
-        clickable && "cursor-pointer hover:bg-slate-50/50 dark:hover:bg-slate-800/30 active:scale-[0.99]"
+        "border-slate-200/60 shadow-sm transition-all duration-300",
+        highlight && "border-red-100 bg-red-50/30",
+        clickable && "cursor-pointer hover:border-slate-300 hover:shadow-md active:scale-[0.98]"
       )}
       onClick={onClick}
     >
       <CardContent className="p-5">
         <div className="flex items-center justify-between">
-          <div className="space-y-1">
-            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest">{title}</p>
-            {loading ? <Skeleton className="h-8 w-16" /> : (
-              <p className={cn("text-2xl font-bold text-slate-800 dark:text-slate-100 tabular-nums", highlight && "text-red-500/90")}>
-                {value}
-              </p>
-            )}
-          </div>
-          <div className="p-2.5 bg-slate-50/50 dark:bg-slate-800 rounded-xl">
-            {icon}
-          </div>
+          <div className="bg-slate-50 p-2 rounded-lg">{icon}</div>
+          {loading ? <Skeleton className="h-8 w-12" /> : (
+            <span className={cn(
+              "text-2xl font-bold tracking-tight",
+              highlight ? "text-red-600" : "text-slate-900"
+            )}>
+              {value}
+            </span>
+          )}
         </div>
+        <p className="text-xs font-medium text-slate-500 mt-3">{title}</p>
       </CardContent>
     </Card>
   );
 }
 
-function OperationalRow({ label, value, onClick, clickable }: { label: string, value: number, onClick?: () => void, clickable?: boolean }) {
+function ContextSummary({ text, onClick }: { text: string, onClick: () => void }) {
   return (
     <div 
-      className={cn(
-        "flex items-center justify-between py-2 px-2.5 rounded-md transition-colors duration-150",
-        clickable ? "cursor-pointer hover:bg-slate-50/50 dark:hover:bg-slate-800/30" : "border-b border-slate-50/30 last:border-0"
-      )}
       onClick={onClick}
+      className="flex items-center gap-3 p-3 rounded-xl bg-slate-50/50 border border-slate-100/50 cursor-pointer hover:bg-slate-100/80 transition-all duration-200 group"
     >
-      <span className={cn("text-sm leading-relaxed", clickable ? "text-slate-700 dark:text-slate-100 font-medium" : "text-slate-500 dark:text-slate-400")}>
-        {label}
-      </span>
-      <span className="text-sm font-semibold text-slate-700 dark:text-slate-100 tabular-nums">{value}</span>
+      <div className="w-1.5 h-1.5 rounded-full bg-slate-300 group-hover:bg-slate-400 transition-colors" />
+      <span className="text-[11px] font-medium text-slate-600 group-hover:text-slate-900 transition-colors">{text}</span>
     </div>
   );
 }
 
 function AttentionRow({ id, ticketNumber, title, createdAt, status, onClick }: any) {
-  const timeAgo = formatDistanceToNow(new Date(createdAt), { addSuffix: true, locale: ar });
-  
   return (
     <div 
       onClick={onClick}
-      className="group flex items-center justify-between py-3 px-6 cursor-pointer hover:bg-slate-50/30 transition-colors duration-150"
+      className="group flex items-center justify-between p-4 hover:bg-slate-50/50 cursor-pointer transition-colors"
     >
-      <div className="flex flex-col min-w-0 flex-1">
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-[9px] font-bold text-slate-300 tabular-nums tracking-tight">{ticketNumber}</span>
-          <h4 className="text-sm font-medium text-slate-600 truncate group-hover:text-slate-800 transition-colors leading-snug">
-            {title}
-          </h4>
+      <div className="flex flex-col gap-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-bold text-slate-400 tabular-nums">#{ticketNumber}</span>
+          <h3 className="text-xs font-semibold text-slate-800 truncate group-hover:text-blue-600 transition-colors">{title}</h3>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-[10px] text-slate-400 flex items-center gap-1 opacity-80">
-            <Clock className="w-2.5 h-2.5 opacity-30" />
-            {timeAgo}
-          </span>
-        </div>
+        <span className="text-[10px] text-slate-400">{formatDistanceToNow(new Date(createdAt), { addSuffix: true, locale: ar })}</span>
       </div>
-      <div className="flex items-center gap-4 ml-4">
-        <span className="text-[9px] font-bold text-red-400/80 bg-red-50/50 px-2 py-0.5 rounded-full border border-red-100/30 uppercase tracking-tighter tabular-nums">
-          {status}
-        </span>
+      <div className="flex items-center gap-3">
+        <span className="px-2 py-0.5 rounded-full bg-slate-100 text-[9px] font-bold text-slate-500 uppercase tracking-wider">{status}</span>
       </div>
     </div>
   );
 }
 
-function ContextSummary({ text, onClick }: { text: string, onClick?: () => void }) {
+function OperationalRow({ label, value, clickable, onClick }: any) {
   return (
     <div 
       onClick={onClick}
       className={cn(
-        "flex items-center gap-2 py-2.5 px-4 rounded-lg border border-slate-50 bg-slate-50/20 transition-all duration-150",
-        onClick && "cursor-pointer hover:bg-slate-50/50 hover:border-slate-100"
+        "flex items-center justify-between py-2.5 px-2 rounded-lg transition-colors",
+        clickable ? "cursor-pointer hover:bg-slate-50 group" : ""
       )}
     >
-      <span className="text-xs text-slate-500 font-medium leading-relaxed">
-        {text}
-      </span>
+      <span className={cn(
+        "text-xs text-slate-600",
+        clickable && "group-hover:text-slate-900 font-medium"
+      )}>{label}</span>
+      <span className="text-xs font-bold text-slate-900 tabular-nums">{value}</span>
     </div>
   );
 }
@@ -463,11 +429,15 @@ function ContextSummary({ text, onClick }: { text: string, onClick?: () => void 
 function SkeletonList() {
   return (
     <div className="space-y-3">
-      {[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-5 w-full opacity-50" />)}
+      {[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-8 w-full" />)}
     </div>
   );
 }
 
 function EmptyState() {
-  return <p className="text-xs text-slate-400 text-center py-10 italic opacity-50">لا توجد بيانات كافية</p>;
+  return (
+    <div className="py-6 text-center">
+      <p className="text-[10px] text-slate-400 italic">لا توجد بيانات متوفرة</p>
+    </div>
+  );
 }
