@@ -14,7 +14,10 @@ let _backupCleanupRunning = false;
 
 async function _runBackupCleanupJobCore() {
   const db = await getDb();
-  if (!db) return;
+  if (!db) {
+    console.error("[BackupCleanup] Failed to get database connection. Job aborted.");
+    return;
+  }
 
   const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
 

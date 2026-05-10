@@ -11,7 +11,10 @@ let _slaOverduePushRunning = false;
 
 async function _runSlaOverduePushJobCore() {
   const db = await getDb();
-  if (!db) return;
+  if (!db) {
+    console.error("[SlaOverduePush] Failed to get database connection. Job aborted.");
+    return;
+  }
 
   const now = Date.now();
   const cutoffMs = now - SLA_HOURS * 60 * 60 * 1000;
@@ -56,7 +59,7 @@ async function _runSlaOverduePushJobCore() {
         });
         notifiedCount++;
       } catch (e) {
-        // المستخدم لا يملك push subscription - تجاهل
+        console.warn(`[SlaOverduePush] Push notification failed for WO ${order.workOrderNumber}:`, e);
       }
     }
   }
@@ -69,10 +72,14 @@ async function _runSlaOverduePushJobCore() {
     })
     .join("\n");
 
-  await notifyOwner({
-    title: `🔴 تنبيه SLA: ${overdueOrders.length} أمر عمل وقائي تجاوز 48 ساعة`,
-    content: `الأوامر التالية تجاوزت الوقت المعياري (48 ساعة) دون إغلاق:\n\n${orderList}\n\nيرجى المراجعة الفورية.`,
-  });
+  try {
+    await notifyOwner({
+      title: `🔴 تنبيه SLA: ${overdueOrders.length} أمر عمل وقائي تجاوز 48 ساعة`,
+      content: `الأوامر التالية تجاوزت الوقت المعياري (48 ساعة) دون إغلاق:\n\n${orderList}\n\nيرجى المراجعة الفورية.`,
+    });
+  } catch (ownerErr) {
+    console.error("[SlaOverduePush] Failed to notify owner about overdue SLAs:", ownerErr);
+  }
 
   console.log(`[SlaOverduePush] Notified about ${overdueOrders.length} overdue orders, ${notifiedCount} push sent.`);
 }

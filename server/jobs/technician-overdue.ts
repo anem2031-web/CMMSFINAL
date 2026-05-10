@@ -17,7 +17,10 @@ let _technicianOverdueRunning = false;
 
 async function _runTechnicianOverdueJobCore() {
   const db = await getDb();
-  if (!db) return;
+  if (!db) {
+    console.error("[TechnicianOverdue] Failed to get database connection. Job aborted.");
+    return;
+  }
 
   const now = Date.now();
 
@@ -72,10 +75,14 @@ async function _runTechnicianOverdueJobCore() {
     return `الفني: ${name}\n${list}`;
   }).join("\n\n");
 
-  await notifyOwner({
-    title: `⚠️ تنبيه SLA: ${overdueTickets.length} بلاغ تجاوز الوقت المعياري`,
-    content: `البلاغات التالية تجاوزت وقت SLA المحدد حسب الأولوية:\n\n${lines}\n\n---\nمعايير SLA: عاجل=4h | مرتفع=8h | متوسط=24h | منخفض=72h`,
-  });
+  try {
+    await notifyOwner({
+      title: `⚠️ تنبيه SLA: ${overdueTickets.length} بلاغ تجاوز الوقت المعياري`,
+      content: `البلاغات التالية تجاوزت وقت SLA المحدد حسب الأولوية:\n\n${lines}\n\n---\nمعايير SLA: عاجل=4h | مرتفع=8h | متوسط=24h | منخفض=72h`,
+    });
+  } catch (ownerErr) {
+    console.error("[TechnicianOverdue] Failed to notify owner about overdue tickets:", ownerErr);
+  }
 
   console.log(`[TechnicianOverdue] Notified about ${overdueTickets.length} overdue tickets (SLA-based)`);
 }

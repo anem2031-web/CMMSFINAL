@@ -15,7 +15,10 @@ let _pmAutomationRunning = false;
 
 async function _runPMAutomationJobCore() {
   const db = await getDb();
-  if (!db) throw new Error("DB unavailable");
+  if (!db) {
+    console.error("[PM Automation] Failed to get database connection. Job aborted.");
+    throw new Error("DB unavailable");
+  }
 
   const now = new Date();
   console.log(`[PM Automation] Job started at ${now.toISOString()}`);
@@ -102,10 +105,15 @@ async function _runPMAutomationJobCore() {
   }
 
   if (createdCount > 0) {
-    await notifyOwner({
-      title: "الصيانة الوقائية التلقائية",
-      content: `تم إنشاء ${createdCount} أمر عمل تلقائياً للخطط المستحقة، وتم إشعار ${notifiedCount} فني`,
-    });
+    try {
+      await notifyOwner({
+        title: "الصيانة الوقائية التلقائية",
+        content: `تم إنشاء ${createdCount} أمر عمل تلقائياً للخطط المستحقة، وتم إشعار ${notifiedCount} فني`,
+      });
+    } catch (ownerErr) {
+      console.error("[PM Automation] Failed to notify owner about created PMs:", ownerErr);
+      errors.push(`Owner notification failed: ${String(ownerErr)}`);
+    }
   }
 
   console.log(`[PM Automation] Completed: ${createdCount} work orders created, ${notifiedCount} technicians notified, ${errors.length} errors`);

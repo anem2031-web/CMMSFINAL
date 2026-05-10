@@ -16,7 +16,10 @@ let _pmReminderRunning = false;
 
 async function _runPMWorkOrderReminderJobCore() {
   const db = await getDb();
-  if (!db) return;
+  if (!db) {
+    console.error("[PM Reminder] Failed to get database connection. Job aborted.");
+    return;
+  }
 
   const now = new Date();
   const cutoff = new Date(now.getTime() - REMINDER_THRESHOLD_HOURS * 60 * 60 * 1000);
@@ -78,10 +81,14 @@ async function _runPMWorkOrderReminderJobCore() {
 
   // إشعار المالك بملخص
   if (overdueOrders.length > 0) {
-    await notifyOwner({
-      title: `⏰ تذكير صيانة وقائية: ${overdueOrders.length} أمر عمل بدون تحديث`,
-      content: `الأوامر التالية تجاوزت ${REMINDER_THRESHOLD_HOURS} ساعة بدون تحديث من الفني:\n\n${ownerLines.join("\n")}\n\nتم إشعار ${notifiedCount} فني`,
-    });
+    try {
+      await notifyOwner({
+        title: `⏰ تذكير صيانة وقائية: ${overdueOrders.length} أمر عمل بدون تحديث`,
+        content: `الأوامر التالية تجاوزت ${REMINDER_THRESHOLD_HOURS} ساعة بدون تحديث من الفني:\n\n${ownerLines.join("\n")}\n\nتم إشعار ${notifiedCount} فني`,
+      });
+    } catch (ownerErr) {
+      console.error("[PM Reminder] Failed to notify owner about overdue PMs:", ownerErr);
+    }
   }
 
   console.log(`[PM Reminder] Completed: ${overdueOrders.length} stale orders, ${notifiedCount} technicians notified`);
