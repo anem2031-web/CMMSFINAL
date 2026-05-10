@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { env } from "./config";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
@@ -121,9 +122,9 @@ async function startServer() {
   // ============================================================
   let redisStoreForApi: RedisStore | undefined;
   let redisStoreForAuth: RedisStore | undefined;
-  if (process.env.REDIS_URL) {
+  if (env.REDIS_URL) {
     try {
-      const redisClient = new IORedis(process.env.REDIS_URL, {
+      const redisClient = new IORedis(env.REDIS_URL, {
         maxRetriesPerRequest: 1,
         enableOfflineQueue: false,
         lazyConnect: true,

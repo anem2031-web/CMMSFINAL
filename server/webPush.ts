@@ -1,18 +1,21 @@
 import webpush from "web-push";
 import { getAllPushSubscriptions, deletePushSubscription, getPushSubscriptionsByUser } from "./db";
+import { env } from "./_core/config";
 
 let initialized = false;
 
 function ensureInit() {
   if (initialized) return;
-  const publicKey = process.env.VAPID_PUBLIC_KEY;
-  const privateKey = process.env.VAPID_PRIVATE_KEY;
+  const publicKey = env.VAPID_PUBLIC_KEY;
+  const privateKey = env.VAPID_PRIVATE_KEY;
   if (!publicKey || !privateKey) {
+    // Validation is now handled by config.ts, so this warning is less critical
+    // but still useful if VAPID keys are optional in dev/test
     console.warn("[WebPush] VAPID keys not configured, push notifications disabled");
     return;
   }
   webpush.setVapidDetails(
-    "mailto:admin@cmms.local",
+    "mailto:" + (env.VAPID_SUBJECT_EMAIL || "admin@cmms.local"),
     publicKey,
     privateKey
   );
