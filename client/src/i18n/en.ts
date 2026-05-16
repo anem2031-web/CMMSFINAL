@@ -356,6 +356,8 @@ const en: TranslationKeys = {
     noItemsPending: "No Pending Items",
     sortByDate: "Sort by Date",
     uploadRequired: "Photo upload required",
+    approveAll: "Approve All",
+    assignDelegateToAll: "Assign Delegate to All",
   },
 
   inventory: {

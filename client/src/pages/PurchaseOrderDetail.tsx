@@ -102,6 +102,30 @@ export default function PurchaseOrderDetail() {
   const [editingItem, setEditingItem] = useState<any>(null);
   const [editForm, setEditForm] = useState<{ itemName: string; description: string; quantity: number; estimatedUnitCost: string; unit: string; photoUrl: string; notes: string }>({ itemName: "", description: "", quantity: 1, estimatedUnitCost: "", unit: "", photoUrl: "", notes: "" });
   const [reviewDecisions, setReviewDecisions] = useState<Record<number, { action: "approve" | "reject"; delegateId?: number; rejectionReason?: string }>>({});
+
+  const [bulkDelegateId, setBulkDelegateId] = useState<string | undefined>(undefined);
+
+  const handleBulkApprove = () => {
+    const newReviewDecisions: Record<number, { action: "approve" | "reject"; delegateId?: number; rejectionReason?: string }> = {};
+    if (po?.items) {
+      po.items.forEach((item: any) => {
+        newReviewDecisions[item.id] = { action: "approve" };
+      });
+      setReviewDecisions(newReviewDecisions);
+    }
+  };
+
+  const handleBulkAssignDelegate = (delegateId: number) => {
+    const newReviewDecisions = { ...reviewDecisions };
+    if (po?.items) {
+      po.items.forEach((item: any) => {
+        if (newReviewDecisions[item.id]?.action === "approve") {
+          newReviewDecisions[item.id] = { ...newReviewDecisions[item.id], delegateId: delegateId };
+        }
+      });
+      setReviewDecisions(newReviewDecisions);
+    }
+  };
   const [revisionNote, setRevisionNote] = useState("");
   const [isRevisionDialogOpen, setIsRevisionDialogOpen] = useState(false);
   const [resubmitNote, setResubmitNote] = useState("");
@@ -625,6 +649,29 @@ export default function PurchaseOrderDetail() {
               <CardTitle className="text-base text-purple-800">مراجعة الأصناف وتعيين المندوبين</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div className="flex gap-2 mb-4">
+                <Button
+                  size="sm"
+                  onClick={handleBulkApprove}
+                  disabled={!po.items?.length}
+                  className="flex-1"
+                >
+                  {t.purchaseOrders.approveAll}
+                </Button>
+                <Select
+                  value={bulkDelegateId}
+                  onValueChange={v => {
+                    setBulkDelegateId(v);
+                    handleBulkAssignDelegate(parseInt(v));
+                  }}
+                  disabled={!po.items?.length || !Object.values(reviewDecisions).some(d => d.action === "approve")}
+                >
+                  <SelectTrigger className="flex-1 bg-white"><SelectValue placeholder={t.purchaseOrders.assignDelegateToAll} /></SelectTrigger>
+                  <SelectContent>
+                    {delegates.map((d: any) => <SelectItem key={d.id} value={String(d.id)}>{d.name || d.email}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
               {po.items?.map((item: any) => {
                 const decision = reviewDecisions[item.id] || {};
                 return (

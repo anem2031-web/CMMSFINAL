@@ -366,6 +366,8 @@ const ar = {
     noItemsPending: "لا توجد أصناف معلقة",
     sortByDate: "ترتيب حسب التاريخ",
     uploadRequired: "يجب رفع الصورة",
+    approveAll: "اعتماد الكل",
+    assignDelegateToAll: "تعيين مندوب للكل",
   },
 
   // Inventory
