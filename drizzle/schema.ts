@@ -207,6 +207,7 @@ export const purchaseOrderItems = mysqlTable("purchase_order_items", {
   photoUrl: text("photoUrl"),
   notes: text("notes"),
   delegateId: int("delegateId"),
+  managementRejectionReason: text("managementRejectionReason"),
   estimatedUnitCost: decimal("estimatedUnitCost", { precision: 12, scale: 2 }),
   estimatedTotalCost: decimal("estimatedTotalCost", { precision: 12, scale: 2 }),
   actualUnitCost: decimal("actualUnitCost", { precision: 12, scale: 2 }),

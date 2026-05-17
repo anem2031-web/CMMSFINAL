@@ -1545,7 +1545,9 @@ export const appRouter = router({
       const allItems = await db.getPOItems(input.purchaseOrderId);
       const allEstimated = allItems.every(i => i.status === "estimated" || i.status === "rejected");
       if (allEstimated) {
-        await db.updatePurchaseOrder(input.purchaseOrderId, { status: "pending_accounting", totalEstimatedCost: String(totalEstimated) });
+        // Recalculate total estimated cost to ensure we only sum non-rejected items
+        const finalTotalEstimated = allItems.filter(i => i.status !== "rejected").reduce((sum, i) => sum + parseFloat(i.estimatedTotalCost || "0"), 0);
+        await db.updatePurchaseOrder(input.purchaseOrderId, { status: "pending_accounting", totalEstimatedCost: String(finalTotalEstimated) });
         // Notify accountants
         const accountants = await db.getUsersByRole("accountant");
         for (const acc of accountants) {
@@ -1560,15 +1562,63 @@ export const appRouter = router({
       id: z.number(),
       notes: z.string().optional(),
       custodyAmount: z.string().optional(),
+      rejectedItemIds: z.array(z.number()).optional(),
+      rejectionReason: z.string().optional(),
     })).mutation(async ({ input, ctx }) => {
-      await db.updatePurchaseOrder(input.id, { status: "pending_management", accountingApprovedById: ctx.user.id, accountingApprovedAt: new Date(), accountingNotes: input.notes, custodyAmount: input.custodyAmount || null });
-      // Notify senior management
-      const mgmt = await db.getUsersByRole("senior_management");
-      const po = await db.getPurchaseOrderById(input.id);
-      const custodyMsg = input.custodyAmount ? ` مبلغ العهدة: ${Number(input.custodyAmount).toLocaleString("ar-SA")} ر.س.` : "";
-      for (const m of mgmt) {
-        await db.createNotification({ userId: m.id, title: "طلب شراء بانتظار اعتمادك", message: `طلب شراء رقم ${po?.poNumber || input.id} بانتظار اعتماد الإدارة العليا.${custodyMsg}`, type: "warning", relatedPOId: input.id });
+      const items = await db.getPOItems(input.id);
+      
+      // Process item rejections if any
+      if (input.rejectedItemIds && input.rejectedItemIds.length > 0) {
+        for (const itemId of input.rejectedItemIds) {
+          // Verify item belongs to PO
+          const item = items.find(i => i.id === itemId);
+          if (item) {
+            await db.updatePOItem(itemId, { 
+              status: "rejected", 
+              managementRejectionReason: input.rejectionReason || "مرفوض من قبل الحسابات"
+            });
+            await db.createAuditLog({ 
+              userId: ctx.user.id, 
+              action: "reject_po_item", 
+              entityType: "purchase_order_item", 
+              entityId: itemId,
+              newValues: { reason: input.rejectionReason || "مرفوض من قبل الحسابات" }
+            });
+          }
+        }
       }
+
+      // Check if all items are now rejected
+      const updatedItems = await db.getPOItems(input.id);
+      const allRejected = updatedItems.every(i => i.status === "rejected");
+
+      if (allRejected) {
+        // If all items are rejected, reject the entire PO
+        await db.updatePurchaseOrder(input.id, { 
+          status: "rejected", 
+          rejectedById: ctx.user.id, 
+          rejectedAt: new Date(), 
+          rejectionReason: "تم رفض جميع الأصناف من قبل الحسابات" 
+        });
+        
+        // Notify PO creator
+        const po = await db.getPurchaseOrderById(input.id);
+        if (po) {
+          await db.createNotification({ userId: po.requestedById, title: "❌ طلب شراء مرفوض", message: `تم رفض جميع أصناف طلب الشراء رقم ${po.poNumber || input.id} من قبل الحسابات.`, type: "error", relatedPOId: input.id });
+        }
+      } else {
+        // Normal flow: PO goes to management
+        await db.updatePurchaseOrder(input.id, { status: "pending_management", accountingApprovedById: ctx.user.id, accountingApprovedAt: new Date(), accountingNotes: input.notes, custodyAmount: input.custodyAmount || null });
+        
+        // Notify senior management
+        const mgmt = await db.getUsersByRole("senior_management");
+        const po = await db.getPurchaseOrderById(input.id);
+        const custodyMsg = input.custodyAmount ? ` مبلغ العهدة: ${Number(input.custodyAmount).toLocaleString("ar-SA")} ر.س.` : "";
+        for (const m of mgmt) {
+          await db.createNotification({ userId: m.id, title: "طلب شراء بانتظار اعتمادك", message: `طلب شراء رقم ${po?.poNumber || input.id} بانتظار اعتماد الإدارة العليا.${custodyMsg}`, type: "warning", relatedPOId: input.id });
+        }
+      }
+      
       await db.createAuditLog({ userId: ctx.user.id, action: "approve_accounting", entityType: "purchase_order", entityId: input.id });
       return { success: true };
     }),
@@ -1577,18 +1627,67 @@ export const appRouter = router({
     approveManagement: managementProcedure.input(z.object({
       id: z.number(),
       notes: z.string().optional(),
+      rejectedItemIds: z.array(z.number()).optional(),
+      rejectionReason: z.string().optional(),
     })).mutation(async ({ input, ctx }) => {
       const po = await db.getPurchaseOrderById(input.id);
-      await db.updatePurchaseOrder(input.id, { status: "approved", managementApprovedById: ctx.user.id, managementApprovedAt: new Date(), managementNotes: input.notes });
-      // Update non-rejected items to approved (skip items already rejected in review step)
       const items = await db.getPOItems(input.id);
-      for (const item of items) {
+
+      // Process item rejections if any
+      if (input.rejectedItemIds && input.rejectedItemIds.length > 0) {
+        for (const itemId of input.rejectedItemIds) {
+          // Verify item belongs to PO
+          const item = items.find(i => i.id === itemId);
+          if (item) {
+            await db.updatePOItem(itemId, { 
+              status: "rejected", 
+              managementRejectionReason: input.rejectionReason || "مرفوض من قبل الإدارة"
+            });
+            await db.createAuditLog({ 
+              userId: ctx.user.id, 
+              action: "reject_po_item", 
+              entityType: "purchase_order_item", 
+              entityId: itemId,
+              newValues: { reason: input.rejectionReason || "مرفوض من قبل الإدارة" }
+            });
+          }
+        }
+      }
+
+      // Check if all items are now rejected
+      const updatedItems = await db.getPOItems(input.id);
+      const allRejected = updatedItems.every(i => i.status === "rejected");
+
+      if (allRejected) {
+        // If all items are rejected, reject the entire PO
+        await db.updatePurchaseOrder(input.id, { 
+          status: "rejected", 
+          rejectedById: ctx.user.id, 
+          rejectedAt: new Date(), 
+          rejectionReason: "تم رفض جميع الأصناف من قبل الإدارة" 
+        });
+        
+        // Notify PO creator
+        if (po) {
+          await db.createNotification({ userId: po.requestedById, title: "❌ طلب شراء مرفوض", message: `تم رفض جميع أصناف طلب الشراء رقم ${po.poNumber || input.id} من قبل الإدارة.`, type: "error", relatedPOId: input.id });
+        }
+        
+        await db.createAuditLog({ userId: ctx.user.id, action: "approve_management", entityType: "purchase_order", entityId: input.id, newValues: { status: "rejected_all_items" } });
+        return { success: true };
+      }
+
+      // Normal flow: PO is approved (partially or fully)
+      await db.updatePurchaseOrder(input.id, { status: "approved", managementApprovedById: ctx.user.id, managementApprovedAt: new Date(), managementNotes: input.notes });
+      
+      // Update non-rejected items to approved
+      for (const item of updatedItems) {
         if (item.status !== "rejected") {
           await db.updatePOItem(item.id, { status: "approved" });
         }
       }
+      
       // Notify delegates — only for non-rejected items
-      const approvedItemsForNotif = items.filter(i => i.status !== "rejected");
+      const approvedItemsForNotif = updatedItems.filter(i => i.status !== "rejected");
       const delegateIds = Array.from(new Set(approvedItemsForNotif.filter(i => i.delegateId).map(i => i.delegateId!)));
       for (const dId of delegateIds) {
         const delegateItems = items.filter(i => i.delegateId === dId);
@@ -1771,11 +1870,12 @@ export const appRouter = router({
       });
       // Update PO status (Path C: do not change ticket status — gate security controls it)
       const poItems = await db.getPOItems(item.purchaseOrderId);
-      const purchasedOrLater = poItems.filter(i => ["purchased", "delivered_to_warehouse", "delivered_to_requester"].includes(i.status));
+      const activeItemsPurch = poItems.filter(i => i.status !== "rejected");
+      const purchasedOrLater = activeItemsPurch.filter(i => ["purchased", "delivered_to_warehouse", "delivered_to_requester"].includes(i.status));
       const poForPath = await db.getPurchaseOrderById(item.purchaseOrderId);
       const ticketForPath = poForPath?.ticketId ? await db.getTicketById(poForPath.ticketId) : null;
       const isPathC = ticketForPath?.maintenancePath === "C";
-      if (purchasedOrLater.length === poItems.length) {
+      if (activeItemsPurch.length > 0 && purchasedOrLater.length === activeItemsPurch.length) {
         await db.updatePurchaseOrder(item.purchaseOrderId, { status: "purchased" });
         if (poForPath?.ticketId && !isPathC) {
           await db.updateTicket(poForPath.ticketId, { status: "purchased" });
@@ -1841,9 +1941,10 @@ export const appRouter = router({
       });
       // Update PO status (Path C: do not change ticket status — gate security controls it)
       const allItems = await db.getPOItems(item.purchaseOrderId);
-      const allInWarehouse = allItems.every(i => ["delivered_to_warehouse", "delivered_to_requester"].includes(i.status));
+      const activeItemsWH = allItems.filter(i => i.status !== "rejected");
+      const allInWarehouse = activeItemsWH.length > 0 && activeItemsWH.every(i => ["delivered_to_warehouse", "delivered_to_requester"].includes(i.status));
       if (allInWarehouse) {
-        const totalActual = allItems.reduce((sum, i) => sum + parseFloat(i.actualTotalCost || "0"), 0);
+        const totalActual = activeItemsWH.reduce((sum, i) => sum + parseFloat(i.actualTotalCost || "0"), 0);
         await db.updatePurchaseOrder(item.purchaseOrderId, { status: "received", totalActualCost: String(totalActual) });
         const poWH = await db.getPurchaseOrderById(item.purchaseOrderId);
         if (poWH?.ticketId) {
@@ -1887,7 +1988,9 @@ export const appRouter = router({
       });
       // Check if all items delivered to requester (Path C: do not change ticket status)
       const allItems = await db.getPOItems(item.purchaseOrderId);
-      const allDelivered = allItems.every(i => i.status === "delivered_to_requester");
+      // Exclude rejected items from auto-close check
+      const activeItems = allItems.filter(i => i.status !== "rejected");
+      const allDelivered = activeItems.length > 0 && activeItems.every(i => i.status === "delivered_to_requester");
       if (allDelivered) {
         await db.updatePurchaseOrder(item.purchaseOrderId, { status: "received" });
         // Advance ticket to received_warehouse so technician can complete work via completeWithParts

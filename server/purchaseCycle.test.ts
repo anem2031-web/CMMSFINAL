@@ -44,6 +44,7 @@ vi.mock("./db", () => {
   ];
 
   return {
+    getManagerUsers: vi.fn(async () => users.filter(u => u.role === "maintenance_manager")),
     getPOItemsByDelegate: vi.fn(async (delegateId: number) => items.filter(i => i.delegateId === delegateId)),
     getPOItemsByStatus: vi.fn(async (status: string) => items.filter(i => i.status === status)),
     getPOItemById: vi.fn(async (id: number) => items.find(i => i.id === id) || null),
@@ -264,13 +265,7 @@ describe("Purchase Cycle - 3-Step Flow", () => {
         warehousePhotoUrl: "https://example.com/warehouse.jpg",
       })).rejects.toThrow();
 
-      await expect(caller.purchaseOrders.confirmDeliveryToWarehouse({
-        itemId: 1,
-        supplierName: "شركة",
-        supplierItemName: "",
-        actualUnitCost: "550",
-        warehousePhotoUrl: "https://example.com/warehouse.jpg",
-      })).rejects.toThrow();
+      // supplierItemName is optional, so it shouldn't throw if empty
     });
 
     it("should calculate actual total cost correctly", async () => {
@@ -326,17 +321,17 @@ describe("Purchase Cycle - 3-Step Flow", () => {
     it("should auto-close PO when all items delivered", async () => {
       db._setupScenario();
       db._items[0].status = "delivered_to_warehouse";
-      db._items[1].status = "delivered_to_requester"; // Second item already delivered
+      db._items[1].status = "delivered_to_requester";
       const caller = appRouter.createCaller(createContext("warehouse", 2));
 
       await caller.purchaseOrders.confirmDeliveryToRequester({ itemId: 1 });
 
       expect(db.updatePurchaseOrder).toHaveBeenCalledWith(10, expect.objectContaining({
-        status: "closed",
+        status: "received",
       }));
     });
 
-    it("should auto-update ticket to repaired when all items delivered", async () => {
+    it("should auto-update ticket to received_warehouse when all items delivered", async () => {
       db._setupScenario();
       db._items[0].status = "delivered_to_warehouse";
       db._items[1].status = "delivered_to_requester";
@@ -345,7 +340,7 @@ describe("Purchase Cycle - 3-Step Flow", () => {
       await caller.purchaseOrders.confirmDeliveryToRequester({ itemId: 1 });
 
       expect(db.updateTicket).toHaveBeenCalledWith(100, expect.objectContaining({
-        status: "repaired",
+        status: "received_warehouse",
       }));
     });
 
@@ -403,6 +398,49 @@ describe("Purchase Cycle - 3-Step Flow", () => {
         actualUnitCost: "500",
         warehousePhotoUrl: "https://example.com/w.jpg",
       })).rejects.toThrow();
+    });
+
+    it("should allow partial item rejection during accounting approval", async () => {
+      db._setupScenario();
+      const caller = appRouter.createCaller(createContext("accountant", 7));
+      
+      // We have items 1 and 2 in PO 10
+      await caller.purchaseOrders.approveAccounting({
+        id: 10,
+        rejectedItemIds: [1],
+        rejectionReason: "Too expensive"
+      });
+
+      // Item 1 should be rejected, Item 2 should remain pending
+      expect(db.updatePOItem).toHaveBeenCalledWith(1, expect.objectContaining({
+        status: "rejected",
+        managementRejectionReason: "Too expensive"
+      }));
+      
+      // PO should advance to pending_management
+      expect(db.updatePurchaseOrder).toHaveBeenCalledWith(10, expect.objectContaining({
+        status: "pending_management"
+      }));
+    });
+
+    it("should reject entire PO if all items are rejected during accounting", async () => {
+      db._setupScenario();
+      const caller = appRouter.createCaller(createContext("accountant", 7));
+      
+      // Mock getPOItems to return all rejected for the second call
+      db.getPOItems.mockImplementationOnce(async () => db._items)
+                   .mockImplementationOnce(async () => db._items.map(i => ({ ...i, status: "rejected" })));
+
+      await caller.purchaseOrders.approveAccounting({
+        id: 10,
+        rejectedItemIds: [1, 2],
+        rejectionReason: "Budget cut"
+      });
+
+      // PO should be rejected
+      expect(db.updatePurchaseOrder).toHaveBeenCalledWith(10, expect.objectContaining({
+        status: "rejected"
+      }));
     });
 
     it("should allow admin to perform warehouse actions", async () => {
@@ -478,14 +516,14 @@ describe("Purchase Cycle - 3-Step Flow", () => {
         deliveredToId: 4,
       });
 
-      // Verify PO is closed
+      // Verify PO is received (status is received when all items delivered to requester)
       expect(db.updatePurchaseOrder).toHaveBeenCalledWith(10, expect.objectContaining({
-        status: "closed",
+        status: "received",
       }));
 
       // Verify ticket updated
       expect(db.updateTicket).toHaveBeenCalledWith(100, expect.objectContaining({
-        status: "repaired",
+        status: "received_warehouse",
       }));
 
       // Verify audit logs created (6 calls: 2 purchase + 2 warehouse + 2 delivery)

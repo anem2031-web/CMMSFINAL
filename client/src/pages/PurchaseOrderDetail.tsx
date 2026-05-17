@@ -104,6 +104,7 @@ export default function PurchaseOrderDetail() {
   const [reviewDecisions, setReviewDecisions] = useState<Record<number, { action: "approve" | "reject"; delegateId?: number; rejectionReason?: string }>>({});
 
   const [bulkDelegateId, setBulkDelegateId] = useState<string | undefined>(undefined);
+  const [lateRejections, setLateRejections] = useState<Record<number, boolean>>({});
 
   const handleBulkApprove = () => {
     const newReviewDecisions: Record<number, { action: "approve" | "reject"; delegateId?: number; rejectionReason?: string }> = {};
@@ -761,19 +762,53 @@ export default function PurchaseOrderDetail() {
               <label className="text-xs font-medium text-orange-800">مبلغ العهدة المُصرف للمندوب (ر.س.) - اختياري</label>
               <Input type="number" placeholder="مثال: 500" value={custodyAmount} onChange={e => setCustodyAmount(e.target.value)} className="bg-white" />
             </div>
+            
+            <div className="bg-white p-3 rounded-md border border-orange-100 space-y-2 mb-3">
+              <h4 className="text-sm font-medium text-orange-800">مراجعة الأصناف (اختياري)</h4>
+              <p className="text-xs text-orange-600 mb-2">يمكنك استبعاد أصناف محددة من الاعتماد.</p>
+              {po.items?.filter((i: any) => i.status !== "rejected").map((item: any) => (
+                <div key={item.id} className="flex items-center justify-between py-2 border-b border-orange-50 last:border-0">
+                  <div className="flex-1">
+                    <p className={`text-sm ${lateRejections[item.id] ? 'line-through text-gray-400' : 'text-gray-800 font-medium'}`}>{item.itemName}</p>
+                    <p className="text-xs text-gray-500">التكلفة المقدرة: {Number(item.estimatedTotalCost || 0).toLocaleString("ar-SA")} ر.س.</p>
+                  </div>
+                  <Button 
+                    variant={lateRejections[item.id] ? "outline" : "ghost"} 
+                    size="sm" 
+                    className={lateRejections[item.id] ? "text-orange-600 border-orange-200 bg-orange-50" : "text-red-600 hover:text-red-700 hover:bg-red-50"}
+                    onClick={() => setLateRejections(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
+                  >
+                    {lateRejections[item.id] ? "تراجع عن الرفض" : "رفض الصنف"}
+                  </Button>
+                </div>
+              ))}
+            </div>
+
             <div className="flex gap-2">
-              <Button onClick={() => approveAccMut.mutate({ id: po.id, custodyAmount: custodyAmount || undefined })} disabled={approveAccMut.isPending} className="flex-1 gap-1.5">
+              <Button onClick={() => {
+                const rejectedIds = Object.keys(lateRejections).filter(id => lateRejections[Number(id)]).map(Number);
+                if (rejectedIds.length > 0 && !rejectReason.trim()) {
+                  toast.error("يرجى إدخال سبب لرفض الأصناف المحددة");
+                  return;
+                }
+                approveAccMut.mutate({ 
+                  id: po.id, 
+                  custodyAmount: custodyAmount || undefined,
+                  rejectedItemIds: rejectedIds.length > 0 ? rejectedIds : undefined,
+                  rejectionReason: rejectedIds.length > 0 ? rejectReason : undefined
+                });
+              }} disabled={approveAccMut.isPending} className="flex-1 gap-1.5">
                 {approveAccMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                {t.common.confirm}
+                {Object.values(lateRejections).some(Boolean) ? "اعتماد مع استبعاد المرفوض" : t.common.confirm}
               </Button>
               <Button variant="destructive" onClick={() => {
                 if (!rejectReason.trim()) { toast.error(t.purchaseOrders.justification); return; }
                 rejectMut.mutate({ id: po.id, reason: rejectReason });
               }} disabled={rejectMut.isPending} className="gap-1">
-                <XCircle className="w-4 h-4" /> {t.tickets.reject}
+                <XCircle className="w-4 h-4" /> رفض الطلب بالكامل
               </Button>
             </div>
-            <Input placeholder={t.purchaseOrders.justification} value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
+            <Input placeholder="سبب الرفض (مطلوب في حال رفض أصناف أو رفض الطلب)" value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
           </CardContent>
         </Card>
       )}
@@ -782,19 +817,51 @@ export default function PurchaseOrderDetail() {
         <Card className="border-orange-200 bg-orange-50/50">
           <CardHeader className="pb-2"><CardTitle className="text-base text-orange-800">{t.purchaseOrders.managementApproval}</CardTitle></CardHeader>
           <CardContent className="space-y-3">
+            <div className="bg-white p-3 rounded-md border border-orange-100 space-y-2 mb-3">
+              <h4 className="text-sm font-medium text-orange-800">مراجعة الأصناف (اختياري)</h4>
+              <p className="text-xs text-orange-600 mb-2">يمكنك استبعاد أصناف محددة من الاعتماد.</p>
+              {po.items?.filter((i: any) => i.status !== "rejected").map((item: any) => (
+                <div key={item.id} className="flex items-center justify-between py-2 border-b border-orange-50 last:border-0">
+                  <div className="flex-1">
+                    <p className={`text-sm ${lateRejections[item.id] ? 'line-through text-gray-400' : 'text-gray-800 font-medium'}`}>{item.itemName}</p>
+                    <p className="text-xs text-gray-500">التكلفة المقدرة: {Number(item.estimatedTotalCost || 0).toLocaleString("ar-SA")} ر.س.</p>
+                  </div>
+                  <Button 
+                    variant={lateRejections[item.id] ? "outline" : "ghost"} 
+                    size="sm" 
+                    className={lateRejections[item.id] ? "text-orange-600 border-orange-200 bg-orange-50" : "text-red-600 hover:text-red-700 hover:bg-red-50"}
+                    onClick={() => setLateRejections(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
+                  >
+                    {lateRejections[item.id] ? "تراجع عن الرفض" : "رفض الصنف"}
+                  </Button>
+                </div>
+              ))}
+            </div>
+
             <div className="flex gap-2">
-              <Button onClick={() => approveMgmtMut.mutate({ id: po.id })} disabled={approveMgmtMut.isPending} className="flex-1 gap-1.5">
+              <Button onClick={() => {
+                const rejectedIds = Object.keys(lateRejections).filter(id => lateRejections[Number(id)]).map(Number);
+                if (rejectedIds.length > 0 && !rejectReason.trim()) {
+                  toast.error("يرجى إدخال سبب لرفض الأصناف المحددة");
+                  return;
+                }
+                approveMgmtMut.mutate({ 
+                  id: po.id,
+                  rejectedItemIds: rejectedIds.length > 0 ? rejectedIds : undefined,
+                  rejectionReason: rejectedIds.length > 0 ? rejectReason : undefined
+                });
+              }} disabled={approveMgmtMut.isPending} className="flex-1 gap-1.5">
                 {approveMgmtMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                {t.common.confirm}
+                {Object.values(lateRejections).some(Boolean) ? "اعتماد مع استبعاد المرفوض" : t.common.confirm}
               </Button>
               <Button variant="destructive" onClick={() => {
                 if (!rejectReason.trim()) { toast.error(t.purchaseOrders.justification); return; }
                 rejectMut.mutate({ id: po.id, reason: rejectReason });
               }} disabled={rejectMut.isPending} className="gap-1">
-                <XCircle className="w-4 h-4" /> {t.tickets.reject}
+                <XCircle className="w-4 h-4" /> رفض الطلب بالكامل
               </Button>
             </div>
-            <Input placeholder={t.purchaseOrders.justification} value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
+            <Input placeholder="سبب الرفض (مطلوب في حال رفض أصناف أو رفض الطلب)" value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
           </CardContent>
         </Card>
       )}
