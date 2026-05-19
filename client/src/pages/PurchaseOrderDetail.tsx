@@ -107,6 +107,7 @@ export default function PurchaseOrderDetail() {
 
   const [bulkDelegateId, setBulkDelegateId] = useState<string | undefined>(undefined);
   const [lateRejections, setLateRejections] = useState<Record<number, boolean>>({});
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
 
   const handleBulkApprove = () => {
     const newReviewDecisions: Record<number, { action: "approve" | "reject"; delegateId?: number; rejectionReason?: string }> = {};
@@ -386,7 +387,15 @@ export default function PurchaseOrderDetail() {
                       <p className="text-xs text-gray-400 mt-1">{language === "ar" ? "سبب الإلغاء: " : "Cancel reason: "}{item.managementRejectionReason}</p>
                     )}
                   </div>
-                  {item.photoUrl && <img src={item.photoUrl} alt="" className={`w-16 h-16 rounded-lg object-cover border shrink-0 ${isCancelled ? "opacity-40 grayscale" : ""}`} />}
+                  {item.photoUrl && (
+                    <button
+                      onClick={() => setPreviewImage(item.photoUrl)}
+                      className="shrink-0 hover:opacity-80 transition-opacity"
+                      title="Click to preview"
+                    >
+                      <img src={item.photoUrl} alt="" className={`w-16 h-16 rounded-lg object-cover border ${isCancelled ? "opacity-40 grayscale" : ""}`} />
+                    </button>
+                  )}
                   {/* Edit button - only for editable statuses */}
                   {po && role !== "delegate" && ['draft', 'pending_estimate', 'pending_accounting', 'revision_needed'].includes(po.status) && ['pending', 'estimated'].includes(item.status) && (
                     <Button variant="ghost" size="icon" className="shrink-0 h-8 w-8" onClick={() => {
@@ -438,19 +447,25 @@ export default function PurchaseOrderDetail() {
                   </div>
                 )}
 
-                {(item.invoicePhotoUrl || item.purchasedPhotoUrl) && (
+                {(item.invoicePhotoUrl || item.purchasedPhotoUrl || item.warehousePhotoUrl) && (
                   <div className="flex gap-3 border-t pt-2">
                     {item.invoicePhotoUrl && (
-                      <a href={mediaUrl(item.invoicePhotoUrl)} target="_blank" rel="noopener" className="group">
+                      <button onClick={() => setPreviewImage(mediaUrl(item.invoicePhotoUrl))} className="group text-left hover:opacity-80 transition-opacity">
                         <p className="text-[10px] text-muted-foreground mb-1">{t.purchaseOrders.accountingNotes}</p>
                         <img src={mediaUrl(item.invoicePhotoUrl)} className="w-20 h-20 rounded-lg object-cover border group-hover:ring-2 ring-primary/30 transition-all" />
-                      </a>
+                      </button>
                     )}
                     {item.purchasedPhotoUrl && (
-                      <a href={mediaUrl(item.purchasedPhotoUrl)} target="_blank" rel="noopener" className="group">
+                      <button onClick={() => setPreviewImage(mediaUrl(item.purchasedPhotoUrl))} className="group text-left hover:opacity-80 transition-opacity">
                         <p className="text-[10px] text-muted-foreground mb-1">{t.tickets.photos}</p>
                         <img src={mediaUrl(item.purchasedPhotoUrl)} className="w-20 h-20 rounded-lg object-cover border group-hover:ring-2 ring-primary/30 transition-all" />
-                      </a>
+                      </button>
+                    )}
+                    {item.warehousePhotoUrl && (
+                      <button onClick={() => setPreviewImage(mediaUrl(item.warehousePhotoUrl))} className="group text-left hover:opacity-80 transition-opacity">
+                        <p className="text-[10px] text-muted-foreground mb-1">{t.purchaseOrders.warehousePhoto}</p>
+                        <img src={mediaUrl(item.warehousePhotoUrl)} className="w-20 h-20 rounded-lg object-cover border group-hover:ring-2 ring-primary/30 transition-all" />
+                      </button>
                     )}
                   </div>
                 )}
@@ -490,7 +505,9 @@ export default function PurchaseOrderDetail() {
                         <Label className="text-[11px] text-teal-700">{t.purchaseOrders.accountingNotes}</Label>
                         {itemPhotos[item.id]?.invoice ? (
                           <div className="relative mt-1">
-                            <img src={itemPhotos[item.id]!.invoice} alt="" className="w-full h-20 rounded-lg object-cover border" />
+                            <button onClick={() => setPreviewImage(itemPhotos[item.id]!.invoice || null)} className="w-full hover:opacity-80 transition-opacity">
+                              <img src={itemPhotos[item.id]!.invoice} alt="" className="w-full h-20 rounded-lg object-cover border" />
+                            </button>
                             <Button variant="destructive" size="icon" className="absolute top-1 left-1 h-5 w-5 rounded-full" onClick={() => { setItemPhotos(p => ({ ...p, [item.id]: { ...p[item.id], invoice: undefined } })); setDropZoneFor(null); }}>
                               <XCircle className="w-3 h-3" />
                             </Button>
@@ -526,7 +543,9 @@ export default function PurchaseOrderDetail() {
                         <Label className="text-[11px] text-teal-700">{t.tickets.photos}</Label>
                         {itemPhotos[item.id]?.purchased ? (
                           <div className="relative mt-1">
-                            <img src={itemPhotos[item.id]!.purchased} alt="" className="w-full h-20 rounded-lg object-cover border" />
+                            <button onClick={() => setPreviewImage(itemPhotos[item.id]!.purchased || null)} className="w-full hover:opacity-80 transition-opacity">
+                              <img src={itemPhotos[item.id]!.purchased} alt="" className="w-full h-20 rounded-lg object-cover border" />
+                            </button>
                             <Button variant="destructive" size="icon" className="absolute top-1 left-1 h-5 w-5 rounded-full" onClick={() => { setItemPhotos(p => ({ ...p, [item.id]: { ...p[item.id], purchased: undefined } })); setDropZoneFor(null); }}>
                               <XCircle className="w-3 h-3" />
                             </Button>
@@ -595,7 +614,9 @@ export default function PurchaseOrderDetail() {
                       <Label className="text-[11px] text-green-700">صورة تأكيد الاستلام *</Label>
                       {itemPhotos[item.id]?.warehouse ? (
                         <div className="relative mt-1">
-                          <img src={itemPhotos[item.id]!.warehouse} alt="" className="w-full h-20 rounded-lg object-cover border border-green-300" />
+                          <button onClick={() => setPreviewImage(itemPhotos[item.id]!.warehouse || null)} className="w-full hover:opacity-80 transition-opacity">
+                            <img src={itemPhotos[item.id]!.warehouse} alt="" className="w-full h-20 rounded-lg object-cover border border-green-300" />
+                          </button>
                           <Button variant="destructive" size="icon" className="absolute top-1 left-1 h-5 w-5 rounded-full" onClick={() => {
                             setItemPhotos(p => ({ ...p, [item.id]: { ...p[item.id], warehouse: undefined } }));
                             setReceiveData(p => ({ ...p, [item.id]: { ...p[item.id], warehousePhotoUrl: "" } }));
@@ -1072,6 +1093,26 @@ export default function PurchaseOrderDetail() {
               {editItemMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : t.common.save}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* Image Preview Dialog (Lightbox) */}
+      <Dialog open={!!previewImage} onOpenChange={(open) => { if (!open) setPreviewImage(null); }}>
+        <DialogContent className="max-w-3xl max-h-[90vh] p-0 border-0 bg-black/90">
+          <div className="relative w-full h-full flex items-center justify-center">
+            {previewImage && (
+              <>
+                <img src={previewImage} alt="Preview" className="max-w-full max-h-[85vh] object-contain" />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute top-2 right-2 text-white hover:bg-white/20 h-8 w-8 rounded-full"
+                  onClick={() => setPreviewImage(null)}
+                >
+                  <XCircle className="w-5 h-5" />
+                </Button>
+              </>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
     </div>
