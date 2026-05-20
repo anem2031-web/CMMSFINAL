@@ -42,6 +42,27 @@ export function usePushNotifications() {
         setIsSubscribed(!!sub);
       });
     });
+
+    // Listen for subscription change messages from service worker
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === "PUSH_SUBSCRIPTION_CHANGED") {
+        const sub = event.data.subscription;
+        if (sub?.endpoint) {
+          subscribeMut.mutate({
+            endpoint: sub.endpoint,
+            p256dh: sub.keys?.p256dh || "",
+            auth: sub.keys?.auth || "",
+            userAgent: navigator.userAgent,
+          });
+        }
+      }
+    };
+
+    navigator.serviceWorker.addEventListener("message", handleMessage);
+    return () => {
+      navigator.serviceWorker.removeEventListener("message", handleMessage);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSupported]);
 
   const subscribe = useCallback(async () => {
@@ -56,6 +77,12 @@ export function usePushNotifications() {
       const perm = await Notification.requestPermission();
       setPermission(perm as PushPermission);
       if (perm !== "granted") return false;
+
+      // Unsubscribe from any existing subscription first to avoid conflicts
+      const existingSub = await reg.pushManager.getSubscription();
+      if (existingSub) {
+        await existingSub.unsubscribe();
+      }
 
       // Subscribe to push
       const sub = await reg.pushManager.subscribe({
