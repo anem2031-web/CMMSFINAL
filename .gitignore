@@ -109,3 +109,6 @@ temp/
 .webdev/
 dist/
 build/
+node_modules/
+.env
+uploads/
