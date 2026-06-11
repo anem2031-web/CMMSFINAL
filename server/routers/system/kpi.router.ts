@@ -6,7 +6,7 @@ export const kpiRouter = router({
   getTicketTimelines: managerProcedure.query(async () => {
     const ddb = await db.getDb();
     if (!ddb) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB not available" });
-    const { tickets } = await import("../drizzle/schema");
+    const { tickets } = await import("../../../drizzle/schema");
     const { desc: descOp } = await import("drizzle-orm");
     const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // آخر 7 أيام
     const rows = await ddb
@@ -141,7 +141,7 @@ export const kpiRouter = router({
   getPOTimelines: managerProcedure.query(async () => {
     const ddb = await db.getDb();
     if (!ddb) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB not available" });
-    const { purchaseOrders } = await import("../drizzle/schema");
+    const { purchaseOrders } = await import("../../../drizzle/schema");
     const { desc: descOp2 } = await import("drizzle-orm");
     const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const rows = await ddb

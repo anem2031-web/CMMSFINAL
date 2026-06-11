@@ -12,7 +12,7 @@ export const dashboardRouter = router({
     const ddb = await db.getDb();
     if (!ddb) return { activePlans: 0, completedThisMonth: 0, pendingThisMonth: 0, overdueCount: 0, completionRate: 0, totalWorkOrders: 0 };
 
-    const { preventivePlans, pmWorkOrders } = await import("../drizzle/schema");
+    const { preventivePlans, pmWorkOrders } = await import("../../../drizzle/schema");
 
     // الخطط النشطة
     const activePlans = await ddb.select().from(preventivePlans).where(eq(preventivePlans.isActive, true));

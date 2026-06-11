@@ -130,7 +130,7 @@ export const maintenanceReportsRouter = router({
       const ddb = await db.getDb();
       if (!ddb) return { technicians: [], months: [] };
 
-      const { pmExecutionSessions: execSessions, pmExecutionResults: execResults } = await import("../drizzle/schema");
+      const { pmExecutionSessions: execSessions, pmExecutionResults: execResults } = await import("../../../drizzle/schema");
 
       const allUsers = await db.getAllUsers();
       const technicians = allUsers.filter((u: any) => u.role === "technician");
