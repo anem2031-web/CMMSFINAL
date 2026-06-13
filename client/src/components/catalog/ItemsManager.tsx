@@ -1,6 +1,6 @@
 import CatalogExportButton from "./CatalogExportButton";
 import CatalogImportButton from "./CatalogImportButton";
-import React, { useState, useMemo, useEffect, useRef } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { useTranslation } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -218,19 +218,16 @@ export default function ItemsManager() {
 
   const { data: units } = trpc.catalog.units.list.useQuery();
 
-  // ── Pagination + بحث من السيرفر ──────────────────────────
-  const PAGE_SIZE = 50;
+  // ── Pagination حقيقي (صفحات) + بحث من السيرفر ──────────────────────────
+  const PAGE_SIZE = 20;
   const [page, setPage] = useState(0);
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [allItems, setAllItems] = useState<any[]>([]);
-  const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
   // Debounce: تأخير إرسال البحث للسيرفر وإعادة الصفحة إلى الأول
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(searchQuery.trim());
       setPage(0);
-      setAllItems([]);
     }, 400);
     return () => clearTimeout(timer);
   }, [searchQuery]);
@@ -243,31 +240,13 @@ export default function ItemsManager() {
       search: debouncedSearch || undefined,
     });
 
-  // تجميع الصفحات: الصفحة الأولى تستبدل، الباقي يُضاف
-  useEffect(() => {
-    if (!items) return;
-    setAllItems(prev => (page === 0 ? items : [...prev, ...items]));
-  }, [items, page]);
-
-  const hasMore = (items?.length ?? 0) === PAGE_SIZE;
-
-  // تحميل الصفحة التالية عند الوصول لأسفل القائمة
-  useEffect(() => {
-    const el = loadMoreRef.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting && hasMore && !isFetching) {
-        setPage(p => p + 1);
-      }
-    }, { rootMargin: "200px" });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [hasMore, isFetching]);
+  const pageItems = items ?? [];
+  const hasNextPage = pageItems.length === PAGE_SIZE;
+  const hasPrevPage = page > 0;
 
   // إعادة التحميل من الصفحة الأولى (تُستخدم بعد إضافة/تعديل/حذف صنف)
   const reloadFromStart = () => {
     setPage(0);
-    setAllItems([]);
     refetch();
   };
 
@@ -435,13 +414,13 @@ export default function ItemsManager() {
 
 </div>
 
-{/* عداد العناصر المحمّلة */}
+{/* عداد الصفحة الحالية */}
 
-      {(searchQuery || allItems.length > 0) && !isLoading && (
+      {!isLoading && (
         <p className="text-xs text-muted-foreground">
           {searchQuery
-            ? `تم تحميل ${allItems.length} نتيجة للبحث عن "${searchQuery}"`
-            : `تم تحميل ${allItems.length} صنف`}
+            ? `صفحة ${page + 1} — ${pageItems.length} نتيجة للبحث عن "${searchQuery}"`
+            : `صفحة ${page + 1} — ${pageItems.length} صنف`}
         </p>
       )}
 
@@ -450,9 +429,9 @@ export default function ItemsManager() {
         <div className="flex justify-center py-12">
           <Loader2 className="w-6 h-6 animate-spin" />
         </div>
-      ) : allItems.length > 0 ? (
+      ) : pageItems.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {allItems.map((item: any) => (
+          {pageItems.map((item: any) => (
             <ItemCard
               key={item.id}
               item={item}
@@ -496,10 +475,26 @@ export default function ItemsManager() {
         </Card>
       )}
 
-      {/* نقطة تحميل الصفحة التالية (Infinite Scroll) */}
-      {!isLoading && hasMore && (
-        <div ref={loadMoreRef} className="flex justify-center py-6">
-          <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+      {/* أزرار التنقل بين الصفحات */}
+      {!isLoading && (pageItems.length > 0 || page > 0) && (
+        <div className="flex items-center justify-center gap-3 py-4">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!hasPrevPage || isFetching}
+            onClick={() => setPage(p => Math.max(0, p - 1))}
+          >
+            السابق
+          </Button>
+          <span className="text-sm text-muted-foreground">صفحة {page + 1}</span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!hasNextPage || isFetching}
+            onClick={() => setPage(p => p + 1)}
+          >
+            التالي
+          </Button>
         </div>
       )}
 
