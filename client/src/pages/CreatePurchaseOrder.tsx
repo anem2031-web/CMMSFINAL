@@ -456,7 +456,7 @@ const handleCatalogSelect = (catalogItem: any) => {
 
       {/* نوع الصنف */}
       <div className="space-y-2">
-        <Label>نوع الصنف</Label>
+        <Label>{t.purchaseOrders.itemSourceType}</Label>
 
         <select
           value={item.sourceType}
@@ -472,8 +472,8 @@ const handleCatalogSelect = (catalogItem: any) => {
           }}
           className="w-full h-10 rounded-md border bg-background px-3 text-sm"
         >
-          <option value="manual">صنف جديد</option>
-          <option value="catalog">من الكتالوج</option>
+          <option value="manual">{t.purchaseOrders.itemSourceManual}</option>
+          <option value="catalog">{t.purchaseOrders.itemSourceCatalog}</option>
         </select>
       </div>
 
