@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, decimal, json, boolean } from "drizzle-orm/mysql-core";
+import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, decimal, json, boolean, index } from "drizzle-orm/mysql-core";
 
 // ============================================================
 // 1. USERS TABLE (extended with CMMS roles)
@@ -351,7 +351,9 @@ export const attachments = mysqlTable("attachments", {
   fileSize: int("fileSize"),
   uploadedById: int("uploadedById").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  entityIdx: index("attachments_entity_type_id_idx").on(table.entityType, table.entityId),
+}));
 
 // ============================================================
 // 12. DATABASE BACKUPS
@@ -805,7 +807,13 @@ export const catalogItems = mysqlTable("catalog_items", {
   isActive:       boolean("isActive").default(true).notNull(),
   createdAt:      timestamp("createdAt").defaultNow().notNull(),
   updatedAt:      timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  nodeIdIdx: index("catalog_items_node_id_idx").on(table.nodeId),
+  isActiveIdx: index("catalog_items_is_active_idx").on(table.isActive),
+  codeIdx: index("catalog_items_code_idx").on(table.code),
+  nameArIdx: index("catalog_items_name_ar_idx").on(table.nameAr),
+  nameEnIdx: index("catalog_items_name_en_idx").on(table.nameEn),
+}));
 export type CatalogItem = typeof catalogItems.$inferSelect;
 export type InsertCatalogItem = typeof catalogItems.$inferInsert;
 
