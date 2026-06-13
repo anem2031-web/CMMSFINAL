@@ -2,7 +2,7 @@ import { catalogImportExportRouter } from "./catalogImportExport.router";
 import { attachments } from "../../drizzle/schema";
 import { router, publicProcedure, protectedProcedure } from "./_shared/procedures";
 import { z } from "zod";
-import { eq, and, like, isNull, ne, count, desc, asc } from "drizzle-orm";
+import { eq, and, or, like, isNull, ne, count, desc, asc, inArray } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "../db";
 
@@ -322,8 +322,15 @@ if (input?.nodeId !== undefined) {
 }
 
 if (input?.search) {
+  const term = `%${input.search}%`;
   conditions.push(
-    like(catalogItems.nameAr, `%${input.search}%`)
+    or(
+      like(catalogItems.nameAr, term),
+      like(catalogItems.nameEn, term),
+      like(catalogItems.code, term),
+      like(catalogItems.manufacturer, term),
+      like(catalogItems.unit, term),
+    )
   );
 }
 
@@ -336,31 +343,31 @@ const results = await (query as any)
   .limit(input?.limit || 50)
   .offset(input?.offset || 0);
 
-// جلب الصور الرئيسية للأصناف
-const itemsWithImages = await Promise.all(
-  results.map(async (item: any) => {
-const image = await db
-  .select()
-  .from(attachments)
-  .where(
-    and(
-      eq(attachments.entityType, "catalog_item"),
-      eq(attachments.entityId, item.id)
-    )
-  );
+// جلب الصور الرئيسية للأصناف (استعلام واحد لكل الأصناف بدل استعلام لكل صنف)
+const itemIds = results.map((item: any) => item.id);
 
-const latestImage =
-  image.length > 0
-    ? image[image.length - 1]
-    : null;
+const allImages = itemIds.length > 0
+  ? await db
+      .select()
+      .from(attachments)
+      .where(
+        and(
+          eq(attachments.entityType, "catalog_item"),
+          inArray(attachments.entityId, itemIds)
+        )
+      )
+  : [];
 
-return {
+const imagesByItemId = new Map<number, typeof allImages[number]>();
+for (const img of allImages) {
+  // نحتفظ بآخر صورة لكل صنف (نفس سلوك latestImage السابق)
+  imagesByItemId.set(img.entityId, img);
+}
+
+const itemsWithImages = results.map((item: any) => ({
   ...item,
-  primaryImageUrl:
-    latestImage?.fileUrl || null,
-};
-  })
-);
+  primaryImageUrl: imagesByItemId.get(item.id)?.fileUrl || null,
+}));
 
 return itemsWithImages;
 
