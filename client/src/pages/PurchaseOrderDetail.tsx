@@ -92,7 +92,21 @@ export default function PurchaseOrderDetail() {
   const receiveItemMut = trpc.purchaseOrders.confirmDeliveryToWarehouse.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e: any) => toast.error(e.message) });
   const editItemMut = trpc.purchaseOrders.editItem.useMutation({ onSuccess: () => { toast.success(t.common.savedSuccessfully); setEditingItem(null); refetch(); }, onError: (e: any) => toast.error(e.message) });
   const cancelItemMut = trpc.purchaseOrders.cancelItem.useMutation({ onSuccess: () => { toast.success(language === "ar" ? "تم إلغاء الصنف" : "Item cancelled"); refetch(); }, onError: (e: any) => toast.error(e.message) });
+  const requestItemRevisionMut = trpc.purchaseOrders.requestItemRevision.useMutation({
+  onSuccess: () => {
+    toast.success(language === "ar" ? "تم إرسال طلب مراجعة الصنف" : "Item revision requested");
+    refetch();
+  },
+  onError: (e: any) => toast.error(e.message)
+});
 
+const resubmitItemRevisionMut = trpc.purchaseOrders.resubmitItemRevision.useMutation({
+  onSuccess: () => {
+    toast.success(language === "ar" ? "تمت إعادة إرسال الصنف" : "Item resubmitted");
+    refetch();
+  },
+  onError: (e: any) => toast.error(e.message)
+});
   const role = user?.role || "";
   const userId = user?.id;
 
@@ -104,6 +118,9 @@ export default function PurchaseOrderDetail() {
   const [dropZoneFor, setDropZoneFor] = useState<string | null>(null); // e.g. "123-invoice" or "123-purchased";
   const [receiveData, setReceiveData] = useState<Record<number, { cost: string; supplier: string; supplierItemName: string; warehousePhotoUrl: string }>>({});
   const [editingItem, setEditingItem] = useState<any>(null);
+  const [selectedRevisionItemId, setSelectedRevisionItemId] = useState<number | null>(null);
+  const [itemRevisionReason, setItemRevisionReason] = useState("");
+  const [isItemRevisionDialogOpen, setIsItemRevisionDialogOpen] = useState(false);
   const [editForm, setEditForm] = useState<{ itemName: string; description: string; quantity: number; estimatedUnitCost: string; unit: string; photoUrl: string; notes: string }>({ itemName: "", description: "", quantity: 1, estimatedUnitCost: "", unit: "", photoUrl: "", notes: "" });
   const [reviewDecisions, setReviewDecisions] = useState<Record<number, { action: "approve" | "reject"; delegateId?: number; rejectionReason?: string }>>({});
 
@@ -182,13 +199,32 @@ export default function PurchaseOrderDetail() {
   const isWarehouse = role === "warehouse" || isAdminOrOwner;
   const isManager = role === "maintenance_manager" || role === "purchase_manager" || isAdminOrOwner;
   const canCancelItem = role === "senior_management" || role === "maintenance_manager" || isAdminOrOwner;
-  const visibleItems = useMemo(() => {
-    if (!po?.items) return [];
-    // Admin/owner see all items; delegate sees only their own
-    if (isAdminOrOwner) return po.items;
-    if (role === "delegate") return po.items.filter((item: any) => item.delegateId === userId);
-    return po.items;
-  }, [po?.items, isAdminOrOwner, role, userId]);
+const visibleItems = useMemo(() => {
+  if (!po?.items) return [];
+
+  if (isAdminOrOwner) return po.items;
+
+  if (role === "delegate") {
+    return po.items.filter(
+      (item: any) => item.delegateId === userId
+    );
+  }
+
+  if (
+    role === "accountant" ||
+    role === "senior_management" ||
+    role === "warehouse" ||
+    role === "purchase_manager" ||
+    role === "maintenance_manager"
+  ) {
+    return po.items.filter(
+      (item: any) =>
+        item.status !== "needs_item_revision"
+    );
+  }
+
+  return po.items;
+}, [po?.items, isAdminOrOwner, role, userId]);
   const totalEstimated = useMemo(() => visibleItems.filter((item: any) => item.status !== "rejected" && item.status !== "cancelled").reduce((sum: number, item: any) => sum + (parseFloat(item.estimatedTotalCost || "0")), 0), [visibleItems]);
   const totalActual = useMemo(() => visibleItems.filter((item: any) => item.status !== "rejected" && item.status !== "cancelled").reduce((sum: number, item: any) => sum + (parseFloat(item.actualTotalCost || "0")), 0), [visibleItems]);
 
@@ -472,30 +508,125 @@ export default function PurchaseOrderDetail() {
                   </div>
                 )}
 
-                {isMyItem && item.status === "pending" && po.status === "pending_estimate" && (
-                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
-                    <p className="text-xs font-medium text-amber-800 flex items-center gap-1.5">
-                      <DollarSign className="w-3.5 h-3.5" /> {t.purchaseOrders.estimatedUnitCost}:
-                    </p>
-                    <div className="flex gap-2 items-end">
-                      <div className="flex-1 space-y-1">
-                        <Label className="text-[11px] text-amber-700">{t.purchaseOrders.estimatedUnitCost} ({currency})</Label>
-                        <Input type="number" placeholder="0.00" value={estimates[item.id] || ""} onChange={e => setEstimates(p => ({ ...p, [item.id]: e.target.value }))} className="bg-white" />
-                      </div>
-                      {estimates[item.id] && parseFloat(estimates[item.id]) > 0 && (
-                        <div className="text-xs text-amber-700 pb-2">
-                          = {(parseFloat(estimates[item.id]) * item.quantity).toLocaleString(locale)} {currency}
-                        </div>
-                      )}
-                      <Button size="sm" onClick={() => {
-                        if (!estimates[item.id] || parseFloat(estimates[item.id]) <= 0) { toast.error(t.purchaseOrders.estimatedUnitCost); return; }
-                        estimateMut.mutate({ purchaseOrderId: po.id, items: [{ id: item.id, estimatedUnitCost: estimates[item.id] }] });
-                      }} disabled={estimateMut.isPending} className="shrink-0">
-                        {estimateMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : t.common.save}
-                      </Button>
-                    </div>
-                  </div>
-                )}
+{isMyItem && item.status === "pending" && po.status === "pending_estimate" && (
+  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+    <p className="text-xs font-medium text-amber-800 flex items-center gap-1.5">
+      <DollarSign className="w-3.5 h-3.5" /> {t.purchaseOrders.estimatedUnitCost}:
+    </p>
+
+    <div className="flex gap-2 items-end">
+      <div className="flex-1 space-y-1">
+        <Label className="text-[11px] text-amber-700">
+          {t.purchaseOrders.estimatedUnitCost} ({currency})
+        </Label>
+
+        <Input
+          type="number"
+          placeholder="0.00"
+          value={estimates[item.id] || ""}
+          onChange={e =>
+            setEstimates(p => ({
+              ...p,
+              [item.id]: e.target.value
+            }))
+          }
+          className="bg-white"
+        />
+      </div>
+
+      {estimates[item.id] && parseFloat(estimates[item.id]) > 0 && (
+        <div className="text-xs text-amber-700 pb-2">
+          = {(parseFloat(estimates[item.id]) * item.quantity).toLocaleString(locale)} {currency}
+        </div>
+      )}
+
+      <Button
+        size="sm"
+        onClick={() => {
+          if (!estimates[item.id] || parseFloat(estimates[item.id]) <= 0) {
+            toast.error(t.purchaseOrders.estimatedUnitCost);
+            return;
+          }
+
+          estimateMut.mutate({
+            purchaseOrderId: po.id,
+            items: [{
+              id: item.id,
+              estimatedUnitCost: estimates[item.id]
+            }]
+          });
+        }}
+        disabled={estimateMut.isPending}
+        className="shrink-0"
+      >
+        {estimateMut.isPending
+          ? <Loader2 className="w-3 h-3 animate-spin" />
+          : t.common.save}
+      </Button>
+
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => {
+          setSelectedRevisionItemId(item.id);
+          setItemRevisionReason("");
+          setIsItemRevisionDialogOpen(true);
+        }}
+      >
+        طلب مراجعة
+      </Button>
+    </div>
+  </div>
+)}
+
+{item.status === "needs_item_revision" && (
+  <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-3">
+    <p className="text-sm font-medium text-red-800">
+      ⚠️ هذا الصنف يحتاج مراجعة
+    </p>
+
+    {item.itemRevisionNote && (
+      <div className="text-sm text-red-700 bg-white p-2 rounded border">
+        <strong>سبب المراجعة:</strong>
+        <br />
+        {item.itemRevisionNote}
+      </div>
+    )}
+
+    <div className="flex gap-2">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          setEditingItem(item);
+          setEditForm({
+            itemName: item.itemName || "",
+            description: item.description || "",
+            quantity: item.quantity || 1,
+            estimatedUnitCost: item.estimatedUnitCost?.toString() || "",
+            unit: item.unit || "",
+            photoUrl: item.photoUrl || "",
+            notes: item.notes || "",
+          });
+        }}
+      >
+        تعديل الصنف
+      </Button>
+
+      <Button
+        size="sm"
+        onClick={() =>
+          resubmitItemRevisionMut.mutate({
+            itemId: item.id,
+          })
+        }
+        disabled={resubmitItemRevisionMut.isPending}
+      >
+        إعادة إرسال الصنف
+      </Button>
+    </div>
+  </div>
+)}
 
                 {isMyItem && item.status === "approved" && ["approved", "partial_purchase"].includes(po.status) && (
                   <div className="bg-teal-50 border border-teal-200 rounded-lg p-3 space-y-3">
@@ -1045,6 +1176,72 @@ export default function PurchaseOrderDetail() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog
+  open={isItemRevisionDialogOpen}
+  onOpenChange={setIsItemRevisionDialogOpen}
+>
+  <DialogContent>
+    <DialogHeader>
+      <DialogTitle>
+        طلب مراجعة الصنف
+      </DialogTitle>
+    </DialogHeader>
+
+    <div className="space-y-4 py-2">
+      <p className="text-sm text-muted-foreground">
+        اكتب سبب طلب مراجعة هذا الصنف.
+      </p>
+
+      <div className="space-y-2">
+        <Label>سبب المراجعة *</Label>
+
+        <Textarea
+          value={itemRevisionReason}
+          onChange={(e) => setItemRevisionReason(e.target.value)}
+          placeholder="مثال: يرجى تعديل الكمية أو المواصفات"
+          rows={4}
+        />
+      </div>
+    </div>
+
+    <DialogFooter>
+      <Button
+        variant="outline"
+        onClick={() => setIsItemRevisionDialogOpen(false)}
+      >
+        إلغاء
+      </Button>
+
+      <Button
+        variant="destructive"
+        disabled={
+          itemRevisionReason.trim().length < 5 ||
+          requestItemRevisionMut.isPending ||
+          !selectedRevisionItemId
+        }
+        onClick={() => {
+          if (!selectedRevisionItemId) return;
+
+          requestItemRevisionMut.mutate({
+            itemId: selectedRevisionItemId,
+            note: itemRevisionReason,
+          });
+
+          setIsItemRevisionDialogOpen(false);
+          setItemRevisionReason("");
+          setSelectedRevisionItemId(null);
+        }}
+      >
+        {requestItemRevisionMut.isPending ? (
+          <Loader2 className="w-4 h-4 animate-spin" />
+        ) : (
+          "إرسال طلب المراجعة"
+        )}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
 
       {/* Edit Item Dialog */}
       <Dialog open={!!editingItem} onOpenChange={(open) => { if (!open) setEditingItem(null); }}>
