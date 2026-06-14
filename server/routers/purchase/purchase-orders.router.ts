@@ -203,15 +203,23 @@ export const purchaseOrdersRouter = router({
     });
     // Update PO status (Path C: do not change ticket status — gate security controls it)
     const poItems = await db.getPOItems(item.purchaseOrderId);
-    const activeItemsPurch = poItems.filter(i => i.status !== "rejected" && i.status !== "cancelled");
-    const purchasedOrLater = activeItemsPurch.filter(i => ["purchased", "delivered_to_warehouse", "delivered_to_requester"].includes(i.status));
+    // الأصناف في needs_item_revision لم تصل لمرحلة الشراء بعد → لا تُحسب ضمن الأصناف الفعّالة الآن
+    const activeItemsPurch = poItems.filter(
+      i => i.status !== "rejected" && i.status !== "cancelled" && i.status !== "needs_item_revision"
+    );
+    const purchasedOrLater = activeItemsPurch.filter(i =>
+      ["purchased", "delivered_to_warehouse", "delivered_to_requester"].includes(i.status)
+    );
     const poForPath = await db.getPurchaseOrderById(item.purchaseOrderId);
     const ticketForPath = poForPath?.ticketId ? await db.getTicketById(poForPath.ticketId) : null;
     const isPathC = ticketForPath?.maintenancePath === "C";
     if (activeItemsPurch.length > 0 && purchasedOrLater.length === activeItemsPurch.length) {
-      await db.updatePurchaseOrder(item.purchaseOrderId, { status: "purchased" });
+      // كل الأصناف الفعّالة اشتُريت — لكن في needs_item_revision؟ إذن هو شراء جزئي
+      const hasRevisionItems = poItems.some(i => i.status === "needs_item_revision");
+      const newStatus = hasRevisionItems ? "partial_purchase" : "purchased";
+      await db.updatePurchaseOrder(item.purchaseOrderId, { status: newStatus });
       if (poForPath?.ticketId && !isPathC) {
-        await db.updateTicket(poForPath.ticketId, { status: "purchased" });
+        await db.updateTicket(poForPath.ticketId, { status: newStatus });
       }
     } else if (purchasedOrLater.length > 0) {
       await db.updatePurchaseOrder(item.purchaseOrderId, { status: "partial_purchase" });
@@ -382,19 +390,30 @@ export const purchaseOrdersRouter = router({
   })).mutation(async ({ input, ctx }) => {
     const po = await db.getPurchaseOrderById(input.purchaseOrderId);
     if (!po) throw new TRPCError({ code: "NOT_FOUND" });
-    if (!['draft', 'pending_review', 'pending_estimate', 'pending_accounting', 'revision_needed'].includes(po.status)) {
+    // الحالات المسموح فيها بالتعديل العادي
+    const editableStatuses = ['draft', 'pending_review', 'pending_estimate', 'pending_accounting', 'revision_needed'];
+    const isEditableStatus = editableStatuses.includes(po.status);
+
+    // استثناء: الطلب معتمد/في المراجعة لكن الصنف نفسه في needs_item_revision → نسمح للمنشئ بالتعديل
+    const oldItem = await db.getPOItemById(input.id);
+    const isItemInRevision = oldItem?.status === "needs_item_revision";
+    const isCreator = po.requestedById === ctx.user.id;
+
+    if (!isEditableStatus && !(isItemInRevision && isCreator)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعديل صنف في طلب معتمد أو ممول" });
     }
 
     // Enforce creator-only editing when status is 'revision_needed'
-    if (po.status === 'revision_needed' && po.requestedById !== ctx.user.id) {
+    if (po.status === 'revision_needed' && !isCreator) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "فقط منشئ الطلب يمكنه تعديل الأصناف عند طلب المراجعة"
       });
     }
 
-    const oldItem = await db.getPOItemById(input.id);
+    if (!oldItem) {
+      throw new TRPCError({ code: "NOT_FOUND" });
+    }
 
     if (!oldItem) {
       throw new TRPCError({ code: "NOT_FOUND" });
@@ -453,7 +472,12 @@ export const purchaseOrdersRouter = router({
       estimatedUnitCost: z.string(),
     })),
   })).mutation(async ({ input, ctx }) => {
-    let totalEstimated = 0;
+    // اجلب الطلب أولاً لمعرفة حالته الحالية
+    const po = await db.getPurchaseOrderById(input.purchaseOrderId);
+    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
+
+    const isAlreadyApproved = po.status === "approved";
+
     for (const item of input.items) {
       const cost = parseFloat(item.estimatedUnitCost);
       const poItem = (await db.getPOItems(input.purchaseOrderId)).find(i => i.id === item.id);
@@ -461,23 +485,90 @@ export const purchaseOrdersRouter = router({
       if (!poItem?.delegateId) {
         throw new TRPCError({ code: "BAD_REQUEST", message: `الصنف "${poItem?.itemName || item.id}" لا يمكن تسعيره قبل تعيين مندوب له` });
       }
+      // Guard: المندوب يسعّر أصنافه فقط
+      const isAdminOrOwner = ctx.user.role === "admin" || ctx.user.role === "owner";
+      if (!isAdminOrOwner && poItem.delegateId !== ctx.user.id) {
+        throw new TRPCError({ code: "FORBIDDEN", message: `الصنف "${poItem.itemName}" غير مخصص لك` });
+      }
       const totalCost = cost * (poItem?.quantity || 1);
-      totalEstimated += totalCost;
-      await db.updatePOItem(item.id, { estimatedUnitCost: item.estimatedUnitCost, estimatedTotalCost: String(totalCost), status: "estimated", estimatedById: ctx.user.id });
-    }
-    // Check if all items are estimated (excluding rejected/cancelled items)
-    const allItems = await db.getPOItems(input.purchaseOrderId);
-    const allEstimated = allItems.every(i => i.status === "estimated" || i.status === "rejected" || i.status === "cancelled");
-    if (allEstimated) {
-      // Recalculate total estimated cost to ensure we only sum non-rejected/non-cancelled items
-      const finalTotalEstimated = allItems.filter(i => i.status !== "rejected" && i.status !== "cancelled").reduce((sum, i) => sum + parseFloat(i.estimatedTotalCost || "0"), 0);
-      await db.updatePurchaseOrder(input.purchaseOrderId, { status: "pending_accounting", totalEstimatedCost: String(finalTotalEstimated) });
-      // Notify accountants
-      const accountants = await db.getUsersByRole("accountant");
-      for (const acc of accountants) {
-        await db.createNotification({ userId: acc.id, title: "طلب شراء بانتظار الاعتماد", message: `طلب شراء بانتظار اعتماد الحسابات`, type: "warning", relatedPOId: input.purchaseOrderId });
+
+      if (isAlreadyApproved) {
+        // الطلب معتمد بالفعل: الصنف المعاد إرساله (كان pending بعد resubmit) يذهب مباشرة لـ approved
+        // نقبل فقط الأصناف في pending (عادت من المراجعة) أو estimated
+        if (!isAdminOrOwner && !["pending", "estimated"].includes(poItem.status)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: `الصنف "${poItem.itemName}" لا يمكن تسعيره في وضعه الحالي` });
+        }
+        await db.updatePOItem(item.id, {
+          estimatedUnitCost: item.estimatedUnitCost,
+          estimatedTotalCost: String(totalCost),
+          status: "approved",
+        });
+      } else {
+        // ── الوضع الطبيعي: التسعير في مرحلة pending_estimate ──
+        await db.updatePOItem(item.id, {
+          estimatedUnitCost: item.estimatedUnitCost,
+          estimatedTotalCost: String(totalCost),
+          status: "estimated",
+        });
       }
     }
+
+    const allItems = await db.getPOItems(input.purchaseOrderId);
+
+    if (isAlreadyApproved) {
+      // ── الطلب كان معتمداً: تحقق هل اكتملت جميع الأصناف الآن ──
+      const stillPending = allItems.some(
+        i => i.status === "needs_item_revision" || i.status === "pending" || i.status === "estimated"
+      );
+      if (!stillPending) {
+        // كل الأصناف وصلت لـ approved أو ما بعده
+        // المندوب يبدأ شراء الصنف مباشرة من صفحة "أصنافي"
+        await db.createNotification({
+          userId: ctx.user.id,
+          title: "✅ الصنف جاهز للشراء",
+          message: `اكتمل تسعير جميع الأصناف في طلب الشراء ${po.poNumber} ويمكنك البدء بالشراء الآن.`,
+          type: "success",
+          relatedPOId: input.purchaseOrderId,
+        });
+      }
+      return { success: true };
+    }
+
+    // ── تحقق هل يمكن تقديم الطلب للمحاسبة ──
+    // الأصناف في needs_item_revision تُعدّ "جانباً" مؤقتاً — لا تمنع الباقين من المضي
+    const readyForAccounting = allItems.every(
+      i =>
+        i.status === "estimated" ||
+        i.status === "rejected" ||
+        i.status === "cancelled" ||
+        i.status === "needs_item_revision"
+    );
+    const hasEstimatedItems = allItems.some(i => i.status === "estimated");
+
+    if (readyForAccounting && hasEstimatedItems) {
+      // احسب المجموع فقط من الأصناف المسعّرة (تجاهل المرفوض والملغى والمراجعة)
+      const finalTotalEstimated = allItems
+        .filter(i => i.status === "estimated")
+        .reduce((sum, i) => sum + parseFloat(i.estimatedTotalCost || "0"), 0);
+
+      await db.updatePurchaseOrder(input.purchaseOrderId, {
+        status: "pending_accounting",
+        totalEstimatedCost: String(finalTotalEstimated),
+      });
+
+      // أخطر المحاسبين
+      const accountants = await db.getUsersByRole("accountant");
+      for (const acc of accountants) {
+        await db.createNotification({
+          userId: acc.id,
+          title: "طلب شراء بانتظار الاعتماد",
+          message: `طلب شراء بانتظار اعتماد الحسابات`,
+          type: "warning",
+          relatedPOId: input.purchaseOrderId,
+        });
+      }
+    }
+    // إذا في أصناف لا تزال في needs_item_revision → الطلب يبقى pending_estimate
     return { success: true };
   }),
 
@@ -623,6 +714,111 @@ list: protectedProcedure.input(z.object({
     return { success: true };
   }),
 
+  requestItemRevision: delegateProcedure.input(z.object({
+    itemId: z.number(),
+    note: z.string().min(5, "يجب كتابة سبب طلب المراجعة"),
+  })).mutation(async ({ input, ctx }) => {
+
+    const item = await db.getPOItemById(input.itemId);
+
+    if (!item) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "الصنف غير موجود" });
+    }
+
+    const po = await db.getPurchaseOrderById(item.purchaseOrderId);
+
+    if (!po) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
+    }
+
+    // ── تحقق أن المندوب يملك هذا الصنف فعلاً ──
+    const isAdminOrOwner = ctx.user.role === "admin" || ctx.user.role === "owner";
+    if (!isAdminOrOwner && item.delegateId !== ctx.user.id) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "لا يمكنك طلب مراجعة صنف غير مخصص لك",
+      });
+    }
+
+    if (po.status !== "pending_estimate") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يمكن طلب مراجعة الصنف إلا أثناء مرحلة التسعير",
+      });
+    }
+
+    await db.updatePOItem(item.id, {
+      status: "needs_item_revision",
+      itemRevisionNote: input.note,
+      itemRevisionRequestedById: ctx.user.id,
+      itemRevisionRequestedAt: new Date(),
+    });
+
+    await db.createProcurementComment({
+      purchaseOrderId: po.id,
+      userId: ctx.user.id,
+      userName: ctx.user.name || "User",
+      userRole: ctx.user.role,
+      actionType: "item_revision_requested",
+      note: `الصنف: ${item.itemName}\n\nالسبب:\n${input.note}`,
+    });
+
+    // أخطر منشئ الطلب ليعدّل الصنف
+    await db.createNotification({
+      userId: po.requestedById,
+      title: "⚠️ طلب مراجعة صنف",
+      message: `الصنف "${item.itemName}" يحتاج مراجعة.\n\nالسبب:\n${input.note}\n\nيرجى تعديل الصنف وإعادة إرساله.`,
+      type: "warning",
+      relatedPOId: po.id,
+    });
+
+    await db.createAuditLog({
+      userId: ctx.user.id,
+      action: "request_item_revision",
+      entityType: "purchase_order_item",
+      entityId: item.id,
+      newValues: { status: "needs_item_revision", note: input.note },
+    });
+
+    // ── بعد طلب المراجعة: تحقق هل الأصناف الباقية كلها مسعّرة ──
+    // السيناريو: المندوب سعّر 2 وطلب مراجعة 2 → الـ 2 المسعّرة يجب أن تمشي للمحاسبة الآن
+    const allItemsAfter = await db.getPOItems(po.id);
+    const readyForAccounting = allItemsAfter.every(
+      i =>
+        i.status === "estimated" ||
+        i.status === "rejected" ||
+        i.status === "cancelled" ||
+        i.status === "needs_item_revision"
+    );
+    // تحقق إضافي: يجب أن يكون في صنف واحد على الأقل مسعّر حتى نتقدم
+    const hasEstimatedItems = allItemsAfter.some(i => i.status === "estimated");
+
+    if (readyForAccounting && hasEstimatedItems) {
+      const finalTotalEstimated = allItemsAfter
+        .filter(i => i.status === "estimated")
+        .reduce((sum, i) => sum + parseFloat(i.estimatedTotalCost || "0"), 0);
+
+      await db.updatePurchaseOrder(po.id, {
+        status: "pending_accounting",
+        totalEstimatedCost: String(finalTotalEstimated),
+      });
+
+      const accountants = await db.getUsersByRole("accountant");
+      for (const acc of accountants) {
+        await db.createNotification({
+          userId: acc.id,
+          title: "طلب شراء بانتظار الاعتماد",
+          message: `طلب شراء رقم ${po.poNumber} بانتظار اعتماد الحسابات (بعض الأصناف قيد المراجعة).`,
+          type: "warning",
+          relatedPOId: po.id,
+        });
+      }
+    }
+
+    return { success: true };
+
+  }),
+
   resubmit: protectedProcedure.input(z.object({
     id: z.number(),
     note: z.string().optional(),
@@ -645,6 +841,82 @@ list: protectedProcedure.input(z.object({
 
     await db.createAuditLog({ userId: ctx.user.id, action: "resubmit_po", entityType: "purchase_order", entityId: input.id });
     return { success: true };
+  }),
+
+  resubmitItemRevision: protectedProcedure.input(z.object({
+    itemId: z.number(),
+  })).mutation(async ({ input, ctx }) => {
+
+    const item = await db.getPOItemById(input.itemId);
+
+    if (!item) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "الصنف غير موجود"
+      });
+    }
+
+    const po = await db.getPurchaseOrderById(item.purchaseOrderId);
+
+    if (!po) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "طلب الشراء غير موجود"
+      });
+    }
+
+    if (po.requestedById !== ctx.user.id) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "فقط منشئ الطلب يمكنه إعادة إرسال الصنف"
+      });
+    }
+
+    if (item.status !== "needs_item_revision") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الصنف ليس في حالة مراجعة"
+      });
+    }
+
+    // ── أعد الصنف لحالة pending حتى يسعّره المندوب مباشرة ──
+    // الطلب يبقى في pending_estimate وهذا صحيح — المندوب سيسعّر هذا الصنف
+    await db.updatePOItem(item.id, {
+      status: "pending",
+      itemRevisionNote: null,
+      itemRevisionRequestedById: null,
+      itemRevisionRequestedAt: null,
+    });
+
+    await db.createProcurementComment({
+      purchaseOrderId: po.id,
+      userId: ctx.user.id,
+      userName: ctx.user.name || "User",
+      userRole: ctx.user.role,
+      actionType: "item_revision_resubmitted",
+      note: `تم تعديل الصنف "${item.itemName}" وإعادة إرساله للمندوب للتسعير`,
+    });
+
+    // ── أخطر المندوب المخصص للصنف مباشرةً لتسعيره ──
+    if (item.delegateId) {
+      await db.createNotification({
+        userId: item.delegateId,
+        title: "✏️ صنف جاهز للتسعير",
+        message: `تم تعديل الصنف "${item.itemName}" من طلب الشراء ${po.poNumber} وهو جاهز للتسعير الآن.`,
+        type: "info",
+        relatedPOId: po.id,
+      });
+    }
+
+    await db.createAuditLog({
+      userId: ctx.user.id,
+      action: "resubmit_item_revision",
+      entityType: "purchase_order_item",
+      entityId: item.id,
+    });
+
+    return { success: true };
+
   }),
 
   update: protectedProcedure.input(z.object({
