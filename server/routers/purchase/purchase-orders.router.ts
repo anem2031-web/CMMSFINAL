@@ -476,7 +476,8 @@ export const purchaseOrdersRouter = router({
     const po = await db.getPurchaseOrderById(input.purchaseOrderId);
     if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
 
-    const isAlreadyApproved = po.status === "approved";
+    // partial_purchase = بعض الأصناف اشتُريت والصنف العائد من المراجعة جاهز للتسعير
+    const isAlreadyApproved = ["approved", "partial_purchase", "purchased"].includes(po.status);
 
     for (const item of input.items) {
       const cost = parseFloat(item.estimatedUnitCost);
@@ -627,6 +628,36 @@ list: protectedProcedure.input(z.object({
     }
     if (ctx.user.role !== "delegate") return [];
     return db.getPOItemsByDelegate(ctx.user.id);
+  }),
+
+  pendingEstimateItems: protectedProcedure.query(async ({ ctx }) => {
+    // الأصناف العائدة من المراجعة فقط — حالتها pending لكن طلبها ليس pending_review أو pending_estimate
+    // أي طلب في partial_purchase أو approved يعني الصنف عائد من مراجعة ويحتاج تسعير
+    const isAdminOrOwner = ctx.user.role === "admin" || ctx.user.role === "owner";
+
+    const getRevisionPendingItems = async (allItems: any[]) => {
+      const result = [];
+      for (const item of allItems) {
+        if (item.status !== "pending") continue;
+        const po = await db.getPurchaseOrderById(item.purchaseOrderId);
+        // الطلب في partial_purchase أو approved → الصنف عائد من مراجعة
+        if (po && ["partial_purchase", "approved", "purchased"].includes(po.status)) {
+          result.push({ ...item, purchaseOrderNumber: po.poNumber });
+        }
+      }
+      return result;
+    };
+
+    if (isAdminOrOwner) {
+      const allPending = await db.getPOItemsByStatus("pending");
+      return getRevisionPendingItems(allPending);
+    }
+    if (ctx.user.role !== "delegate") return [];
+    const items = await db.getPOItemsByDelegate(ctx.user.id);
+    console.log("[pendingEstimateItems] delegate id:", ctx.user.id, "total items:", items.length, "pending items:", items.filter(i => i.status === "pending").length);
+    items.filter(i => i.status === "pending").forEach(i => console.log("  pending item:", i.id, i.itemName, "purchaseOrderId:", i.purchaseOrderId));
+    const pendingItems = items.filter(i => i.status === "pending");
+    return getRevisionPendingItems(pendingItems);
   }),
 
   pendingDeliveryItems: protectedProcedure.query(async ({ ctx }) => {
