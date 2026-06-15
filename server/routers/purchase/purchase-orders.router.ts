@@ -255,6 +255,151 @@ export const purchaseOrdersRouter = router({
     return { success: true };
   }),
 
+  saveDraft: protectedProcedure.input(z.object({
+    ticketId: z.number().optional(),
+    notes: z.string().optional(),
+    items: z.array(z.object({
+      itemName: z.string().min(1),
+      description: z.string().optional(),
+      quantity: z.number().min(1),
+      unit: z.string().optional(),
+      photoUrl: z.string().optional(),
+      photoUrls: z.array(z.string()).optional(),
+      notes: z.string().optional(),
+    })),
+  })).mutation(async ({ input, ctx }) => {
+    if (input.items.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "يجب إضافة صنف واحد على الأقل" });
+    if (input.items.length > 15) throw new TRPCError({ code: "BAD_REQUEST", message: `الحد الأقصى 15 صنف لكل طلب شراء` });
+
+    const poNumber = await db.getNextPONumber();
+    const poId = await db.createPurchaseOrder({
+      poNumber,
+      ticketId: input.ticketId,
+      requestedById: ctx.user.id,
+      status: "draft",
+      notes: input.notes,
+    });
+
+    const itemsData = input.items.map(item => ({ ...item, purchaseOrderId: poId!, status: "pending" }));
+    await db.createPOItems(itemsData);
+
+    await db.createAuditLog({ userId: ctx.user.id, action: "save_draft_po", entityType: "purchase_order", entityId: poId! });
+    return { id: poId, poNumber };
+  }),
+
+  submitDraft: protectedProcedure.input(z.object({
+    id: z.number(),
+  })).mutation(async ({ input, ctx }) => {
+    const po = await db.getPurchaseOrderById(input.id);
+    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
+    if (po.status !== "draft") throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب ليس مسودة" });
+    if (String(po.requestedById) !== String(ctx.user.id) && !["admin", "owner"].includes(ctx.user.role)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "فقط منشئ الطلب يمكنه إرساله" });
+    }
+
+    const items = await db.getPOItems(input.id);
+    if (items.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يوجد أصناف في الطلب" });
+
+    await db.updatePurchaseOrder(input.id, { status: "pending_review" });
+
+    // أخطر المدراء
+    const managers = await db.getManagerUsers();
+    for (const mgr of managers) {
+      if (mgr.id !== ctx.user.id) {
+        await db.createNotification({
+          userId: mgr.id,
+          title: `🛒 طلب شراء جديد #${po.poNumber}`,
+          message: `قام ${ctx.user.name} بإرسال طلب شراء يحتوي على ${items.length} صنف. بانتظار المراجعة.`,
+          type: "warning",
+          relatedPOId: input.id,
+        });
+      }
+    }
+
+    // تحديث التذكرة إذا مرتبطة
+    if (po.ticketId) {
+      const ticket = await db.getTicketById(po.ticketId);
+      if (ticket && ticket.maintenancePath !== "C") {
+        await db.updateTicket(po.ticketId, { status: "needs_purchase" });
+      }
+    }
+
+    await db.createAuditLog({ userId: ctx.user.id, action: "submit_draft_po", entityType: "purchase_order", entityId: input.id });
+    return { success: true };
+  }),
+
+  updateDraft: protectedProcedure.input(z.object({
+    id: z.number(),
+    notes: z.string().optional(),
+    items: z.array(z.object({
+      id: z.number().optional(), // موجود = تحديث، غير موجود = إضافة جديد
+      itemName: z.string().min(1),
+      description: z.string().optional(),
+      quantity: z.number().min(1),
+      unit: z.string().optional(),
+      photoUrl: z.string().optional(),
+      photoUrls: z.array(z.string()).optional(),
+      notes: z.string().optional(),
+    })),
+  })).mutation(async ({ input, ctx }) => {
+    const po = await db.getPurchaseOrderById(input.id);
+    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "المسودة غير موجودة" });
+    if (po.status !== "draft") throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعديل طلب ليس مسودة" });
+    if (String(po.requestedById) !== String(ctx.user.id) && !["admin", "owner"].includes(ctx.user.role)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "فقط منشئ المسودة يمكنه تعديلها" });
+    }
+    if (input.items.length > 15) throw new TRPCError({ code: "BAD_REQUEST", message: "الحد الأقصى 15 صنف" });
+
+    // تحديث ملاحظات الطلب
+    await db.updatePurchaseOrder(input.id, { notes: input.notes || null });
+
+    // جلب الأصناف الحالية
+    const existingItems = await db.getPOItems(input.id);
+    const existingIds = new Set(existingItems.map((i: any) => i.id));
+
+    // الأصناف التي أُرسلت من الواجهة
+    const submittedIds = new Set(input.items.filter(i => i.id).map(i => i.id!));
+
+    // احذف الأصناف التي لم تعد موجودة في القائمة (حذف نهائي)
+    for (const existing of existingItems) {
+      if (!submittedIds.has(existing.id)) {
+        await db.deletePOItem(existing.id);
+      }
+    }
+
+    // تحديث الموجود أو إضافة جديد
+    for (const item of input.items) {
+      if (item.id && existingIds.has(item.id)) {
+        // تحديث صنف موجود
+        await db.updatePOItem(item.id, {
+          itemName: item.itemName,
+          description: item.description || null,
+          quantity: item.quantity,
+          unit: item.unit || null,
+          photoUrl: item.photoUrl || null,
+          photoUrls: item.photoUrls || null,
+          notes: item.notes || null,
+        });
+      } else {
+        // إضافة صنف جديد
+        await db.createPOItems([{
+          purchaseOrderId: input.id,
+          itemName: item.itemName,
+          description: item.description || null,
+          quantity: item.quantity,
+          unit: item.unit || null,
+          photoUrl: item.photoUrl || null,
+          photoUrls: item.photoUrls || null,
+          notes: item.notes || null,
+          status: "pending",
+        }]);
+      }
+    }
+
+    await db.createAuditLog({ userId: ctx.user.id, action: "update_draft_po", entityType: "purchase_order", entityId: input.id });
+    return { success: true };
+  }),
+
   create: protectedProcedure.input(z.object({
     ticketId: z.number().optional(),
     notes: z.string().optional(),
