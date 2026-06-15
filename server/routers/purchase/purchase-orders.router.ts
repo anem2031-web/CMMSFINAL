@@ -621,8 +621,8 @@ export const purchaseOrdersRouter = router({
     const po = await db.getPurchaseOrderById(input.purchaseOrderId);
     if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
 
-    // partial_purchase = بعض الأصناف اشتُريت والصنف العائد من المراجعة جاهز للتسعير
-    const isAlreadyApproved = ["approved", "partial_purchase", "purchased"].includes(po.status);
+    // أي حالة بعد pending_estimate تعني الطلب تقدم وصنف المراجعة يذهب مباشرة لـ approved
+    const isAlreadyApproved = ["approved", "partial_purchase", "purchased", "pending_accounting", "pending_management"].includes(po.status);
 
     for (const item of input.items) {
       const cost = parseFloat(item.estimatedUnitCost);
@@ -786,7 +786,8 @@ list: protectedProcedure.input(z.object({
         if (item.status !== "pending") continue;
         const po = await db.getPurchaseOrderById(item.purchaseOrderId);
         // الطلب في partial_purchase أو approved → الصنف عائد من مراجعة
-        if (po && ["partial_purchase", "approved", "purchased"].includes(po.status)) {
+        // أي حالة بعد pending_estimate تعني الصنف عائد من مراجعة ويحتاج تسعير
+        if (po && ["partial_purchase", "approved", "purchased", "pending_accounting", "pending_management"].includes(po.status)) {
           result.push({ ...item, purchaseOrderNumber: po.poNumber });
         }
       }
