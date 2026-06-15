@@ -301,6 +301,7 @@ items: router({
         z.object({
           search: z.string().optional(),
           nodeId: z.number().optional(),
+          nodeIds: z.array(z.number()).optional(),
           isActive: z.boolean().optional(),
           limit: z.number().default(50),
           offset: z.number().default(0),
@@ -316,8 +317,10 @@ const conditions = [];
 const activeFilter = input?.isActive !== undefined ? input.isActive : true;
 conditions.push(eq(catalogItems.isActive, activeFilter === true ? 1 : 0));
 
-// إصلاح فلترة التصنيف
-if (input?.nodeId !== undefined) {
+// إصلاح فلترة التصنيف — يدعم nodeId واحد أو مصفوفة nodeIds (للتصنيفات الأب وأحفادها)
+if (input?.nodeIds && input.nodeIds.length > 0) {
+  conditions.push(inArray(catalogItems.nodeId, input.nodeIds));
+} else if (input?.nodeId !== undefined) {
   conditions.push(eq(catalogItems.nodeId, input.nodeId));
 }
 
@@ -340,6 +343,7 @@ if (input?.search) {
         }
 
 const results = await (query as any)
+  .orderBy(desc(catalogItems.id))
   .limit(input?.limit || 50)
   .offset(input?.offset || 0);
 
