@@ -63,25 +63,50 @@ onSelect: (item: {
 }) => void;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState<number | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // debounce: انتظر 350ms بعد توقف الكتابة ثم ابعث للسيرفر
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 350);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
 
   const { data: allNodes } = trpc.catalog.nodes.list.useQuery(
     { isActive: true },
     { enabled: open }
   );
 
-  const { data: allItems } = trpc.catalog.items.list.useQuery(
-    { isActive: true, limit: 500 },
+  // جمع ID التصنيف المختار + كل أحفاده بشكل تكراري
+  const getDescendantIds = (nodeId: number, nodes: CatalogNode[]): number[] => {
+    const children = nodes.filter(n => n.parentId === nodeId);
+    return [nodeId, ...children.flatMap(c => getDescendantIds(c.id, nodes))];
+  };
+
+  const selectedNodeIds = useMemo(() => {
+    if (!selectedNodeId || !allNodes) return undefined;
+    return getDescendantIds(selectedNodeId, allNodes);
+  }, [selectedNodeId, allNodes]);
+
+  // ✅ البحث على السيرفر — يجلب فقط ما يطابق البحث أو التصنيف المختار
+  const { data: serverItems, isFetching } = trpc.catalog.items.list.useQuery(
+    {
+      isActive: true,
+      limit: 80,
+      search: debouncedSearch || undefined,
+      nodeIds: selectedNodeIds,
+    },
     { enabled: open }
   );
 
-  // focus on open
+  // إعادة ضبط الحالة عند كل فتح للنافذة
   useEffect(() => {
     if (open) {
       setTimeout(() => inputRef.current?.focus(), 100);
       setSearchQuery("");
+      setDebouncedSearch("");
       setSelectedNodeId(null);
     }
   }, [open]);
@@ -103,20 +128,7 @@ onSelect: (item: {
     });
   };
 
-  // فلترة الأصناف
-  const filteredItems = useMemo(() => {
-    if (!allItems) return [];
-    const q = searchQuery.trim().toLowerCase();
-    return allItems.filter((item: any) => {
-      const matchNode = selectedNodeId ? item.nodeId === selectedNodeId : true;
-      const matchSearch = !q ||
-        item.nameAr?.toLowerCase().includes(q) ||
-        item.nameEn?.toLowerCase().includes(q) ||
-        item.code?.toLowerCase().includes(q) ||
-        item.manufacturer?.toLowerCase().includes(q);
-      return matchNode && matchSearch;
-    });
-  }, [allItems, searchQuery, selectedNodeId]);
+  const items = serverItems || [];
 
   const renderNode = (node: CatalogNode, depth = 0): React.ReactNode => {
     const children = getChildren(node.id);
@@ -198,23 +210,28 @@ onSelect: (item: {
                   dir="rtl"
                 />
               </div>
-              {filteredItems.length > 0 && (
-                <p className="text-xs text-muted-foreground mt-1.5">
-                  {filteredItems.length} صنف
-                </p>
-              )}
+              <p className="text-xs text-muted-foreground mt-1.5 h-4">
+                {isFetching
+                  ? "جارٍ البحث..."
+                  : items.length > 0
+                    ? `${items.length} صنف${items.length === 80 ? " (الأحدث أولاً)" : ""}`
+                    : ""}
+              </p>
             </div>
 
             {/* Results */}
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {filteredItems.length === 0 ? (
+              {isFetching ? (
                 <div className="text-center py-10 text-sm text-muted-foreground">
-                  {searchQuery || selectedNodeId
-                    ? "لا توجد نتائج"
-                    : "اختر تصنيفاً أو ابحث عن صنف"}
+                  <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" />
+                  جارٍ التحميل...
+                </div>
+              ) : items.length === 0 ? (
+                <div className="text-center py-10 text-sm text-muted-foreground">
+                  لا توجد نتائج
                 </div>
               ) : (
-                filteredItems.map((item: any) => (
+                items.map((item: any) => (
                   <button
                     key={item.id}
                     onClick={() => {
