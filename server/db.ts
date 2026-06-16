@@ -293,9 +293,10 @@ export async function createTicket(data: any) {
   return result[0].insertId;
 }
 
-export async function getTickets(filters?: { status?: string; priority?: string; siteId?: number; sectionId?: number; assetId?: number; assignedToId?: number; assignedTechnicianId?: number; reportedById?: number; search?: string; category?: string }) {
-  const db = await getDb();
-  if (!db) return [];
+type TicketListFilters = { status?: string; priority?: string; siteId?: number; sectionId?: number; assetId?: number; assignedToId?: number; assignedTechnicianId?: number; reportedById?: number; search?: string; category?: string };
+
+// شرط الفلترة المشترك بين getTickets (بدون صفحات) وgetTicketsPaginated (مع صفحات)
+function buildTicketsWhere(filters?: TicketListFilters) {
   const conditions: any[] = [];
   if (filters?.status) {
     if (filters.status === "open") {
@@ -319,7 +320,13 @@ export async function getTickets(filters?: { status?: string; priority?: string;
     like(tickets.ticketNumber, `%${filters.search}%`)
   ));
   if (filters?.category) conditions.push(eq(tickets.category, filters.category as any));
-  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
+export async function getTickets(filters?: TicketListFilters) {
+  const db = await getDb();
+  if (!db) return [];
+  const where = buildTicketsWhere(filters);
   // Phase 4: join both external technicians table AND internal users table
   // to resolve display names for both assignment paths.
   const assignedUser = alias(users, "assignedUser");
@@ -339,6 +346,48 @@ export async function getTickets(filters?: { status?: string; priority?: string;
     assignedTechnicianName: r.technicianName ?? null,   // legacy external path
     assignedToUserName: r.assignedUserName ?? null,     // Phase 4: internal path
   }));
+}
+
+// صفحات حقيقية لقائمة البلاغات: ترجع فقط عناصر الصفحة المطلوبة + العدد الإجمالي
+// لحساب عدد الصفحات بالواجهة (limit/offset على مستوى قاعدة البيانات بعد تطبيق نفس الفلاتر والبحث)
+export async function getTicketsPaginated(filters: TicketListFilters | undefined, page: number = 1, pageSize: number = 10) {
+  const db = await getDb();
+  if (!db) return { tickets: [] as any[], total: 0, page: 1, pageSize, totalPages: 1 };
+
+  const where = buildTicketsWhere(filters);
+
+  const [{ cnt }] = await db.select({ cnt: count() }).from(tickets).where(where);
+  const total = Number(cnt) || 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const offset = (safePage - 1) * pageSize;
+
+  const assignedUser = alias(users, "assignedUser");
+  const rows = await db
+    .select({
+      ticket: tickets,
+      technicianName: technicians.name,
+      assignedUserName: assignedUser.name,
+    })
+    .from(tickets)
+    .leftJoin(technicians, eq(tickets.assignedTechnicianId, technicians.id))
+    .leftJoin(assignedUser, eq(tickets.assignedToId, assignedUser.id))
+    .where(where)
+    .orderBy(desc(tickets.createdAt))
+    .limit(pageSize)
+    .offset(offset);
+
+  return {
+    tickets: rows.map(r => ({
+      ...r.ticket,
+      assignedTechnicianName: r.technicianName ?? null,
+      assignedToUserName: r.assignedUserName ?? null,
+    })),
+    total,
+    page: safePage,
+    pageSize,
+    totalPages,
+  };
 }
 
 export async function getTicketById(id: number) {
