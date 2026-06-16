@@ -60,11 +60,26 @@ export async function htmlToPdf(html: string): Promise<Buffer> {
 
   try {
     const page = await browser.newPage();
+
+    // ✅ الحل الجذري لمشكلة قص الصفحة من الجانب:
+    // بدون هذا، Puppeteer يرسم الصفحة بعرض افتراضي 800px (viewport)، ثم يضغطها
+    // داخل عرض A4 الأصغر عند التصدير — فيتجاوز المحتوى حدود الصفحة وينقطع من الجانب.
+    // بضبط viewport بنفس عرض A4 الصافي (بعد طرح الهوامش)، يُرسم المحتوى من البداية
+    // بالعرض الصحيح فلا يحدث أي تجاوز أو قص.
+    // A4 = 210mm، الهامش 15mm يمين + 15mm يسار → العرض الصافي 180mm ≈ 680px عند 96dpi
+    await page.setViewport({ width: 680, height: 960, deviceScaleFactor: 2 });
+
+    // ✅ بدون هذا السطر، قواعد @media print في CSS (عرض الصفحة 210mm، تقسيم الصفحات،
+    // منع قص الجداول والصور) لا تُطبَّق أبداً لأن Puppeteer يستخدم media type "screen"
+    // افتراضياً — وهذا هو السبب الجذري لقص الصفحة من الجانب واختفاء بعض البيانات.
+    await page.emulateMediaType("print");
+
     await page.setContent(html, { waitUntil: "load" });
 
     const pdfBuffer = await page.pdf({
       format: "A4",
       printBackground: true,
+      preferCSSPageSize: true,
       margin: { top: "20mm", right: "15mm", bottom: "20mm", left: "15mm" },
     });
 
