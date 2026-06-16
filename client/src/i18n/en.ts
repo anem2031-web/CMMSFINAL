@@ -278,7 +278,7 @@ const en: TranslationKeys = {
     site: "Site",
     priority: "Priority",
     category: "Category",
-    description: "Problem Description",
+    description: "name",
     repairNotes: "Repair Notes",
     materialsUsed: "Materials Used",
     estimatedCost: "Estimated Cost",
