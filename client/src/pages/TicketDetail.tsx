@@ -125,8 +125,9 @@ const { getField } = useResolvedTranslation(
   const handleNewAttachments = useCallback(async (uploaded: UploadedFile[]) => {
     for (const f of uploaded) {
       if (f.url && f.status === "done") {
-        // Extract fileKey from URL path (last segment)
-        const fileKey = f.url.split("/").slice(-2).join("/") || f.name;
+        // ✅ استخدام fileKey النظيف القادم من السيرفر مباشرة
+        // (الاستخراج اليدوي القديم من رابط /api/media?key=... كان يكسر الترميز ويخزّن مفتاحاً خاطئاً)
+        const fileKey = f.fileKey || f.name;
         await addAttachMut.mutateAsync({
           entityType: "ticket",
           entityId: ticketId,
