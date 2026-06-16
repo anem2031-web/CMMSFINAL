@@ -287,7 +287,7 @@ const ar = {
     site: "الموقع",
     priority: "الأولوية",
     category: "التصنيف",
-    name: "الاسم بالانجليزي",
+    description: "وصف المشكلة",
     repairNotes: "ملاحظات الإصلاح",
     materialsUsed: "المواد المستخدمة",
     estimatedCost: "التكلفة التقديرية",
