@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { TechnicianCombobox } from "@/components/TechnicianCombobox";
 import {
   ShoppingCart, Package, Truck, CheckCircle2, Camera, Loader2,
   Clock, ArrowLeft, ArrowRight, Image as ImageIcon, FileText,
@@ -605,14 +605,17 @@ export default function PurchaseCycle() {
                     ✅ تم تحديد الفني تلقائيًا من بيانات البلاغ
                   </p>
                 )}
-                <Select value={deliveryUserId} onValueChange={setDeliveryUserId}>
-                  <SelectTrigger><SelectValue placeholder="اختر الفني..." /></SelectTrigger>
-                  <SelectContent>
-                    {allUsers.filter((u: any) => u.role === "technician" || u.role === "supervisor" || u.role === "maintenance_manager").map((u: any) => (
-                      <SelectItem key={u.id} value={String(u.id)}>{u.name} ({u.role})</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <TechnicianCombobox
+                  value={deliveryUserId}
+                  onValueChange={setDeliveryUserId}
+                  placeholder="اختر الفني..."
+                  options={allUsers
+                    .filter((u: any) => u.role === "technician" || u.role === "supervisor" || u.role === "maintenance_manager")
+                    .map((u: any) => ({
+                      value: String(u.id),
+                      label: `${u.name} (${u.role})`,
+                    }))}
+                />
               </div>
             </div>
           )}
