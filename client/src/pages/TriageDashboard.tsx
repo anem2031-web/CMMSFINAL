@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { SLATimer } from "@/components/SLATimer";
+import { TechnicianCombobox } from "@/components/TechnicianCombobox";
 import {
   ClipboardList, AlertTriangle, Eye, CheckCircle2,
   Zap, Search, ArrowRight, Clock, Microscope, Filter,
@@ -601,28 +602,28 @@ export default function TriageDashboard() {
               </div>
               <div className="space-y-2">
                 <Label>تعيين فني <span className="text-muted-foreground text-xs">(اختياري)</span></Label>
-                <Select
+                <TechnicianCombobox
                   value={quickTriageAssignedTo}
                   onValueChange={setQuickTriageAssignedTo}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="اختر فنيًا للفحص..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">— بدون تعيين</SelectItem>
-                    {technicians.map((tech: any) => (
-                      <SelectItem key={tech.id} value={tech.id.toString()}>
-                        <span className="flex items-center gap-2">
-                          <span className="w-2 h-2 rounded-full bg-green-400 inline-block" />
-                          {tech.name}
-                          <span className="text-xs text-muted-foreground">
-                            ({tech.role === "technician" ? "فني" : tech.role === "supervisor" ? "مشرف" : "مدير صيانة"})
+                  placeholder="اختر فنيًا للفحص..."
+                  options={[
+                    { value: "none", label: "بدون تعيين", render: <span>— بدون تعيين</span> },
+                    ...technicians.map((tech: any) => {
+                      const roleLabel = tech.role === "technician" ? "فني" : tech.role === "supervisor" ? "مشرف" : "مدير صيانة";
+                      return {
+                        value: tech.id.toString(),
+                        label: `${tech.name} (${roleLabel})`,
+                        render: (
+                          <span className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-green-400 inline-block" />
+                            {tech.name}
+                            <span className="text-xs text-muted-foreground">({roleLabel})</span>
                           </span>
-                        </span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                        ),
+                      };
+                    }),
+                  ]}
+                />
               </div>
               <p className="text-xs text-muted-foreground">
                 سيتم نقل البلاغ مباشرة إلى مرحلة الفحص الميداني.
@@ -699,19 +700,18 @@ export default function TriageDashboard() {
 
               <div className="space-y-2">
                 <Label>تعيين فريق الفحص</Label>
-                <Select
+                <TechnicianCombobox
                   value={triageForm.assignedToId}
                   onValueChange={(v) => setTriageForm(f => ({ ...f, assignedToId: v }))}
-                >
-                  <SelectTrigger><SelectValue placeholder="اختر الفني أو المسؤول" /></SelectTrigger>
-                  <SelectContent>
-                    {technicians.map((tech: any) => (
-                      <SelectItem key={tech.id} value={tech.id.toString()}>
-                        {tech.name} ({tech.role === "technician" ? "فني" : tech.role === "supervisor" ? "مشرف" : "مدير صيانة"})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  placeholder="اختر الفني أو المسؤول"
+                  options={technicians.map((tech: any) => {
+                    const roleLabel = tech.role === "technician" ? "فني" : tech.role === "supervisor" ? "مشرف" : "مدير صيانة";
+                    return {
+                      value: tech.id.toString(),
+                      label: `${tech.name} (${roleLabel})`,
+                    };
+                  })}
+                />
               </div>
 
               <div className="space-y-2">
