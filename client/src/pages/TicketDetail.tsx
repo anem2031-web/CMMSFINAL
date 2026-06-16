@@ -21,6 +21,7 @@ import { useTranslation } from "@/contexts/LanguageContext";
 import { useStaticLabels } from "@/hooks/useContentTranslation";
 import { useResolvedTranslation, getLocalizedName } from "@/hooks/useTranslatedField";
 import DropZone, { type UploadedFile } from "@/components/DropZone";
+import { TechnicianCombobox } from "@/components/TechnicianCombobox";
 
 export default function TicketDetail() {
   const [, params] = useRoute("/tickets/:id");
@@ -460,19 +461,19 @@ const { getField } = useResolvedTranslation(
                   <div className="flex gap-2">
                     {/* Phase 5: Assignment dropdown shows only internal users (users.listTechnicians). */}
                     {/* External technicians (externalTechs) hidden from UI; backend assignment via externalTechnicianId preserved. */}
-                    <Select value={selectedTech} onValueChange={(val) => {
+                    <TechnicianCombobox
+                      className="flex-1"
+                      value={selectedTech}
+                      onValueChange={(val) => {
                         setSelectedTech(val);
                         setSelectedExternalTech(""); // Phase 5: external tech selection cleared
-                    }}>
-                      <SelectTrigger className="flex-1"><SelectValue placeholder={t.tickets.assignTechnician} /></SelectTrigger>
-                      <SelectContent>
-                        {technicians.map((tech: any) => (
-                          <SelectItem key={tech.id} value={String(tech.id)}>
-                            {tech.name || tech.email}{tech.specialty ? ` (${tech.specialty})` : ""}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      }}
+                      placeholder={t.tickets.assignTechnician}
+                      options={technicians.map((tech: any) => ({
+                        value: String(tech.id),
+                        label: `${tech.name || tech.email}${tech.specialty ? ` (${tech.specialty})` : ""}`,
+                      }))}
+                    />
                     <Button onClick={() => {
                       if (selectedTech) {
                         assignMut.mutate({ id: ticket.id, technicianId: parseInt(selectedTech) });
@@ -960,18 +961,15 @@ const { getField } = useResolvedTranslation(
             </div>
             <div className="space-y-2">
               <Label>تعيين فني <span className="text-muted-foreground text-xs">(مطلوب)</span></Label>
-              <Select value={triageAssignedTo} onValueChange={setTriageAssignedTo}>
-                <SelectTrigger>
-                  <SelectValue placeholder="اختر فنيًا للفحص..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {technicians.map(tech => (
-                    <SelectItem key={tech.id} value={tech.id.toString()}>
-                      {tech.name || tech.email}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <TechnicianCombobox
+                value={triageAssignedTo}
+                onValueChange={setTriageAssignedTo}
+                placeholder="اختر فنيًا للفحص..."
+                options={technicians.map(tech => ({
+                  value: tech.id.toString(),
+                  label: tech.name || tech.email,
+                }))}
+              />
             </div>
             <p className="text-xs text-muted-foreground">
               سيتم نقل البلاغ إلى مرحلة الفحص الميداني وتعيين الفني مباشرةً.
