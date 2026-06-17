@@ -28,7 +28,7 @@ import {
   Brain, ShoppingBag, Truck, Languages, Database,
   HardDrive, CalendarClock, ScanSearch, DoorOpen, Nfc, Tag,
   ChevronDown, Search, X, Building2, UserCog, Download, Smartphone, DollarSign,
-  RotateCcw, BookOpen
+  RotateCcw, BookOpen, Lightbulb
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
@@ -74,6 +74,7 @@ const NAV_SECTIONS: NavSection[] = [
         roles: ["operator","technician","maintenance_manager","supervisor","gate_security","owner","admin"] },
       { icon: ClipboardList, labelKey: "nav.tickets",      path: "/tickets",
         roles: ["operator","technician","maintenance_manager","supervisor","gate_security","delegate","senior_management","owner","admin"] },
+      { icon: Lightbulb,     labelKey: "nav.improvementIdeas", path: "/improvement-ideas" },
       { icon: ScanSearch,    labelKey: "nav.triage",       path: "/triage",
         roles: ["supervisor","maintenance_manager","owner","admin"] },
       { icon: DoorOpen,      labelKey: "nav.gateSecurity", path: "/gate-security",
