@@ -5,6 +5,7 @@ import * as db from "../../db";
 import { notifyOwner } from "../../_core/notification";
 import { detectLanguage } from "../../services/translation";
 import { queueTranslation } from "../../translationEngine";
+import { notifyItemRejection } from "../_shared/router-helpers";
 
 export const purchaseOrdersRouter = router({
   cancelItem: protectedProcedure.input(z.object({
@@ -25,24 +26,36 @@ export const purchaseOrdersRouter = router({
     if (item.status === "cancelled") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الصنف ملغى بالفعل" });
     }
+    const po = await db.getPurchaseOrderById(item.purchaseOrderId);
+    const cancelReason = input.reason || "تم الإلغاء من قبل الإدارة";
     await db.updatePOItem(input.itemId, {
       status: "cancelled",
-      managementRejectionReason: input.reason || "تم الإلغاء من قبل الإدارة",
+      managementRejectionReason: cancelReason,
     });
+    if (po) {
+      await notifyItemRejection({
+        poId: po.id,
+        poNumber: po.poNumber,
+        requestedById: po.requestedById,
+        itemName: item.itemName,
+        actorId: ctx.user.id,
+        actorName: ctx.user.name || "مستخدم",
+        actorRole: ctx.user.role,
+        reason: cancelReason,
+        kind: "cancelled",
+      });
+    }
     // Check if all items are now terminal (rejected or cancelled) — auto-close PO if so
     const allItems = await db.getPOItems(item.purchaseOrderId);
     const allTerminal = allItems.every(i => i.status === "rejected" || i.status === "cancelled");
-    if (allTerminal) {
-      const po = await db.getPurchaseOrderById(item.purchaseOrderId);
+    if (allTerminal && po) {
       await db.updatePurchaseOrder(item.purchaseOrderId, {
         status: "rejected",
         rejectedById: ctx.user.id,
         rejectedAt: new Date(),
-        rejectionReason: "تم إلغاء جميع أصناف طلب الشراء",
+        rejectionReason: `تم إلغاء جميع أصناف طلب الشراء بواسطة ${ctx.user.name}`,
       });
-      if (po) {
-        await db.createNotification({ userId: po.requestedById, title: "⚠️ تم إلغاء جميع أصناف طلب الشراء", message: `تم إلغاء جميع أصناف طلب الشراء رقم ${po.poNumber}.`, type: "warning", relatedPOId: item.purchaseOrderId });
-      }
+      await db.createNotification({ userId: po.requestedById, title: "⚠️ تم إلغاء جميع أصناف طلب الشراء", message: `تم إلغاء جميع أصناف طلب الشراء رقم ${po.poNumber} بواسطة ${ctx.user.name}.`, type: "warning", relatedPOId: item.purchaseOrderId });
     }
     await db.createAuditLog({ userId: ctx.user.id, action: "cancel_po_item", entityType: "purchase_order_item", entityId: input.itemId, newValues: { reason: input.reason } });
     return { success: true };
