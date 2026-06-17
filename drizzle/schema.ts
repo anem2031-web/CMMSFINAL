@@ -924,3 +924,54 @@ export const catalogUnits = mysqlTable("catalog_units", {
 });
 export type CatalogUnit = typeof catalogUnits.$inferSelect;
 export type InsertCatalogUnit = typeof catalogUnits.$inferInsert;
+
+// ============================================================
+// مركز التحسين والتطوير — IMPROVEMENT IDEAS
+// ============================================================
+export const improvementCategories = [
+  "operational", "technical", "procedural", "safety", "quality",
+  "cost_reduction", "productivity", "innovative", "work_note", "recurring_problem",
+] as const;
+export const improvementStatuses = [
+  "new", "pending_decision", "in_progress", "completed", "postponed", "cancelled",
+] as const;
+
+export const improvementIdeas = mysqlTable("improvement_ideas", {
+  id: int("id").autoincrement().primaryKey(),
+  requestNumber: varchar("requestNumber", { length: 20 }).notNull().unique(),
+  title: varchar("title", { length: 300 }).notNull(),
+  description: text("description"),
+  category: mysqlEnum("category", [...improvementCategories]).notNull(),
+  priority: mysqlEnum("priority", [...ticketPriorities]).default("medium").notNull(),
+  status: mysqlEnum("status", [...improvementStatuses]).default("new").notNull(),
+  expectedBenefit: text("expectedBenefit"),
+  siteId: int("siteId"),
+  sectionId: int("sectionId"),
+  assetId: int("assetId"),
+  submittedById: int("submittedById").notNull(),
+  // الفرز والمراجعة (مشرف / مدير صيانة)
+  triagedById: int("triagedById"),
+  triagedAt: timestamp("triagedAt"),
+  // قرار الإدارة العليا
+  decidedById: int("decidedById"),
+  decidedAt: timestamp("decidedAt"),
+  decisionNotes: text("decisionNotes"),
+  // التكليف بالتنفيذ (أي مستخدم، ليس بالضرورة فني)
+  assignedToId: int("assignedToId"),
+  postponedUntil: timestamp("postponedUntil"),
+  cancelReason: text("cancelReason"),
+  completedAt: timestamp("completedAt"),
+  completionNotes: text("completionNotes"),
+  // الترجمة (نفس نمط البلاغات)
+  originalLanguage: mysqlEnum("originalLanguage", ["ar", "en", "ur"]).default("ar").notNull(),
+  title_ar: text("title_ar"),
+  title_en: text("title_en"),
+  title_ur: text("title_ur"),
+  description_ar: text("description_ar"),
+  description_en: text("description_en"),
+  description_ur: text("description_ur"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type ImprovementIdea = typeof improvementIdeas.$inferSelect;
+export type InsertImprovementIdea = typeof improvementIdeas.$inferInsert;
