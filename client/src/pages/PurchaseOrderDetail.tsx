@@ -435,6 +435,7 @@ const visibleItems = useMemo(() => {
             const isMyItem = isAdminOrOwner || (isDelegate && item.delegateId === userId);
 
             const isCancelled = item.status === "cancelled";
+            const isRejected = item.status === "rejected";
             return (
               <div key={item.id} className={`border rounded-xl p-4 space-y-3 transition-colors ${isCancelled ? "opacity-60 bg-gray-50 border-gray-200" : "hover:border-primary/20"}`}>
                 <div className="flex items-start justify-between gap-3">
@@ -451,8 +452,13 @@ const visibleItems = useMemo(() => {
                       {delegate && <span>{t.purchaseOrders.delegate}: <strong>{delegate.name}</strong></span>}
                     </div>
                     {item.notes && <p className="text-xs text-muted-foreground mt-1.5 bg-muted/50 rounded-lg p-2">{getField(item, "notes")}</p>}
-                    {isCancelled && item.managementRejectionReason && (
-                      <p className="text-xs text-gray-400 mt-1">{language === "ar" ? "سبب الإلغاء: " : "Cancel reason: "}{item.managementRejectionReason}</p>
+                    {(isCancelled || isRejected) && item.managementRejectionReason && (
+                      <p className={`text-xs mt-1 ${isRejected ? "text-red-500" : "text-gray-400"}`}>
+                        {isCancelled
+                          ? (language === "ar" ? "سبب الإلغاء: " : "Cancel reason: ")
+                          : (language === "ar" ? "سبب الرفض: " : "Rejection reason: ")}
+                        {item.managementRejectionReason}
+                      </p>
                     )}
                   </div>
                   {item.photoUrl && (
