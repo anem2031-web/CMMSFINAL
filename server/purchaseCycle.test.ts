@@ -36,6 +36,7 @@ vi.mock("./db", () => {
   const tickets: any[] = [];
   const notifications: any[] = [];
   const auditLogs: any[] = [];
+  const procurementComments: any[] = [];
   const users: any[] = [
     { id: 1, openId: "user-1", name: "Delegate", role: "delegate" },
     { id: 2, openId: "user-2", name: "Warehouse", role: "warehouse" },
@@ -66,6 +67,7 @@ vi.mock("./db", () => {
     addTicketStatusHistory: vi.fn(async () => 1),
     createNotification: vi.fn(async (data: any) => { notifications.push(data); return 1; }),
     createAuditLog: vi.fn(async (data: any) => { auditLogs.push(data); return 1; }),
+    createProcurementComment: vi.fn(async (data: any) => { procurementComments.push(data); return procurementComments.length; }),
     getUsersByRole: vi.fn(async (role: string) => users.filter(u => u.role === role)),
     getAllUsers: vi.fn(async () => users),
     // Setup helpers for tests
@@ -74,12 +76,14 @@ vi.mock("./db", () => {
     _tickets: tickets,
     _notifications: notifications,
     _auditLogs: auditLogs,
+    _procurementComments: procurementComments,
     _reset: () => {
       items.length = 0;
       pos.length = 0;
       tickets.length = 0;
       notifications.length = 0;
       auditLogs.length = 0;
+      procurementComments.length = 0;
     },
     _setupScenario: () => {
       items.length = 0;
@@ -87,9 +91,10 @@ vi.mock("./db", () => {
       tickets.length = 0;
       notifications.length = 0;
       auditLogs.length = 0;
+      procurementComments.length = 0;
 
       tickets.push({ id: 100, ticketNumber: "TK-001", status: "in_progress" });
-      pos.push({ id: 10, ticketId: 100, status: "approved" });
+      pos.push({ id: 10, ticketId: 100, status: "approved", poNumber: "PO-0010", requestedById: 4 });
       items.push({
         id: 1, purchaseOrderId: 10, itemName: "مضخة مياه", description: "مضخة 2 حصان",
         quantity: 2, unit: "قطعة", status: "approved", delegateId: 1,
@@ -529,5 +534,121 @@ describe("Purchase Cycle - 3-Step Flow", () => {
       // Verify audit logs created (6 calls: 2 purchase + 2 warehouse + 2 delivery)
       expect(db.createAuditLog).toHaveBeenCalled();
     });
+  });
+});
+
+// ============================================================
+// Item Rejection / Cancellation — full-name + reason attribution
+// ============================================================
+describe("Item Rejection Attribution (name + reason)", () => {
+  beforeEach(() => {
+    db._reset();
+    vi.clearAllMocks();
+  });
+
+  it("approveAccounting: notifies requester with rejecter's full name and reason, and logs a procurement comment", async () => {
+    db._setupScenario();
+    const caller = appRouter.createCaller(createContext("accountant", 7));
+
+    await caller.purchaseOrders.approveAccounting({
+      id: 10,
+      rejectedItemIds: [1],
+      rejectionReason: "Too expensive",
+    });
+
+    const itemNotif = db._notifications.find((n: any) => n.userId === 4 && n.title.includes("رفض صنف"));
+    expect(itemNotif).toBeTruthy();
+    expect(itemNotif.message).toContain("Test User 7");
+    expect(itemNotif.message).toContain("Too expensive");
+
+    const comment = db._procurementComments.find((c: any) => c.actionType === "item_rejected");
+    expect(comment).toBeTruthy();
+    expect(comment.userName).toBe("Test User 7");
+    expect(comment.userRole).toBe("accountant");
+    expect(comment.note).toContain("Too expensive");
+  });
+
+  it("approveAccounting: all-items-rejected cascade message includes rejecter's name and reason", async () => {
+    db._setupScenario();
+    const caller = appRouter.createCaller(createContext("accountant", 7));
+
+    db.getPOItems.mockImplementationOnce(async () => db._items)
+                 .mockImplementationOnce(async () => db._items.map((i: any) => ({ ...i, status: "rejected" })));
+
+    await caller.purchaseOrders.approveAccounting({
+      id: 10,
+      rejectedItemIds: [1, 2],
+      rejectionReason: "Budget cut",
+    });
+
+    expect(db.updatePurchaseOrder).toHaveBeenCalledWith(10, expect.objectContaining({
+      status: "rejected",
+      rejectionReason: expect.stringContaining("Test User 7"),
+    }));
+
+    const cascadeNotif = db._notifications.find((n: any) => n.userId === 4 && n.title === "❌ طلب شراء مرفوض");
+    expect(cascadeNotif).toBeTruthy();
+    expect(cascadeNotif.message).toContain("Test User 7");
+    expect(cascadeNotif.message).toContain("Budget cut");
+  });
+
+  it("approveManagement: notifies requester per rejected item with name and reason", async () => {
+    db._setupScenario();
+    const caller = appRouter.createCaller(createContext("senior_management", 8));
+
+    await caller.purchaseOrders.approveManagement({
+      id: 10,
+      rejectedItemIds: [2],
+      rejectionReason: "Not justified",
+    });
+
+    const itemNotif = db._notifications.find((n: any) => n.userId === 4 && n.title.includes("رفض صنف"));
+    expect(itemNotif).toBeTruthy();
+    expect(itemNotif.message).toContain("Test User 8");
+    expect(itemNotif.message).toContain("Not justified");
+  });
+
+  it("reviewItems: rejection reason is actually persisted (managementRejectionReason), not silently dropped", async () => {
+    db._reset();
+    db._tickets.push({ id: 200, ticketNumber: "TK-002", status: "in_progress" });
+    db._pos.push({ id: 20, ticketId: 200, status: "pending_review", poNumber: "PO-0020", requestedById: 4 });
+    db._items.push({ id: 30, purchaseOrderId: 20, itemName: "صنف أ", status: "pending", delegateId: null });
+    db._items.push({ id: 31, purchaseOrderId: 20, itemName: "صنف ب", status: "pending", delegateId: null });
+
+    const caller = appRouter.createCaller(createContext("maintenance_manager", 3));
+    await caller.purchaseOrders.reviewItems({
+      poId: 20,
+      items: [
+        { id: 30, action: "approve", delegateId: 1 },
+        { id: 31, action: "reject", rejectionReason: "Duplicate item" },
+      ],
+    });
+
+    // The reason must actually persist on a real column (managementRejectionReason),
+    // not the non-existent "rejectionReason" column on purchase_order_items.
+    expect(db.updatePOItem).toHaveBeenCalledWith(31, expect.objectContaining({
+      status: "rejected",
+      managementRejectionReason: "Duplicate item",
+    }));
+
+    const itemNotif = db._notifications.find((n: any) => n.userId === 4 && n.title.includes("رفض صنف"));
+    expect(itemNotif).toBeTruthy();
+    expect(itemNotif.message).toContain("Test User 3");
+    expect(itemNotif.message).toContain("Duplicate item");
+  });
+
+  it("cancelItem: notifies requester with canceller's name and reason", async () => {
+    db._setupScenario();
+    const caller = appRouter.createCaller(createContext("senior_management", 8));
+
+    await caller.purchaseOrders.cancelItem({ itemId: 1, reason: "No longer needed" });
+
+    const itemNotif = db._notifications.find((n: any) => n.userId === 4 && n.title.includes("إلغاء صنف"));
+    expect(itemNotif).toBeTruthy();
+    expect(itemNotif.message).toContain("Test User 8");
+    expect(itemNotif.message).toContain("No longer needed");
+
+    const comment = db._procurementComments.find((c: any) => c.actionType === "item_cancelled");
+    expect(comment).toBeTruthy();
   });
 });
