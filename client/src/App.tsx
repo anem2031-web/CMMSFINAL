@@ -10,6 +10,7 @@ import DashboardLayout from "./components/DashboardLayout";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
 import Tickets from "./pages/Tickets";
+import ImprovementIdeas from "./pages/ImprovementIdeas";
 import TicketDetail from "./pages/TicketDetail";
 import CreateTicket from "./pages/CreateTicket";
 import PurchaseOrders from "./pages/PurchaseOrders";
@@ -59,6 +60,7 @@ function Router() {
           <Switch>
             <Route path="/" component={Home} />
             <Route path="/tickets" component={Tickets} />
+            <Route path="/improvement-ideas" component={ImprovementIdeas} />
             <Route path="/tickets/new" component={CreateTicket} />
             <Route path="/tickets/:id" component={TicketDetail} />
             <Route path="/purchase-orders" component={PurchaseOrders} />
