@@ -32,6 +32,48 @@ export async function notifyManagers(
 }
 
 /**
+ * Notify the PO requester that one of their items was rejected or cancelled,
+ * and log it as a procurement comment so the full attribution (who + reason)
+ * is visible in the PO's comment thread — mirrors the requestItemRevision flow.
+ * Used by reviewItems, approveAccounting, approveManagement, and cancelItem
+ * so rejection/cancellation is handled the same way regardless of which
+ * stage of the purchase cycle it happens at.
+ */
+export async function notifyItemRejection(params: {
+  poId: number;
+  poNumber: string;
+  requestedById: number;
+  itemName: string;
+  actorId: number;
+  actorName: string;
+  actorRole: string;
+  reason: string;
+  kind: "rejected" | "cancelled";
+}) {
+  const isCancel = params.kind === "cancelled";
+  const verb = isCancel ? "تم إلغاء" : "تم رفض";
+
+  await db.createProcurementComment({
+    purchaseOrderId: params.poId,
+    userId: params.actorId,
+    userName: params.actorName,
+    userRole: params.actorRole,
+    actionType: isCancel ? "item_cancelled" : "item_rejected",
+    note: `${verb} الصنف: ${params.itemName}\n\nالسبب:\n${params.reason}`,
+  });
+
+  if (params.requestedById && params.requestedById !== params.actorId) {
+    await db.createNotification({
+      userId: params.requestedById,
+      title: isCancel ? "⚠️ تم إلغاء صنف من طلب الشراء" : "❌ تم رفض صنف من طلب الشراء",
+      message: `${verb} الصنف "${params.itemName}" من طلب الشراء رقم ${params.poNumber} بواسطة ${params.actorName}.\n\nالسبب:\n${params.reason}`,
+      type: isCancel ? "warning" : "error",
+      relatedPOId: params.poId,
+    });
+  }
+}
+
+/**
  * Auto-translate text fields and return translation map.
  */
 export async function autoTranslate(
