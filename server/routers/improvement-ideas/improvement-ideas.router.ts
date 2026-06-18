@@ -1,33 +1,50 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { router, protectedProcedure, supervisorProcedure, managementProcedure } from "../_shared/procedures";
+import { router, protectedProcedure, ideaTriageProcedure, managementProcedure } from "../_shared/procedures";
 import { detectLanguage, type SupportedLanguage } from "../../services/translation";
 import * as db from "../../db";
 import * as ideasDb from "../../improvementIdeas";
 
-// ملاحظة: الترجمة التلقائية (ar/en/ur) للعنوان والوصف غير مفعّلة بهذه المرحلة الأولى
-// (الحقول title_ar/en/ur موجودة بقاعدة البيانات وجاهزة لربطها بمحرك الترجمة لاحقاً بدون أي تعديل على الجدول)
+// الأدوار صاحبة الرؤية الكاملة (الفرز + التصنيف + اتخاذ القرار النهائي مجتمعين برؤية كل المقترحات)
+const FULL_VISIBILITY_ROLES = ["maintenance_manager", "senior_management", "owner", "admin"];
+
+// الموظف العادي لا يرى إلا حالة مقترحه فقط — بدون أي بيانات داخلية عن المراجعة أو القرار
+function sanitizeForEmployee(idea: any) {
+  const { triagerName, deciderName, decisionNotes, cancelReason, completionNotes, groupCategory,
+    linkedTicketNumber, linkedTicketStatus, linkedPONumber, linkedPOStatus, ...safe } = idea;
+  return safe;
+}
 
 export const improvementIdeasRouter = router({
+  // قائمة مرقّمة — تُستخدم لتبويب "الكل" (الأدوار صاحبة الصلاحية) وتبويب "أفكاري" (الموظف العادي)
   listPaginated: protectedProcedure.input(z.object({
     status: z.string().optional(),
     priority: z.string().optional(),
     category: z.string().optional(),
+    groupCategory: z.string().optional(),
     siteId: z.number().optional(),
     sectionId: z.number().optional(),
-    submittedById: z.number().optional(),
-    assignedToId: z.number().optional(),
     search: z.string().optional(),
     page: z.number().min(1).default(1),
     pageSize: z.number().min(1).max(100).default(10),
-  }).optional()).query(async ({ input }) => {
+  }).optional()).query(async ({ input, ctx }) => {
     const { page = 1, pageSize = 10, ...filters } = input || {};
-    return ideasDb.getImprovementIdeasPaginated(filters, page, pageSize);
+    const hasFullVisibility = FULL_VISIBILITY_ROLES.includes(ctx.user.role);
+    const finalFilters: any = hasFullVisibility ? filters : { ...filters, submittedById: ctx.user.id };
+    const result = await ideasDb.getImprovementIdeasPaginated(finalFilters, page, pageSize);
+    if (hasFullVisibility) return result;
+    return { ...result, ideas: result.ideas.map(sanitizeForEmployee) };
   }),
 
-  getById: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ input }) => {
+  getById: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ input, ctx }) => {
     const idea = await ideasDb.getImprovementIdeaById(input.id);
     if (!idea) throw new TRPCError({ code: "NOT_FOUND", message: "الفكرة غير موجودة" });
+
+    const hasFullVisibility = FULL_VISIBILITY_ROLES.includes(ctx.user.role);
+    if (!hasFullVisibility) {
+      if (idea.submittedById !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك الاطلاع على مقترحات الآخرين" });
+      return sanitizeForEmployee(idea);
+    }
     return idea;
   }),
 
@@ -54,24 +71,50 @@ export const improvementIdeasRouter = router({
 
     await db.createAuditLog({ userId: ctx.user.id, action: "create_improvement_idea", entityType: "improvement_idea", entityId: id! });
 
-    // إشعار موظفي الفرز (نفس أدوار فرز البلاغات: مشرف / مدير صيانة)
-    const supervisors = await db.getUsersByRole("supervisor");
+    // إشعار الأدوار صاحبة صلاحية الفرز والتصنيف فقط (مدير الصيانة + owner/admin)
     const managers = await db.getManagerUsers();
-    for (const u of [...supervisors, ...managers]) {
-      await db.createNotification({ userId: u.id, title: "فكرة تحسين جديدة", message: `${requestNumber} - ${input.title} بانتظار الفرز`, type: "info" });
+    for (const u of managers) {
+      await db.createNotification({ userId: u.id, title: "فكرة تحسين جديدة", message: `${requestNumber} - ${input.title} بانتظار الفرز والتصنيف`, type: "info" });
     }
 
     return { id, requestNumber };
   }),
 
-  // الفرز: مشرف أو مدير صيانة يراجع الفكرة ويرسلها للإدارة العليا
-  triage: supervisorProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+  // عدّادات المجموعات للأفكار المصنّفة (لعرض المجلدات بانتظار قرار الإدارة)
+  getGroupedClassifiedCounts: protectedProcedure.query(async ({ ctx }) => {
+    if (!FULL_VISIBILITY_ROLES.includes(ctx.user.role)) throw new TRPCError({ code: "FORBIDDEN", message: "غير مخوَّل" });
+    return ideasDb.getGroupedClassifiedCounts();
+  }),
+
+  // الأفكار المصنّفة داخل مجموعة معيّنة، مرتبة حسب الأولوية
+  getClassifiedByGroup: protectedProcedure.input(z.object({ groupCategory: z.string() })).query(async ({ input, ctx }) => {
+    if (!FULL_VISIBILITY_ROLES.includes(ctx.user.role)) throw new TRPCError({ code: "FORBIDDEN", message: "غير مخوَّل" });
+    return ideasDb.getClassifiedIdeasByGroup(input.groupCategory);
+  }),
+
+  // الأفكار المعتمدة بانتظار تحويلها لتذكرة/طلب شراء — يظهر فقط لأدوار الفرز (ليس الإدارة العليا)
+  getApproved: ideaTriageProcedure.query(async () => {
+    return ideasDb.getApprovedIdeas();
+  }),
+
+  // الفرز والتصنيف: تصحيح التصنيف + تحديد المجموعة/الملف + تحديد الأولوية — بإجراء واحد
+  classify: ideaTriageProcedure.input(z.object({
+    id: z.number(),
+    category: z.string(),
+    groupCategory: z.string(),
+    priority: z.string(),
+  })).mutation(async ({ input, ctx }) => {
     const idea = await ideasDb.getImprovementIdeaById(input.id);
     if (!idea) throw new TRPCError({ code: "NOT_FOUND", message: "الفكرة غير موجودة" });
-    if (idea.status !== "new") throw new TRPCError({ code: "BAD_REQUEST", message: "هذه الفكرة تم فرزها مسبقاً" });
+    if (idea.status !== "new") throw new TRPCError({ code: "BAD_REQUEST", message: "هذه الفكرة تم فرزها وتصنيفها مسبقاً" });
 
-    await ideasDb.triageImprovementIdea(input.id, ctx.user.id);
-    await db.createAuditLog({ userId: ctx.user.id, action: "triage_improvement_idea", entityType: "improvement_idea", entityId: input.id });
+    await ideasDb.classifyImprovementIdea(input.id, {
+      classifiedById: ctx.user.id,
+      category: input.category,
+      groupCategory: input.groupCategory,
+      priority: input.priority,
+    });
+    await db.createAuditLog({ userId: ctx.user.id, action: "classify_improvement_idea", entityType: "improvement_idea", entityId: input.id });
 
     const seniors = await db.getUsersByRole("senior_management");
     for (const u of seniors) {
@@ -79,22 +122,18 @@ export const improvementIdeasRouter = router({
     }
   }),
 
-  // قرار الإدارة العليا: موافقة (+تكليف منفّذ) / تأجيل (+تاريخ) / إلغاء (+سبب)
+  // قرار الإدارة العليا: موافقة / تأجيل (+تاريخ) / إلغاء (+سبب)
   decide: managementProcedure.input(z.object({
     id: z.number(),
     decision: z.enum(["approved", "postponed", "cancelled"]),
     decisionNotes: z.string().optional(),
-    assignedToId: z.number().optional(),
     postponedUntil: z.string().optional(), // ISO date string
     cancelReason: z.string().optional(),
   })).mutation(async ({ input, ctx }) => {
     const idea = await ideasDb.getImprovementIdeaById(input.id);
     if (!idea) throw new TRPCError({ code: "NOT_FOUND", message: "الفكرة غير موجودة" });
-    if (idea.status !== "pending_decision") throw new TRPCError({ code: "BAD_REQUEST", message: "هذه الفكرة ليست بانتظار قرار حالياً" });
+    if (idea.status !== "classified") throw new TRPCError({ code: "BAD_REQUEST", message: "هذه الفكرة ليست بانتظار قرار حالياً" });
 
-    if (input.decision === "approved" && !input.assignedToId) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "يجب تحديد الشخص المكلَّف بالتنفيذ عند الموافقة" });
-    }
     if (input.decision === "postponed" && !input.postponedUntil) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "يجب تحديد تاريخ التأجيل" });
     }
@@ -103,11 +142,9 @@ export const improvementIdeasRouter = router({
       decision: input.decision,
       decidedById: ctx.user.id,
       decisionNotes: input.decisionNotes,
-      assignedToId: input.assignedToId,
       postponedUntil: input.postponedUntil ? new Date(input.postponedUntil) : undefined,
       cancelReason: input.cancelReason,
     });
-
     await db.createAuditLog({ userId: ctx.user.id, action: `decide_improvement_idea_${input.decision}`, entityType: "improvement_idea", entityId: input.id });
 
     const decisionTitle = input.decision === "approved" ? "تمت الموافقة على فكرتك" : input.decision === "postponed" ? "تم تأجيل فكرتك" : "تم إلغاء فكرتك";
@@ -118,27 +155,42 @@ export const improvementIdeasRouter = router({
       type: input.decision === "approved" ? "success" : "info",
     });
 
-    if (input.decision === "approved" && input.assignedToId) {
-      await db.createNotification({
-        userId: input.assignedToId,
-        title: "تم تكليفك بتنفيذ فكرة تحسين",
-        message: `${idea.requestNumber} - ${idea.title}`,
-        type: "info",
-      });
+    if (input.decision === "approved") {
+      const managers = await db.getManagerUsers();
+      for (const u of managers) {
+        await db.createNotification({ userId: u.id, title: "فكرة معتمدة بانتظار التحويل", message: `${idea.requestNumber} - ${idea.title}`, type: "success" });
+      }
     }
   }),
 
-  // إكمال التنفيذ — فقط الشخص المكلَّف (أو admin/owner)
-  complete: protectedProcedure.input(z.object({
+  // ربط الفكرة المعتمدة بتذكرة تم إنشاؤها فعلياً من نافذة البلاغات الأصلية
+  linkToTicket: ideaTriageProcedure.input(z.object({ id: z.number(), ticketId: z.number() })).mutation(async ({ input, ctx }) => {
+    const idea = await ideasDb.getImprovementIdeaById(input.id);
+    if (!idea) throw new TRPCError({ code: "NOT_FOUND", message: "الفكرة غير موجودة" });
+    if (idea.status !== "approved") throw new TRPCError({ code: "BAD_REQUEST", message: "هذه الفكرة ليست معتمدة حالياً" });
+
+    await ideasDb.linkIdeaToTicket(input.id, input.ticketId);
+    await db.createAuditLog({ userId: ctx.user.id, action: "link_improvement_idea_ticket", entityType: "improvement_idea", entityId: input.id });
+  }),
+
+  // ربط الفكرة المعتمدة بطلب شراء تم إنشاؤه فعلياً من نافذة المشتريات الأصلية
+  linkToPurchaseOrder: ideaTriageProcedure.input(z.object({ id: z.number(), purchaseOrderId: z.number() })).mutation(async ({ input, ctx }) => {
+    const idea = await ideasDb.getImprovementIdeaById(input.id);
+    if (!idea) throw new TRPCError({ code: "NOT_FOUND", message: "الفكرة غير موجودة" });
+    if (idea.status !== "approved") throw new TRPCError({ code: "BAD_REQUEST", message: "هذه الفكرة ليست معتمدة حالياً" });
+
+    await ideasDb.linkIdeaToPurchaseOrder(input.id, input.purchaseOrderId);
+    await db.createAuditLog({ userId: ctx.user.id, action: "link_improvement_idea_po", entityType: "improvement_idea", entityId: input.id });
+  }),
+
+  // تأكيد إكمال التنفيذ — يدوي، متاح لأدوار الفرز بأي وقت أثناء "قيد التنفيذ"
+  complete: ideaTriageProcedure.input(z.object({
     id: z.number(),
     completionNotes: z.string().optional(),
   })).mutation(async ({ input, ctx }) => {
     const idea = await ideasDb.getImprovementIdeaById(input.id);
     if (!idea) throw new TRPCError({ code: "NOT_FOUND", message: "الفكرة غير موجودة" });
     if (idea.status !== "in_progress") throw new TRPCError({ code: "BAD_REQUEST", message: "هذه الفكرة ليست قيد التنفيذ حالياً" });
-
-    const canComplete = idea.assignedToId === ctx.user.id || ["admin", "owner"].includes(ctx.user.role);
-    if (!canComplete) throw new TRPCError({ code: "FORBIDDEN", message: "فقط الشخص المكلَّف بالتنفيذ يقدر يُكمل هذي الفكرة" });
 
     await ideasDb.completeImprovementIdea(input.id, input.completionNotes);
     await db.createAuditLog({ userId: ctx.user.id, action: "complete_improvement_idea", entityType: "improvement_idea", entityId: input.id });
@@ -151,7 +203,7 @@ export const improvementIdeasRouter = router({
     });
   }),
 
-  // حذف — فقط مقدّم الطلب وبحالة "جديد" (قبل الفرز)، أو admin/owner بأي وقت
+  // حذف — فقط مقدّم الطلب وبحالة "جديدة" (قبل الفرز)، أو admin/owner بأي وقت
   delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
     const idea = await ideasDb.getImprovementIdeaById(input.id);
     if (!idea) throw new TRPCError({ code: "NOT_FOUND", message: "الفكرة غير موجودة" });
