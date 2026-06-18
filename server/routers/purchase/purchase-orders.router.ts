@@ -189,6 +189,92 @@ export const purchaseOrdersRouter = router({
     return { success: true };
   }),
 
+  cancelItemPurchase: delegateProcedure.input(z.object({
+    itemId: z.number(),
+    note: z.string().min(3, "يجب كتابة سبب إلغاء الشراء"),
+  })).mutation(async ({ input, ctx }) => {
+    // المندوب يلغي شراء صنفه فقط، والأدمن/الأونر أي صنف
+    const isAdminOrOwner = ctx.user.role === "admin" || ctx.user.role === "owner";
+    let item: any;
+    if (isAdminOrOwner) {
+      item = await db.getPOItemById(input.itemId);
+    } else {
+      const allItems = await db.getPOItemsByDelegate(ctx.user.id);
+      item = allItems.find(i => i.id === input.itemId);
+    }
+    if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "الصنف غير موجود أو غير مخصص لك" });
+
+    // يُسمح بالإلغاء فقط للأصناف الجاهزة للشراء (approved أو funded)
+    if (item.status !== "approved" && item.status !== "funded") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء شراء هذا الصنف في حالته الحالية" });
+    }
+
+    const po = await db.getPurchaseOrderById(item.purchaseOrderId);
+    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
+
+    // تحديث الصنف لحالة إلغاء الشراء مع اسم المندوب الكامل
+    await db.updatePOItem(input.itemId, {
+      status: "purchase_cancelled",
+      purchaseCancelReason: input.note,
+      purchaseCancelledById: ctx.user.id,
+      purchaseCancelledByName: ctx.user.name || "مندوب",
+      purchaseCancelledAt: new Date(),
+    });
+
+    // تعليق دائم في سجل الطلب
+    await db.createProcurementComment({
+      purchaseOrderId: po.id,
+      userId: ctx.user.id,
+      userName: ctx.user.name || "مندوب",
+      userRole: ctx.user.role,
+      actionType: "purchase_cancelled",
+      note: `الصنف: ${item.itemName}\n\nسبب إلغاء الشراء:\n${input.note}`,
+    });
+
+    // أخطر منشئ الطلب
+    await db.createNotification({
+      userId: po.requestedById,
+      title: "⛔ تم إلغاء شراء صنف",
+      message: `قام المندوب ${ctx.user.name} بإلغاء شراء الصنف "${item.itemName}" من طلب الشراء ${po.poNumber}.\n\nالسبب:\n${input.note}`,
+      type: "warning",
+      relatedPOId: po.id,
+    });
+
+    // إعادة حساب حالة الطلب — الصنف الملغى لا يُحسب ضمن الأصناف الفعّالة
+    const allItems = await db.getPOItems(item.purchaseOrderId);
+    const activeItems = allItems.filter(
+      i => !["rejected", "cancelled", "needs_item_revision", "purchase_cancelled"].includes(i.status)
+    );
+    const purchasedOrLater = activeItems.filter(i =>
+      ["purchased", "delivered_to_warehouse", "delivered_to_requester"].includes(i.status)
+    );
+    const ticketForPath = po.ticketId ? await db.getTicketById(po.ticketId) : null;
+    const isPathC = ticketForPath?.maintenancePath === "C";
+    const hasRevisionItems = allItems.some(i => i.status === "needs_item_revision");
+
+    if (activeItems.length > 0 && purchasedOrLater.length === activeItems.length) {
+      // كل الأصناف الفعّالة اشتُريت → شراء كامل (مع بقاء الصنف الملغى ظاهراً)
+      const newStatus = hasRevisionItems ? "partial_purchase" : "purchased";
+      await db.updatePurchaseOrder(item.purchaseOrderId, { status: newStatus });
+      if (po.ticketId && !isPathC) {
+        await db.updateTicket(po.ticketId, { status: newStatus });
+      }
+    } else if (activeItems.length === 0) {
+      // كل الأصناف ملغاة أو مرفوضة → الطلب منتهٍ
+      await db.updatePurchaseOrder(item.purchaseOrderId, { status: "received" });
+    }
+
+    await db.createAuditLog({
+      userId: ctx.user.id,
+      action: "cancel_item_purchase",
+      entityType: "po_item",
+      entityId: input.itemId,
+      newValues: { status: "purchase_cancelled", note: input.note },
+    });
+
+    return { success: true };
+  }),
+
   confirmItemPurchase: delegateProcedure.input(z.object({
     itemId: z.number(),
     purchasedPhotoUrl: z.string().min(1, "صورة الصنف المشترى مطلوبة"),
@@ -218,7 +304,7 @@ export const purchaseOrdersRouter = router({
     const poItems = await db.getPOItems(item.purchaseOrderId);
     // الأصناف في needs_item_revision لم تصل لمرحلة الشراء بعد → لا تُحسب ضمن الأصناف الفعّالة الآن
     const activeItemsPurch = poItems.filter(
-      i => i.status !== "rejected" && i.status !== "cancelled" && i.status !== "needs_item_revision"
+      i => !["rejected", "cancelled", "needs_item_revision", "purchase_cancelled"].includes(i.status)
     );
     const purchasedOrLater = activeItemsPurch.filter(i =>
       ["purchased", "delivered_to_warehouse", "delivered_to_requester"].includes(i.status)
