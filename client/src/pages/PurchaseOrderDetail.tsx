@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ArrowRight, ShoppingCart, CheckCircle2, Clock, DollarSign, Loader2,
-  Camera, Package, User, FileText, AlertCircle, ExternalLink, XCircle, Pencil, Upload, FileDown
+  Camera, Package, User, FileText, AlertCircle, ExternalLink, XCircle, Pencil, Upload, FileDown, Ban
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { toast } from "sonner";
@@ -45,6 +45,8 @@ const ITEM_STATUS_COLORS: Record<string, string> = {
   purchased: "bg-emerald-100 text-emerald-700",
   received: "bg-green-100 text-green-700",
   cancelled: "bg-gray-200 text-gray-500",
+  purchase_cancelled: "bg-red-100 text-red-700",
+  needs_item_revision: "bg-rose-100 text-rose-700",
 };
 
 function numberToArabicWords(num: number): string {
@@ -89,6 +91,10 @@ export default function PurchaseOrderDetail() {
   const approveMgmtMut = trpc.purchaseOrders.approveManagement.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e) => toast.error(e.message) });
   const rejectMut = trpc.purchaseOrders.reject.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e) => toast.error(e.message) });
   const confirmPurchaseMut = trpc.purchaseOrders.confirmItemPurchase.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e) => toast.error(e.message) });
+  const cancelPurchaseMut = trpc.purchaseOrders.cancelItemPurchase.useMutation({
+    onSuccess: () => { toast.success("تم إلغاء شراء الصنف"); refetch(); setCancelPurchaseDialog(null); setCancelPurchaseNote(""); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const receiveItemMut = trpc.purchaseOrders.confirmDeliveryToWarehouse.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e: any) => toast.error(e.message) });
   const editItemMut = trpc.purchaseOrders.editItem.useMutation({ onSuccess: () => { toast.success(t.common.savedSuccessfully); setEditingItem(null); refetch(); }, onError: (e: any) => toast.error(e.message) });
   const cancelItemMut = trpc.purchaseOrders.cancelItem.useMutation({ onSuccess: () => { toast.success(language === "ar" ? "تم إلغاء الصنف" : "Item cancelled"); refetch(); }, onError: (e: any) => toast.error(e.message) });
@@ -121,6 +127,8 @@ const submitDraftMut = trpc.purchaseOrders.submitDraft.useMutation({
   const [uploadingItem, setUploadingItem] = useState<string | null>(null);
   const [itemPhotos, setItemPhotos] = useState<Record<number, { invoice?: string; purchased?: string; warehouse?: string }>>({})
   const [dropZoneFor, setDropZoneFor] = useState<string | null>(null); // e.g. "123-invoice" or "123-purchased";
+  const [cancelPurchaseDialog, setCancelPurchaseDialog] = useState<any>(null);
+  const [cancelPurchaseNote, setCancelPurchaseNote] = useState("");
   const [receiveData, setReceiveData] = useState<Record<number, { cost: string; supplier: string; supplierItemName: string; warehousePhotoUrl: string }>>({});
   const [editingItem, setEditingItem] = useState<any>(null);
   const [selectedRevisionItemId, setSelectedRevisionItemId] = useState<number | null>(null);
@@ -235,8 +243,8 @@ const visibleItems = useMemo(() => {
 
   return po.items;
 }, [po?.items, isAdminOrOwner, role, userId]);
-  const totalEstimated = useMemo(() => visibleItems.filter((item: any) => item.status !== "rejected" && item.status !== "cancelled").reduce((sum: number, item: any) => sum + (parseFloat(item.estimatedTotalCost || "0")), 0), [visibleItems]);
-  const totalActual = useMemo(() => visibleItems.filter((item: any) => item.status !== "rejected" && item.status !== "cancelled").reduce((sum: number, item: any) => sum + (parseFloat(item.actualTotalCost || "0")), 0), [visibleItems]);
+  const totalEstimated = useMemo(() => visibleItems.filter((item: any) => !["rejected", "cancelled", "purchase_cancelled"].includes(item.status)).reduce((sum: number, item: any) => sum + (parseFloat(item.estimatedTotalCost || "0")), 0), [visibleItems]);
+  const totalActual = useMemo(() => visibleItems.filter((item: any) => !["rejected", "cancelled", "purchase_cancelled"].includes(item.status)).reduce((sum: number, item: any) => sum + (parseFloat(item.actualTotalCost || "0")), 0), [visibleItems]);
 
   const handleUpload = async (file: File, itemId: number, type: "invoice" | "purchased" | "warehouse"): Promise<string | null> => {
     setUploadingItem(`${itemId}-${type}`);
@@ -434,8 +442,10 @@ const visibleItems = useMemo(() => {
             // Admin/owner can act on all items; delegate only sees their own
             const isMyItem = isAdminOrOwner || (isDelegate && item.delegateId === userId);
 
-            const isCancelled = item.status === "cancelled";
+            const isCancelledRaw = item.status === "cancelled";
             const isRejected = item.status === "rejected";
+            const isPurchaseCancelled = item.status === "purchase_cancelled";
+            const isCancelled = isCancelledRaw || isPurchaseCancelled;
             return (
               <div key={item.id} className={`border rounded-xl p-4 space-y-3 transition-colors ${isCancelled ? "opacity-60 bg-gray-50 border-gray-200" : "hover:border-primary/20"}`}>
                 <div className="flex items-start justify-between gap-3">
@@ -452,6 +462,17 @@ const visibleItems = useMemo(() => {
                       {delegate && <span>{t.purchaseOrders.delegate}: <strong>{delegate.name}</strong></span>}
                     </div>
                     {item.notes && <p className="text-xs text-muted-foreground mt-1.5 bg-muted/50 rounded-lg p-2">{getField(item, "notes")}</p>}
+                    {isPurchaseCancelled && (
+                      <div className="mt-2 bg-red-50 border border-red-200 rounded-lg p-2.5 space-y-1">
+                        <p className="text-xs font-semibold text-red-700">⛔ تم إلغاء شراءه من قبل المندوب</p>
+                        {item.purchaseCancelledByName && (
+                          <p className="text-xs text-red-600">المندوب: <strong>{item.purchaseCancelledByName}</strong></p>
+                        )}
+                        {item.purchaseCancelReason && (
+                          <p className="text-xs text-red-600">السبب: {item.purchaseCancelReason}</p>
+                        )}
+                      </div>
+                    )}
                     {(isCancelled || isRejected) && item.managementRejectionReason && (
                       <p className={`text-xs mt-1 ${isRejected ? "text-red-500" : "text-gray-400"}`}>
                         {isCancelled
@@ -749,16 +770,28 @@ const visibleItems = useMemo(() => {
                         )}
                       </div>
                     </div>
-                    <Button size="sm" className="w-full gap-1.5" onClick={() => {
-                      confirmPurchaseMut.mutate({
-                        itemId: item.id,
-                        invoicePhotoUrl: itemPhotos[item.id]?.invoice || "",
-                        purchasedPhotoUrl: itemPhotos[item.id]?.purchased || "",
-                      });
-                    }} disabled={confirmPurchaseMut.isPending}>
-                      {confirmPurchaseMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                      {t.purchaseOrders.confirmPurchase}
-                    </Button>
+                    <div className="flex gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5 border-red-200 text-red-700 hover:bg-red-50"
+                        onClick={() => { setCancelPurchaseNote(""); setCancelPurchaseDialog(item); }}
+                        disabled={confirmPurchaseMut.isPending}
+                      >
+                        <Ban className="w-3.5 h-3.5" />
+                        إلغاء الشراء
+                      </Button>
+                      <Button size="sm" className="flex-1 gap-1.5" onClick={() => {
+                        confirmPurchaseMut.mutate({
+                          itemId: item.id,
+                          invoicePhotoUrl: itemPhotos[item.id]?.invoice || "",
+                          purchasedPhotoUrl: itemPhotos[item.id]?.purchased || "",
+                        });
+                      }} disabled={confirmPurchaseMut.isPending}>
+                        {confirmPurchaseMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                        {t.purchaseOrders.confirmPurchase}
+                      </Button>
+                    </div>
                   </div>
                 )}
 
@@ -1376,6 +1409,52 @@ const visibleItems = useMemo(() => {
               </>
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ==================== DIALOG: Cancel Purchase ==================== */}
+      <Dialog open={!!cancelPurchaseDialog} onOpenChange={(open) => !open && setCancelPurchaseDialog(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-700">
+              <Ban className="w-5 h-5" />
+              إلغاء شراء الصنف
+            </DialogTitle>
+          </DialogHeader>
+          {cancelPurchaseDialog && (
+            <div className="space-y-4">
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-1">
+                <p className="font-semibold text-sm">{cancelPurchaseDialog.itemName}</p>
+                <p className="text-xs text-muted-foreground">{t.purchaseOrders.quantity}: {cancelPurchaseDialog.quantity} {cancelPurchaseDialog.unit}</p>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">سبب إلغاء الشراء *</Label>
+                <Textarea
+                  placeholder="اكتب سبب إلغاء شراء هذا الصنف (مثال: الصنف غير متوفر في السوق)"
+                  value={cancelPurchaseNote}
+                  onChange={(e) => setCancelPurchaseNote(e.target.value)}
+                  rows={4}
+                  className="resize-none"
+                />
+                <p className="text-[11px] text-muted-foreground">سيعود هذا الصنف لمنشئ الطلب بحالة "تم إلغاء شراءه" ولا يمكن التراجع.</p>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelPurchaseDialog(null)}>{t.common.cancel}</Button>
+            <Button
+              variant="destructive"
+              className="gap-1.5"
+              disabled={cancelPurchaseNote.trim().length < 3 || cancelPurchaseMut.isPending}
+              onClick={() => {
+                if (cancelPurchaseNote.trim().length < 3) { toast.error("يجب كتابة سبب الإلغاء"); return; }
+                cancelPurchaseMut.mutate({ itemId: cancelPurchaseDialog.id, note: cancelPurchaseNote });
+              }}
+            >
+              {cancelPurchaseMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Ban className="w-4 h-4" />}
+              تأكيد إلغاء الشراء
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
