@@ -207,6 +207,8 @@ const en: TranslationKeys = {
     purchased: "Purchased",
     received: "Received",
     cancelled: "Cancelled",
+      purchase_cancelled: "Purchase Cancelled",
+    needs_item_revision: "Needs Revision",
   },
 
   priority: {
