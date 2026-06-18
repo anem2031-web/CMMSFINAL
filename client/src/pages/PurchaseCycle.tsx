@@ -14,8 +14,9 @@ import { TechnicianCombobox } from "@/components/TechnicianCombobox";
 import {
   ShoppingCart, Package, Truck, CheckCircle2, Camera, Loader2,
   Clock, ArrowLeft, ArrowRight, Image as ImageIcon, FileText,
-  AlertCircle, User, Hash, Calendar
+  AlertCircle, User, Hash, Calendar, Ban
 } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 
 export default function PurchaseCycle() {
@@ -43,6 +44,7 @@ export default function PurchaseCycle() {
   // Mutations
   const estimateCostMut = trpc.purchaseOrders.estimateCost.useMutation({ onSuccess: () => { toast.success("تم حفظ التسعير"); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
   const confirmPurchaseMut = trpc.purchaseOrders.confirmItemPurchase.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.purchased); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
+  const cancelPurchaseMut = trpc.purchaseOrders.cancelItemPurchase.useMutation({ onSuccess: () => { toast.success("تم إلغاء شراء الصنف"); refetchAll(); setCancelDialog(null); setCancelNote(""); }, onError: (e: any) => toast.error(e.message) });
   const confirmWarehouseMut = trpc.purchaseOrders.confirmDeliveryToWarehouse.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.deliveredToWarehouse); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
   const confirmDeliveryMut = trpc.purchaseOrders.confirmDeliveryToRequester.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.deliveredToRequester); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
 
@@ -51,6 +53,8 @@ export default function PurchaseCycle() {
 
   // Dialog states
   const [purchaseDialog, setPurchaseDialog] = useState<any>(null);
+  const [cancelDialog, setCancelDialog] = useState<any>(null);
+  const [cancelNote, setCancelNote] = useState("");
   const [warehouseDialog, setWarehouseDialog] = useState<any>(null);
   const [deliveryDialog, setDeliveryDialog] = useState<any>(null);
 
@@ -431,7 +435,20 @@ export default function PurchaseCycle() {
             </div>
           )}
 
-          <DialogFooter>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button
+              variant="outline"
+              className="hidden gap-1.5 border-red-200 text-red-700 hover:bg-red-50 w-full sm:w-auto"
+              onClick={() => {
+                setCancelNote("");
+                setCancelDialog(purchaseDialog);
+                setPurchaseDialog(null);
+              }}
+            >
+              <Ban className="w-4 h-4" />
+              إلغاء الشراء
+            </Button>
+            <div className="flex-1" />
             <Button variant="outline" onClick={() => setPurchaseDialog(null)}>{t.common.cancel}</Button>
             <Button
               className="gap-1.5"
@@ -451,6 +468,52 @@ export default function PurchaseCycle() {
             >
               {confirmPurchaseMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
               {t.purchaseOrders.confirmPurchase}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ==================== DIALOG: Cancel Purchase ==================== */}
+      <Dialog open={!!cancelDialog} onOpenChange={(open) => !open && setCancelDialog(null)}>
+        <DialogContent className="max-w-md" dir={isRTL ? "rtl" : "ltr"}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-700">
+              <Ban className="w-5 h-5" />
+              إلغاء شراء الصنف
+            </DialogTitle>
+          </DialogHeader>
+          {cancelDialog && (
+            <div className="space-y-4">
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-1">
+                <p className="font-semibold text-sm">{cancelDialog.itemName}</p>
+                <p className="text-xs text-muted-foreground">{t.purchaseOrders.quantity}: {cancelDialog.quantity} {cancelDialog.unit}</p>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">سبب إلغاء الشراء *</Label>
+                <Textarea
+                  placeholder="اكتب سبب إلغاء شراء هذا الصنف (مثال: الصنف غير متوفر في السوق)"
+                  value={cancelNote}
+                  onChange={(e) => setCancelNote(e.target.value)}
+                  rows={4}
+                  className="resize-none"
+                />
+                <p className="text-[11px] text-muted-foreground">سيعود هذا الصنف لمنشئ الطلب بحالة "تم إلغاء شراءه" ولا يمكن التراجع.</p>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelDialog(null)}>{t.common.cancel}</Button>
+            <Button
+              variant="destructive"
+              className="gap-1.5"
+              disabled={cancelNote.trim().length < 3 || cancelPurchaseMut.isPending}
+              onClick={() => {
+                if (cancelNote.trim().length < 3) { toast.error("يجب كتابة سبب الإلغاء"); return; }
+                cancelPurchaseMut.mutate({ itemId: cancelDialog.id, note: cancelNote });
+              }}
+            >
+              {cancelPurchaseMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Ban className="w-4 h-4" />}
+              تأكيد إلغاء الشراء
             </Button>
           </DialogFooter>
         </DialogContent>
