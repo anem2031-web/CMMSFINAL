@@ -189,7 +189,7 @@ export const purchaseOrders = mysqlTable("purchase_orders", {
 // ============================================================
 // 5. PURCHASE ORDER ITEMS
 // ============================================================
-export const poItemStatuses = ["pending", "estimated", "approved", "rejected", "funded", "purchased", "delivered_to_warehouse", "delivered_to_requester", "cancelled"] as const;
+export const poItemStatuses = ["pending", "estimated", "approved", "rejected", "funded", "purchased", "delivered_to_warehouse", "delivered_to_requester", "cancelled", "needs_item_revision", "purchase_cancelled"] as const;
 
 export const purchaseOrderItems = mysqlTable("purchase_order_items", {
   id: int("id").autoincrement().primaryKey(),
@@ -235,6 +235,13 @@ export const purchaseOrderItems = mysqlTable("purchase_order_items", {
   returnedQuantity: int("returnedQuantity").default(0),
   returnReason: text("returnReason"),
   returnedAt: timestamp("returnedAt"),
+  itemRevisionNote: text("itemRevisionNote"),
+  itemRevisionRequestedById: int("itemRevisionRequestedById"),
+  itemRevisionRequestedAt: timestamp("itemRevisionRequestedAt"),
+  purchaseCancelReason: text("purchaseCancelReason"),
+  purchaseCancelledById: int("purchaseCancelledById"),
+  purchaseCancelledByName: varchar("purchaseCancelledByName", { length: 300 }),
+  purchaseCancelledAt: timestamp("purchaseCancelledAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
