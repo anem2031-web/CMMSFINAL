@@ -231,16 +231,18 @@ export const purchaseOrdersRouter = router({
       note: `الصنف: ${item.itemName}\n\nسبب إلغاء الشراء:\n${input.note}`,
     });
 
-    // أخطر منشئ الطلب
+    // أخطر منشئ الطلب — الصنف بانتظار تصرفه: تعديل وإعادة إرسال، أو إلغاء نهائي
     await db.createNotification({
       userId: po.requestedById,
-      title: "⛔ تم إلغاء شراء صنف",
-      message: `قام المندوب ${ctx.user.name} بإلغاء شراء الصنف "${item.itemName}" من طلب الشراء ${po.poNumber}.\n\nالسبب:\n${input.note}`,
+      title: "⛔ تعذّر شراء صنف - يحتاج تصرفك",
+      message: `قام المندوب ${ctx.user.name} بإلغاء شراء الصنف "${item.itemName}" من طلب الشراء ${po.poNumber}.\n\nالسبب:\n${input.note}\n\nيمكنك تعديل الصنف وإعادة إرساله للمندوب مباشرة للشراء، أو إلغاءه نهائياً.`,
       type: "warning",
       relatedPOId: po.id,
     });
 
-    // إعادة حساب حالة الطلب — الصنف الملغى لا يُحسب ضمن الأصناف الفعّالة
+    // إعادة حساب حالة الطلب
+    // الصنف في purchase_cancelled لم يُحسم مصيره بعد (بانتظار منشئ الطلب) — تماماً كـ needs_item_revision
+    // لذلك لا يدخل في حساب "شراء كامل"، ويبقي الطلب شراء جزئي حتى يُحسم
     const allItems = await db.getPOItems(item.purchaseOrderId);
     const activeItems = allItems.filter(
       i => !["rejected", "cancelled", "needs_item_revision", "purchase_cancelled"].includes(i.status)
@@ -250,18 +252,25 @@ export const purchaseOrdersRouter = router({
     );
     const ticketForPath = po.ticketId ? await db.getTicketById(po.ticketId) : null;
     const isPathC = ticketForPath?.maintenancePath === "C";
-    const hasRevisionItems = allItems.some(i => i.status === "needs_item_revision");
+    // أي صنف لم يُحسم بعد (مراجعة أو إلغاء شراء معلّق) يجعل الطلب "شراء جزئي" دائماً
+    const hasPendingItems = allItems.some(i => i.status === "needs_item_revision" || i.status === "purchase_cancelled");
 
     if (activeItems.length > 0 && purchasedOrLater.length === activeItems.length) {
-      // كل الأصناف الفعّالة اشتُريت → شراء كامل (مع بقاء الصنف الملغى ظاهراً)
-      const newStatus = hasRevisionItems ? "partial_purchase" : "purchased";
+      // كل الأصناف الفعّالة اشتُريت → شراء كامل فقط إذا لا يوجد صنف معلّق بانتظار حسم
+      const newStatus = hasPendingItems ? "partial_purchase" : "purchased";
       await db.updatePurchaseOrder(item.purchaseOrderId, { status: newStatus });
       if (po.ticketId && !isPathC) {
         await db.updateTicket(po.ticketId, { status: newStatus });
       }
-    } else if (activeItems.length === 0) {
-      // كل الأصناف ملغاة أو مرفوضة → الطلب منتهٍ
+    } else if (activeItems.length === 0 && !hasPendingItems) {
+      // كل الأصناف ملغاة أو مرفوضة (ولا يوجد معلّق) → الطلب منتهٍ
       await db.updatePurchaseOrder(item.purchaseOrderId, { status: "received" });
+    } else {
+      // يوجد صنف معلّق بانتظار حسم منشئ الطلب → الطلب شراء جزئي دائماً
+      await db.updatePurchaseOrder(item.purchaseOrderId, { status: "partial_purchase" });
+      if (po.ticketId && !isPathC) {
+        await db.updateTicket(po.ticketId, { status: "partial_purchase" });
+      }
     }
 
     await db.createAuditLog({
@@ -638,9 +647,9 @@ export const purchaseOrdersRouter = router({
     const editableStatuses = ['draft', 'pending_review', 'pending_estimate', 'pending_accounting', 'revision_needed'];
     const isEditableStatus = editableStatuses.includes(po.status);
 
-    // استثناء: الطلب معتمد/في المراجعة لكن الصنف نفسه في needs_item_revision → نسمح للمنشئ بالتعديل
+    // استثناء: الطلب معتمد/في المراجعة لكن الصنف نفسه في needs_item_revision أو purchase_cancelled → نسمح للمنشئ بالتعديل
     const oldItem = await db.getPOItemById(input.id);
-    const isItemInRevision = oldItem?.status === "needs_item_revision";
+    const isItemInRevision = oldItem?.status === "needs_item_revision" || oldItem?.status === "purchase_cancelled";
     const isCreator = po.requestedById === ctx.user.id;
 
     if (!isEditableStatus && !(isItemInRevision && isCreator)) {
@@ -1117,6 +1126,134 @@ list: protectedProcedure.input(z.object({
 
     await db.createAuditLog({ userId: ctx.user.id, action: "resubmit_po", entityType: "purchase_order", entityId: input.id });
     return { success: true };
+  }),
+
+  resubmitCancelledPurchase: protectedProcedure.input(z.object({
+    itemId: z.number(),
+  })).mutation(async ({ input, ctx }) => {
+
+    const item = await db.getPOItemById(input.itemId);
+    if (!item) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "الصنف غير موجود" });
+    }
+
+    const po = await db.getPurchaseOrderById(item.purchaseOrderId);
+    if (!po) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
+    }
+
+    if (po.requestedById !== ctx.user.id) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "فقط منشئ الطلب يمكنه إعادة إرسال الصنف" });
+    }
+
+    if (item.status !== "purchase_cancelled") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الصنف ليس في حالة إلغاء شراء" });
+    }
+
+    // ── الصنف يرجع مباشرة لحالة approved — السعر معتمد بالفعل ولا يحتاج تسعير جديد ──
+    // لا يمر على التسعير، ولا الحسابات، ولا اعتماد الإدارة العليا من جديد
+    await db.updatePOItem(item.id, {
+      status: "approved",
+      purchaseCancelReason: null,
+      purchaseCancelledById: null,
+      purchaseCancelledByName: null,
+      purchaseCancelledAt: null,
+    });
+
+    await db.createProcurementComment({
+      purchaseOrderId: po.id,
+      userId: ctx.user.id,
+      userName: ctx.user.name || "User",
+      userRole: ctx.user.role,
+      actionType: "cancelled_purchase_resubmitted",
+      note: `تم تعديل الصنف "${item.itemName}" وإعادة إرساله للمندوب للشراء مباشرة (نفس السعر المعتمد سابقاً)`,
+    });
+
+    // ── أخطر المندوب المخصص للصنف مباشرةً للشراء ──
+    if (item.delegateId) {
+      await db.createNotification({
+        userId: item.delegateId,
+        title: "🛒 صنف جاهز للشراء",
+        message: `تم تعديل الصنف "${item.itemName}" من طلب الشراء ${po.poNumber} وهو جاهز للشراء الآن مباشرة.`,
+        type: "success",
+        relatedPOId: po.id,
+      });
+    }
+
+    await db.createAuditLog({
+      userId: ctx.user.id,
+      action: "resubmit_cancelled_purchase",
+      entityType: "purchase_order_item",
+      entityId: item.id,
+    });
+
+    return { success: true };
+
+  }),
+
+  finalizeCancelledItem: protectedProcedure.input(z.object({
+    itemId: z.number(),
+  })).mutation(async ({ input, ctx }) => {
+
+    const item = await db.getPOItemById(input.itemId);
+    if (!item) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "الصنف غير موجود" });
+    }
+
+    const po = await db.getPurchaseOrderById(item.purchaseOrderId);
+    if (!po) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
+    }
+
+    const isAdminOrOwner = ctx.user.role === "admin" || ctx.user.role === "owner";
+    if (!isAdminOrOwner && po.requestedById !== ctx.user.id) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "فقط منشئ الطلب يمكنه إلغاء الصنف نهائياً" });
+    }
+
+    if (item.status !== "purchase_cancelled") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الصنف ليس في حالة إلغاء شراء" });
+    }
+
+    // ── إلغاء نهائي — لا رجعة فيه ──
+    await db.updatePOItem(item.id, { status: "cancelled" });
+
+    await db.createProcurementComment({
+      purchaseOrderId: po.id,
+      userId: ctx.user.id,
+      userName: ctx.user.name || "User",
+      userRole: ctx.user.role,
+      actionType: "cancelled_purchase_finalized",
+      note: `قام منشئ الطلب بإلغاء الصنف "${item.itemName}" نهائياً بعد تعذّر شرائه`,
+    });
+
+    // ── إعادة حساب حالة الطلب بعد الإلغاء النهائي ──
+    const allItems = await db.getPOItems(item.purchaseOrderId);
+    const activeItems = allItems.filter(
+      i => !["rejected", "cancelled", "needs_item_revision", "purchase_cancelled"].includes(i.status)
+    );
+    const purchasedOrLater = activeItems.filter(i =>
+      ["purchased", "delivered_to_warehouse", "delivered_to_requester"].includes(i.status)
+    );
+    const hasPendingItems = allItems.some(i => i.status === "needs_item_revision" || i.status === "purchase_cancelled");
+    const ticketForPath = po.ticketId ? await db.getTicketById(po.ticketId) : null;
+    const isPathC = ticketForPath?.maintenancePath === "C";
+
+    if (activeItems.length > 0 && purchasedOrLater.length === activeItems.length && !hasPendingItems) {
+      await db.updatePurchaseOrder(item.purchaseOrderId, { status: "purchased" });
+      if (po.ticketId && !isPathC) await db.updateTicket(po.ticketId, { status: "purchased" });
+    } else if (activeItems.length === 0 && !hasPendingItems) {
+      await db.updatePurchaseOrder(item.purchaseOrderId, { status: "received" });
+    }
+
+    await db.createAuditLog({
+      userId: ctx.user.id,
+      action: "finalize_cancelled_item",
+      entityType: "purchase_order_item",
+      entityId: item.id,
+    });
+
+    return { success: true };
+
   }),
 
   resubmitItemRevision: protectedProcedure.input(z.object({
