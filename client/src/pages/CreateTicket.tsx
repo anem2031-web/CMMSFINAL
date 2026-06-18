@@ -43,23 +43,34 @@ export default function CreateTicket() {
   const { data: assets } = trpc.assets.list.useQuery(
     form.sectionId ? { sectionId: Number(form.sectionId) } : {},
   );
-  // Pre-fill form from URL params (e.g. from NFC scan)
+  // Pre-fill form from URL params (e.g. from NFC scan, or من فكرة تحسين معتمدة)
   useEffect(() => {
     const params = new URLSearchParams(search);
     const assetId = params.get("assetId");
     const siteId = params.get("siteId");
     const sectionId = params.get("sectionId");
     const locationDetail = params.get("locationDetail");
-    if (assetId || siteId || sectionId || locationDetail) {
+    const prefillTitle = params.get("prefillTitle");
+    const prefillDescription = params.get("prefillDescription");
+    if (assetId || siteId || sectionId || locationDetail || prefillTitle || prefillDescription) {
       setForm(prev => ({
         ...prev,
         ...(assetId && { assetId }),
         ...(siteId && { siteId }),
         ...(sectionId && { sectionId }),
         ...(locationDetail && { locationDetail }),
+        ...(prefillTitle && { title: prefillTitle }),
+        ...(prefillDescription && { description: prefillDescription }),
       }));
     }
   }, [search]);
+
+  // معرّف فكرة التحسين الأصلية لو هذا البلاغ نتيجة تحويل فكرة معتمدة
+  const fromIdeaId = (() => {
+    const v = new URLSearchParams(search).get("fromIdeaId");
+    return v ? Number(v) : undefined;
+  })();
+  const linkIdeaMut = trpc.improvementIdeas.linkToTicket.useMutation();
 
   const { data: sections } = trpc.sections.list.useQuery(
     form.siteId ? { siteId: Number(form.siteId) } : undefined,
@@ -93,6 +104,9 @@ export default function CreateTicket() {
         }
       }
       toast.success(`${t.tickets.createNew} ${data.ticketNumber}`);
+      if (fromIdeaId) {
+        linkIdeaMut.mutate({ id: fromIdeaId, ticketId: data.id! });
+      }
       setLocation(`/tickets/${data.id}`);
     },
     onError: (err) => toast.error(err.message),
