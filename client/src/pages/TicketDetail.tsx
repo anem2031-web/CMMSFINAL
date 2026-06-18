@@ -53,6 +53,7 @@ const { getField } = useResolvedTranslation(
   const attachmentsInput = useMemo(() => ({ entityType: "ticket", entityId: ticketId }), [ticketId]);
   const { data: ticketAttachments } = trpc.attachments.list.useQuery(attachmentsInput, { enabled: !!ticketId });
   const { data: inspectionResultsList } = trpc.inspectionResults.listByTicket.useQuery({ ticketId }, { enabled: !!ticketId });
+  const { data: ticketConfirmation, refetch: refetchConfirmation } = trpc.tickets.getConfirmation.useQuery({ id: ticketId }, { enabled: !!ticketId });
 
   const approveMut = trpc.tickets.approve.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); } });
   const assignMut = trpc.tickets.assign.useMutation({ onSuccess: () => { toast.success(t.tickets.assignedTo); refetch(); } });
@@ -69,6 +70,10 @@ const { getField } = useResolvedTranslation(
   const completeWithPartsMut = trpc.tickets.completeWithParts.useMutation({ onSuccess: () => { toast.success("تم إكمال العمل بالمواد - البلاغ جاهز للإغلاق"); refetch(); } });
   const approveGateExitMut = trpc.tickets.approveGateExit.useMutation({ onSuccess: () => { toast.success("تمت الموافقة على خروج الأصل"); refetch(); } });
   const approveGateEntryMut = trpc.tickets.approveGateEntry.useMutation({ onSuccess: () => { toast.success("تمت الموافقة على دخول الأصل"); refetch(); } });
+  const confirmCompletionMut = trpc.tickets.confirmCompletion.useMutation({
+    onSuccess: () => { toast.success(t.tickets.confirmCompletionSuccess); refetch(); refetchConfirmation(); setConfirmNote(""); setConfirmPhotos([]); },
+    onError: (err) => { toast.error(err.message); },
+  });
 
   // Workflow state
   const [inspectionNotes, setInspectionNotes] = useState("");
@@ -93,6 +98,9 @@ const { getField } = useResolvedTranslation(
   const [showAttachDropZone, setShowAttachDropZone] = useState(false);
   // Lightbox state
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  // Requester completion confirmation state
+  const [confirmNote, setConfirmNote] = useState("");
+  const [confirmPhotos, setConfirmPhotos] = useState<UploadedFile[]>([]);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   const handleDownloadPDF = useCallback(async () => {
@@ -187,6 +195,9 @@ const { getField } = useResolvedTranslation(
   // Technician (Path B): Complete work after parts delivered from warehouse
   const canCompleteWithParts = (isTechnician || isManager) && ticket?.status === "received_warehouse" && (ticket?.maintenancePath === "B" || ticket?.maintenancePath === "C");
 
+  // Requester completion confirmation: only the ticket creator (or owner/admin) — NOT the manager who closed it
+  const canConfirmCompletion = ticket?.status === "closed" && (ticket?.reportedById === user?.id || isAdminOrOwner);
+
   const handleUploadAfterPhoto = async (file: File) => {
     setUploading(true);
     try {
@@ -213,11 +224,12 @@ const { getField } = useResolvedTranslation(
 
   const workflowSteps = [
     { key: "new", label: getStatusLabel("new"), done: true },
-    { key: "approved", label: getStatusLabel("approved"), done: ["approved", "assigned", "in_progress", "needs_purchase", "purchase_pending_estimate", "purchase_pending_accounting", "purchase_pending_management", "purchase_approved", "partial_purchase", "purchased", "received_warehouse", "repaired", "verified", "closed"].includes(ticket.status) },
-    { key: "assigned", label: getStatusLabel("assigned"), done: ["assigned", "in_progress", "needs_purchase", "purchase_pending_estimate", "purchase_pending_accounting", "purchase_pending_management", "purchase_approved", "partial_purchase", "purchased", "received_warehouse", "repaired", "verified", "closed"].includes(ticket.status) },
-    { key: "in_progress", label: getStatusLabel("in_progress"), done: ["in_progress", "repaired", "verified", "closed"].includes(ticket.status) },
-    { key: "repaired", label: getStatusLabel("repaired"), done: ["repaired", "verified", "closed"].includes(ticket.status) },
-    { key: "closed", label: getStatusLabel("closed"), done: ticket.status === "closed" },
+    { key: "approved", label: getStatusLabel("approved"), done: ["approved", "assigned", "in_progress", "needs_purchase", "purchase_pending_estimate", "purchase_pending_accounting", "purchase_pending_management", "purchase_approved", "partial_purchase", "purchased", "received_warehouse", "repaired", "verified", "closed", "requester_confirmed"].includes(ticket.status) },
+    { key: "assigned", label: getStatusLabel("assigned"), done: ["assigned", "in_progress", "needs_purchase", "purchase_pending_estimate", "purchase_pending_accounting", "purchase_pending_management", "purchase_approved", "partial_purchase", "purchased", "received_warehouse", "repaired", "verified", "closed", "requester_confirmed"].includes(ticket.status) },
+    { key: "in_progress", label: getStatusLabel("in_progress"), done: ["in_progress", "repaired", "verified", "closed", "requester_confirmed"].includes(ticket.status) },
+    { key: "repaired", label: getStatusLabel("repaired"), done: ["repaired", "verified", "closed", "requester_confirmed"].includes(ticket.status) },
+    { key: "closed", label: getStatusLabel("closed"), done: ["closed", "requester_confirmed"].includes(ticket.status) },
+    { key: "requester_confirmed", label: getStatusLabel("requester_confirmed"), done: ticket.status === "requester_confirmed" },
   ];
 
   return (
@@ -236,6 +248,35 @@ const { getField } = useResolvedTranslation(
               <Badge variant="outline">{getCategoryLabel(ticket.category)}</Badge>
             </div>
             <h1 className="text-xl font-bold mt-1">{getField("title")}</h1>
+            {ticket.status === "requester_confirmed" && ticketConfirmation && (
+              <div className="mt-3 bg-emerald-50 dark:bg-emerald-950/20 rounded-xl p-3 border border-emerald-200 dark:border-emerald-800 space-y-2">
+                <div className="flex items-center gap-2 text-sm">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span className="text-emerald-700 dark:text-emerald-400 font-medium">
+                    {t.tickets.confirmedBy}: {ticketConfirmation.confirmedByName}
+                  </span>
+                  <span className="text-muted-foreground text-xs">
+                    {t.tickets.confirmedAt}: {new Date(ticketConfirmation.createdAt).toLocaleDateString(locale)}
+                  </span>
+                </div>
+                {ticketConfirmation.note && (
+                  <p className="text-sm text-muted-foreground">{ticketConfirmation.note}</p>
+                )}
+                {Array.isArray(ticketConfirmation.photoUrls) && ticketConfirmation.photoUrls.length > 0 && (
+                  <div className="flex gap-2 flex-wrap">
+                    {ticketConfirmation.photoUrls.map((url: string, idx: number) => (
+                      <img
+                        key={idx}
+                        src={url}
+                        alt={`confirmation-${idx}`}
+                        className="w-20 h-20 rounded-lg object-cover border cursor-pointer"
+                        onClick={() => setLightboxUrl(url)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
         <Button
@@ -828,6 +869,51 @@ const { getField } = useResolvedTranslation(
                 </div>
               )}
 
+              {/* Requester: Confirm Work Completion (after manager has closed the ticket) */}
+              {canConfirmCompletion && (
+                <div className="space-y-3 bg-emerald-50 dark:bg-emerald-950/20 rounded-xl p-4 border border-emerald-200 dark:border-emerald-800">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold text-sm">✅ {t.tickets.confirmCompletionTitle}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">{t.tickets.confirmCompletionDesc}</p>
+                  <Textarea
+                    placeholder={t.tickets.confirmCompletionNotePlaceholder}
+                    value={confirmNote}
+                    onChange={e => setConfirmNote(e.target.value)}
+                    rows={3}
+                    className="text-sm"
+                  />
+                  <div>
+                    <Label className="text-xs text-muted-foreground mb-1.5 block">{t.tickets.confirmCompletionPhotos}</Label>
+                    <DropZone
+                      onFilesUploaded={setConfirmPhotos}
+                      accept="image/*"
+                      maxFiles={4}
+                      disabled={confirmCompletionMut.isPending}
+                      label={t.tickets.confirmCompletionPhotos}
+                    />
+                  </div>
+                  <Button
+                    onClick={() => confirmCompletionMut.mutate({
+                      id: ticket.id,
+                      note: confirmNote,
+                      photoUrls: confirmPhotos.filter(f => f.status === "done" && f.url).map(f => f.url as string),
+                    })}
+                    disabled={
+                      confirmCompletionMut.isPending ||
+                      !confirmNote.trim() ||
+                      confirmPhotos.filter(f => f.status === "done").length < 1 ||
+                      confirmPhotos.filter(f => f.status === "done").length > 4
+                    }
+                    className="w-full gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
+                    size="lg"
+                  >
+                    {confirmCompletionMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                    {t.tickets.confirmCompletionSubmit}
+                  </Button>
+                </div>
+              )}
+
               {canCreatePO && (
                 <div className="border-t pt-4">
                   <Button variant="default" onClick={() => setLocation(`/purchase-orders/new?ticketId=${ticket.id}`)} className="w-full gap-2 bg-teal-600 hover:bg-teal-700" size="lg">
@@ -836,7 +922,7 @@ const { getField } = useResolvedTranslation(
                 </div>
               )}
 
-              {!canApprove && !canAssign && !canStartRepair && !canCompleteRepair && !canClose && !canCreatePO && !canTriage && !canInspect && !canClosePathA && !canApproveWork && !canClosePathBC && !canMarkReadyForClosure && !canApproveExit && !canApproveEntry && !canCompleteWithParts && (
+              {!canApprove && !canAssign && !canStartRepair && !canCompleteRepair && !canClose && !canCreatePO && !canTriage && !canInspect && !canClosePathA && !canApproveWork && !canClosePathBC && !canMarkReadyForClosure && !canApproveExit && !canApproveEntry && !canCompleteWithParts && !canConfirmCompletion && (
                 <div className="text-center py-4 text-sm text-muted-foreground flex items-center justify-center gap-2">
                   <AlertCircle className="w-4 h-4" />
                   {t.tickets.noTickets}
