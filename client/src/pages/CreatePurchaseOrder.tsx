@@ -335,6 +335,9 @@ export default function CreatePurchaseOrder() {
   const searchStr = useSearch();
   const params = new URLSearchParams(searchStr);
   const ticketId = params.get("ticketId") ? parseInt(params.get("ticketId")!) : undefined;
+  const fromIdeaId = params.get("fromIdeaId") ? parseInt(params.get("fromIdeaId")!) : undefined;
+  const prefillNotes = params.get("prefillNotes") || "";
+  const linkIdeaMut = trpc.improvementIdeas.linkToPurchaseOrder.useMutation();
 
   // قراءة draftId من الـ URL إذا كنا نعدّل مسودة
   const [matchEdit, editParams] = useRoute("/purchase-orders/edit-draft/:id");
@@ -356,6 +359,9 @@ export default function CreatePurchaseOrder() {
   const createMut = trpc.purchaseOrders.create.useMutation({
     onSuccess: (data) => {
       toast.success(`${t.purchaseOrders.createNew} ${data.poNumber}`);
+      if (fromIdeaId) {
+        linkIdeaMut.mutate({ id: fromIdeaId, purchaseOrderId: data.id! });
+      }
       setLocation(`/purchase-orders/${data.id}`);
     },
     onError: (err) => toast.error(err.message),
@@ -399,7 +405,7 @@ export default function CreatePurchaseOrder() {
       setDraftLoaded(true);
     }
   }, [draftPO, draftLoaded]);
-  const [notes, setNotes] = useState("");
+  const [notes, setNotes] = useState(prefillNotes);
   const [uploadingIdx, setUploadingIdx] = useState<number | null>(null);
   const [showDropZoneIdx, setShowDropZoneIdx] = useState<number | null>(null);
 
