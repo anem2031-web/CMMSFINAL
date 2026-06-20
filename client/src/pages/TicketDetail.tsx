@@ -102,6 +102,7 @@ const { getField } = useResolvedTranslation(
   const [confirmNote, setConfirmNote] = useState("");
   const [confirmPhotos, setConfirmPhotos] = useState<UploadedFile[]>([]);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [printingTask, setPrintingTask] = useState(false);
 
   const handleDownloadPDF = useCallback(async () => {
     if (!ticket?.id) return;
@@ -126,6 +127,37 @@ const { getField } = useResolvedTranslation(
       setDownloadingPdf(false);
     }
   }, [ticket?.id, ticket?.ticketNumber]);
+
+  // Sends the task PDF straight to the print dialog instead of downloading it
+  const handlePrintTask = useCallback(async () => {
+    if (!ticket?.id) return;
+    try {
+      setPrintingTask(true);
+      const response = await fetch(`/api/tickets/${ticket.id}/pdf`);
+      if (!response.ok) throw new Error("Failed to generate PDF");
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const printWindow = window.open(url, "_blank");
+      if (!printWindow) {
+        toast.error("يرجى السماح بالنوافذ المنبثقة لطباعة المهمة");
+        window.URL.revokeObjectURL(url);
+        return;
+      }
+      printWindow.onload = () => {
+        printWindow.focus();
+        printWindow.print();
+      };
+      // Fallback in case onload doesn't fire reliably for the PDF viewer
+      setTimeout(() => {
+        try { printWindow.focus(); printWindow.print(); } catch {}
+      }, 800);
+    } catch (error) {
+      console.error(error);
+      toast.error("فشلت طباعة المهمة");
+    } finally {
+      setPrintingTask(false);
+    }
+  }, [ticket?.id]);
 
   const addAttachMut = trpc.attachments.add.useMutation({
     onSuccess: () => { refetch(); },
@@ -951,11 +983,11 @@ const { getField } = useResolvedTranslation(
               {assignedTo && (
                 <button
                   type="button"
-                  onClick={handleDownloadPDF}
-                  disabled={downloadingPdf}
+                  onClick={handlePrintTask}
+                  disabled={printingTask}
                   className="mt-1 w-full flex items-center justify-center gap-2 border border-gray-300 rounded-lg px-3 py-2 text-sm font-medium hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {downloadingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : "🖨️"} طباعة المهمة
+                  {printingTask ? <Loader2 className="w-4 h-4 animate-spin" /> : "🖨️"} طباعة المهمة
                 </button>
               )}
               <div className="flex items-center gap-2">
