@@ -459,19 +459,19 @@ const visibleItems = useMemo(() => {
             return (
               <div key={item.id} className={`border rounded-xl p-4 space-y-3 transition-colors ${isCancelled ? "opacity-60 bg-gray-50 border-gray-200" : "hover:border-primary/20"}`}>
                 <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <h4 className={`font-medium text-sm ${isCancelled ? "line-through text-gray-400" : ""}`}>{getField(item, "itemName")}</h4>
+                      <h4 className={`font-medium text-sm break-words ${isCancelled ? "line-through text-gray-400" : ""}`}>{getField(item, "itemName")}</h4>
                       <Badge className={`text-[10px] ${ITEM_STATUS_COLORS[item.status] || "bg-gray-100 text-gray-700"}`}>
                         {getPOItemStatusLabel(item.status)}
                       </Badge>
                     </div>
-                    {item.description && <p className={`text-xs ${isCancelled ? "text-gray-400 line-through" : "text-muted-foreground"}`}>{getField(item, "description")}</p>}
+                    {item.description && <p className={`text-xs break-words ${isCancelled ? "text-gray-400 line-through" : "text-muted-foreground"}`}>{getField(item, "description")}</p>}
                     <div className="flex items-center gap-4 mt-1.5 text-xs text-muted-foreground flex-wrap">
                       <span className={isCancelled ? "line-through" : ""}>{t.purchaseOrders.quantity}: <strong>{item.quantity} {item.unit || ""}</strong></span>
                       {delegate && <span>{t.purchaseOrders.delegate}: <strong>{delegate.name}</strong></span>}
                     </div>
-                    {item.notes && <p className="text-xs text-muted-foreground mt-1.5 bg-muted/50 rounded-lg p-2">{getField(item, "notes")}</p>}
+                    {item.notes && <p className="text-xs text-muted-foreground mt-1.5 bg-muted/50 rounded-lg p-2 break-words">{getField(item, "notes")}</p>}
 
                     {(isCancelled || isRejected) && item.managementRejectionReason && (
                       <p className={`text-xs mt-1 ${isRejected ? "text-red-500" : "text-gray-400"}`}>
@@ -1040,9 +1040,9 @@ const visibleItems = useMemo(() => {
                 return (
                   <div key={item.id} className="border rounded-lg p-3 space-y-3 bg-white">
                     <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <p className="text-sm font-medium">{getField(item, "itemName")}</p>
-                        {item.description && <p className="text-xs text-muted-foreground">{getField(item, "description")}</p>}
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium break-words">{getField(item, "itemName")}</p>
+                        {item.description && <p className="text-xs text-muted-foreground break-words">{getField(item, "description")}</p>}
                         <p className="text-xs text-muted-foreground mt-0.5">{t.purchaseOrders.quantity}: <strong>{item.quantity} {item.unit || ""}</strong></p>
                       </div>
                     </div>
@@ -1130,8 +1130,8 @@ const visibleItems = useMemo(() => {
               <p className="text-xs text-orange-600 mb-2">يمكنك استبعاد أصناف محددة من الاعتماد.</p>
               {po.items?.filter((i: any) => i.status !== "rejected").map((item: any) => (
                 <div key={item.id} className="flex items-center justify-between py-2 border-b border-orange-50 last:border-0">
-                  <div className="flex-1">
-                    <p className={`text-sm ${lateRejections[item.id] ? 'line-through text-gray-400' : 'text-gray-800 font-medium'}`}>{getField(item, "itemName")}</p>
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-sm break-words ${lateRejections[item.id] ? 'line-through text-gray-400' : 'text-gray-800 font-medium'}`}>{getField(item, "itemName")}</p>
                     <p className="text-xs text-gray-500">التكلفة المقدرة: {Number(item.estimatedTotalCost || 0).toLocaleString("ar-SA")} ر.س.</p>
                   </div>
                   <Button 
@@ -1184,8 +1184,8 @@ const visibleItems = useMemo(() => {
               <p className="text-xs text-orange-600 mb-2">يمكنك استبعاد أصناف محددة من الاعتماد.</p>
               {po.items?.filter((i: any) => i.status !== "rejected").map((item: any) => (
                 <div key={item.id} className="flex items-center justify-between py-2 border-b border-orange-50 last:border-0">
-                  <div className="flex-1">
-                    <p className={`text-sm ${lateRejections[item.id] ? 'line-through text-gray-400' : 'text-gray-800 font-medium'}`}>{getField(item, "itemName")}</p>
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-sm break-words ${lateRejections[item.id] ? 'line-through text-gray-400' : 'text-gray-800 font-medium'}`}>{getField(item, "itemName")}</p>
                     <p className="text-xs text-gray-500">التكلفة المقدرة: {Number(item.estimatedTotalCost || 0).toLocaleString("ar-SA")} ر.س.</p>
                   </div>
                   <Button 
