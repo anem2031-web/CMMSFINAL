@@ -116,10 +116,9 @@ export const improvementIdeasRouter = router({
     });
     await db.createAuditLog({ userId: ctx.user.id, action: "classify_improvement_idea", entityType: "improvement_idea", entityId: input.id });
 
-    const seniors = await db.getUsersByRole("senior_management");
-    for (const u of seniors) {
-      await db.createNotification({ userId: u.id, title: "فكرة تحسين بانتظار قرارك", message: `${idea.requestNumber} - ${idea.title}`, type: "info" });
-    }
+    // ملاحظة: لا تُرسل إشعارات لدور الإدارة العليا هنا — حسب السياسة المعتمدة،
+    // هذا الدور يستقبل فقط إشعار "طلب شراء بانتظار اعتمادك" ولا شيء غيره.
+    // (الحماية مفروضة أيضاً مركزياً داخل db.createNotification كطبقة أمان إضافية)
   }),
 
   // قرار الإدارة العليا: موافقة / تأجيل (+تاريخ) / إلغاء (+سبب)
