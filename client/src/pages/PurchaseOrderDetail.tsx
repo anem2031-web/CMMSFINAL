@@ -49,7 +49,31 @@ const ITEM_STATUS_COLORS: Record<string, string> = {
   needs_item_revision: "bg-rose-100 text-rose-700",
 };
 
-function numberToArabicWords(num: number): string {
+function numberToWords(num: number, language: string): string {
+  if (language === "en") {
+    if (num === 0) return "Zero SAR";
+    const ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+      "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"];
+    const tensEn = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
+    const n = Math.floor(num);
+    const parts: string[] = [];
+    if (n >= 1000000) parts.push(ones[Math.floor(n / 1000000)] + " Million");
+    if (Math.floor(n % 1000000 / 1000) > 0) parts.push(ones[Math.floor(n % 1000000 / 1000)] + " Thousand");
+    const rem = n % 1000;
+    if (rem >= 100) parts.push(ones[Math.floor(rem / 100)] + " Hundred");
+    const r = rem % 100;
+    if (r > 0 && r < 20) parts.push(ones[r]);
+    else if (r >= 20) parts.push(tensEn[Math.floor(r / 10)] + (r % 10 > 0 ? "-" + ones[r % 10] : ""));
+    const dec = Math.round((num - Math.floor(num)) * 100);
+    let result = parts.join(" ") + " SAR";
+    if (dec > 0) result += ` and ${dec} Halalas`;
+    return result;
+  }
+  if (language !== "ar") {
+    // Urdu: numeric display
+    return `${num.toLocaleString("ur-PK")} روپے`;
+  }
+  // Arabic
   if (num === 0) return "صفر ريال";
   const ones = ["", "واحد", "اثنان", "ثلاثة", "أربعة", "خمسة", "ستة", "سبعة", "ثمانية", "تسعة"];
   const tens = ["", "عشرة", "عشرون", "ثلاثون", "أربعون", "خمسون", "ستون", "سبعون", "ثمانون", "تسعون"];
@@ -79,7 +103,7 @@ export default function PurchaseOrderDetail() {
   const { getField } = useTranslatedField();
   const { getPOStatusLabel, getPOItemStatusLabel } = useStaticLabels();
   const locale = language === "ar" ? "ar-SA" : language === "ur" ? "ur-PK" : "en-US";
-  const currency = language === "en" ? "SAR" : "ر.س";
+  const currency = t.common.currency;
   const poId = parseInt(params?.id || "0");
 
   const { data: po, isLoading, refetch } = trpc.purchaseOrders.getById.useQuery({ id: poId }, { enabled: !!poId });
@@ -92,40 +116,40 @@ export default function PurchaseOrderDetail() {
   const rejectMut = trpc.purchaseOrders.reject.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e) => toast.error(e.message) });
   const confirmPurchaseMut = trpc.purchaseOrders.confirmItemPurchase.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e) => toast.error(e.message) });
   const cancelPurchaseMut = trpc.purchaseOrders.cancelItemPurchase.useMutation({
-    onSuccess: () => { toast.success("تم إلغاء شراء الصنف"); refetch(); setCancelPurchaseDialog(null); setCancelPurchaseNote(""); },
+    onSuccess: () => { toast.success(t.purchaseOrders.cancelPurchaseSuccess); refetch(); setCancelPurchaseDialog(null); setCancelPurchaseNote(""); },
     onError: (e: any) => toast.error(e.message),
   });
   const receiveItemMut = trpc.purchaseOrders.confirmDeliveryToWarehouse.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e: any) => toast.error(e.message) });
   const editItemMut = trpc.purchaseOrders.editItem.useMutation({ onSuccess: () => { toast.success(t.common.savedSuccessfully); setEditingItem(null); refetch(); }, onError: (e: any) => toast.error(e.message) });
-  const cancelItemMut = trpc.purchaseOrders.cancelItem.useMutation({ onSuccess: () => { toast.success(language === "ar" ? "تم إلغاء الصنف" : "Item cancelled"); refetch(); }, onError: (e: any) => toast.error(e.message) });
+  const cancelItemMut = trpc.purchaseOrders.cancelItem.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.cancelItemSuccess); refetch(); }, onError: (e: any) => toast.error(e.message) });
   const requestItemRevisionMut = trpc.purchaseOrders.requestItemRevision.useMutation({
   onSuccess: () => {
-    toast.success(language === "ar" ? "تم إرسال طلب مراجعة الصنف" : "Item revision requested");
+    toast.success(t.purchaseOrders.itemRevisionRequested);
     refetch();
   },
   onError: (e: any) => toast.error(e.message)
 });
 
 const submitDraftMut = trpc.purchaseOrders.submitDraft.useMutation({
-    onSuccess: () => { toast.success("تم إرسال طلب الشراء للمراجعة"); refetch(); },
+    onSuccess: () => { toast.success(t.purchaseOrders.submitDraftSuccess); refetch(); },
     onError: (e: any) => toast.error(e.message),
   });
 
   const resubmitItemRevisionMut = trpc.purchaseOrders.resubmitItemRevision.useMutation({
   onSuccess: () => {
-    toast.success(language === "ar" ? "تمت إعادة إرسال الصنف" : "Item resubmitted");
+    toast.success(t.purchaseOrders.itemResubmitted);
     refetch();
   },
   onError: (e: any) => toast.error(e.message)
 });
 
   const resubmitCancelledPurchaseMut = trpc.purchaseOrders.resubmitCancelledPurchase.useMutation({
-    onSuccess: () => { toast.success("تمت إعادة إرسال الصنف للمندوب للشراء"); refetch(); },
+    onSuccess: () => { toast.success(t.purchaseOrders.itemResubmittedToDelegate); refetch(); },
     onError: (e: any) => toast.error(e.message),
   });
 
   const finalizeCancelledItemMut = trpc.purchaseOrders.finalizeCancelledItem.useMutation({
-    onSuccess: () => { toast.success("تم إلغاء الصنف نهائياً"); refetch(); },
+    onSuccess: () => { toast.success(t.purchaseOrders.itemCancelledFinal); refetch(); },
     onError: (e: any) => toast.error(e.message),
   });
   const role = user?.role || "";
@@ -181,7 +205,7 @@ const submitDraftMut = trpc.purchaseOrders.submitDraft.useMutation({
       const res = await fetch(`/api/export/po/${po.id}/pdf`, {
         credentials: "include",
       });
-      if (!res.ok) throw new Error("فشل تحميل الملف");
+      if (!res.ok) throw new Error(t.purchaseOrders.fileLoadFailed);
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -190,7 +214,7 @@ const submitDraftMut = trpc.purchaseOrders.submitDraft.useMutation({
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      toast.error(language === "ar" ? "حدث خطأ أثناء تصدير الملف" : "Failed to export PDF");
+      toast.error(t.purchaseOrders.exportPdfFailed);
     } finally {
       setExportingPdf(false);
     }
@@ -201,17 +225,17 @@ const submitDraftMut = trpc.purchaseOrders.submitDraft.useMutation({
   const [resubmitNote, setResubmitNote] = useState("");
 
   const requestRevisionMut = trpc.purchaseOrders.requestRevision.useMutation({
-    onSuccess: () => { toast.success("تم إرسال الطلب للمراجعة"); setIsRevisionDialogOpen(false); setRevisionNote(""); refetch(); },
+    onSuccess: () => { toast.success(t.purchaseOrders.submitDraftSuccess); setIsRevisionDialogOpen(false); setRevisionNote(""); refetch(); },
     onError: (e) => toast.error(e.message)
   });
 
   const resubmitMut = trpc.purchaseOrders.resubmit.useMutation({
-    onSuccess: () => { toast.success("تم إعادة تقديم الطلب"); setResubmitNote(""); refetch(); },
+    onSuccess: () => { toast.success(t.purchaseOrders.resubmit); setResubmitNote(""); refetch(); },
     onError: (e) => toast.error(e.message)
   });
 
   const closeMut = trpc.purchaseOrders.close.useMutation({
-    onSuccess: () => { toast.success("تم إغلاق الطلب"); refetch(); },
+    onSuccess: () => { toast.success(t.purchaseOrders.closeOrderSuccess); refetch(); },
     onError: (e) => toast.error(e.message)
   });
 
@@ -319,7 +343,7 @@ const visibleItems = useMemo(() => {
               disabled={exportingPdf}
             >
               {exportingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileDown className="w-4 h-4" />}
-              {language === "ar" ? "تصدير PDF" : "Export PDF"}
+              {t.purchaseOrders.exportPdf}
             </Button>
           )}
           {isDelegate && po.status === "pending_estimate" && (
@@ -335,21 +359,21 @@ const visibleItems = useMemo(() => {
                 className="gap-2"
               >
                 <Pencil className="w-4 h-4" />
-                تعديل المسودة
+                {t.purchaseOrders.editDraft}
               </Button>
               <Button
-                onClick={() => { if (confirm("هل أنت متأكد من إرسال طلب الشراء للمراجعة؟")) submitDraftMut.mutate({ id: po.id }); }}
+                onClick={() => { if (confirm(t.purchaseOrders.confirmSubmitForReview)) submitDraftMut.mutate({ id: po.id }); }}
                 disabled={submitDraftMut.isPending}
                 className="gap-2"
               >
                 {submitDraftMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShoppingCart className="w-4 h-4" />}
-                إرسال للمراجعة
+                {t.purchaseOrders.submitForReview}
               </Button>
             </>
           )}
           {po.status !== "closed" && (isAdminOrOwner || String(po.requestedById) === String(userId)) && (
-            <Button variant="outline" className="text-muted-foreground" onClick={() => { if (confirm("هل أنت متأكد من إغلاق هذا الطلب؟")) closeMut.mutate({ id: po.id }); }}>
-              <XCircle className="w-4 h-4 mr-1.5" /> إغلاق الطلب
+            <Button variant="outline" className="text-muted-foreground" onClick={() => { if (confirm(t.purchaseOrders.confirmCloseOrder)) closeMut.mutate({ id: po.id }); }}>
+              <XCircle className="w-4 h-4 mr-1.5" /> {t.purchaseOrders.closeOrder}
             </Button>
           )}
         </div>
@@ -372,7 +396,7 @@ const visibleItems = useMemo(() => {
                 <Label className="text-xs text-rose-800">{t.purchaseOrders.resubmit} ({t.common.optionalNote})</Label>
                 <div className="flex gap-2">
                   <Input 
-                    placeholder="مثال: تم تعديل الكميات كما هو مطلوب..." 
+                    placeholder={t.purchaseOrders.revisionNoteExample} 
                     value={resubmitNote} 
                     onChange={e => setResubmitNote(e.target.value)}
                     className="bg-white border-rose-200"
@@ -479,8 +503,8 @@ const visibleItems = useMemo(() => {
                     {(isCancelled || isRejected) && item.managementRejectionReason && (
                       <p className={`text-xs mt-1 ${isRejected ? "text-red-500" : "text-gray-400"}`}>
                         {isCancelled
-                          ? (language === "ar" ? "سبب الإلغاء: " : "Cancel reason: ")
-                          : (language === "ar" ? "سبب الرفض: " : "Rejection reason: ")}
+                          ? t.purchaseOrders.cancelReason
+                          : t.purchaseOrders.rejectionReason}
                         {item.managementRejectionReason}
                       </p>
                     )}
@@ -512,7 +536,7 @@ const visibleItems = useMemo(() => {
                       variant="ghost"
                       size="icon"
                       className="shrink-0 h-8 w-8 text-gray-400 hover:text-red-500 hover:bg-red-50"
-                      title={language === "ar" ? "إلغاء الصنف" : "Cancel item"}
+                      title={t.purchaseOrders.cancelItemTitle}
                       onClick={() => {
                         if (confirm(language === "ar" ? `هل أنت متأكد من إلغاء الصنف "${item.itemName}"?` : `Cancel item "${item.itemName}"?`)) {
                           cancelItemMut.mutate({ itemId: item.id });
@@ -745,7 +769,7 @@ const visibleItems = useMemo(() => {
         size="sm"
         variant="destructive"
         onClick={() => {
-          if (confirm("هل أنت متأكد من إلغاء هذا الصنف نهائياً؟ لا يمكن التراجع عن هذا الإجراء.")) {
+          if (confirm(t.purchaseOrders.confirmCancelItem)) {
             finalizeCancelledItemMut.mutate({ itemId: item.id });
           }
         }}
@@ -780,8 +804,8 @@ const visibleItems = useMemo(() => {
                           <DropZone
                             maxFiles={1}
                             accept="image/*,application/pdf"
-                            label="اسحب صورة الفاتورة"
-                            sublabel="صورة أو PDF"
+                            label={t.purchaseOrders.dragInvoicePhoto}
+                            sublabel={t.purchaseOrders.photoOrPdf}
                             onFilesUploaded={(files: UploadedFile[]) => {
                               const done = files.find(f => f.status === "done" && f.url);
                               if (done?.url) { setItemPhotos(p => ({ ...p, [item.id]: { ...p[item.id], invoice: done.url } })); setDropZoneFor(null); }
@@ -797,7 +821,7 @@ const visibleItems = useMemo(() => {
                             }} disabled={uploadingItem === `${item.id}-invoice`}>
                               {uploadingItem === `${item.id}-invoice` ? <Loader2 className="w-4 h-4 animate-spin" /> : <><FileText className="w-4 h-4" /><span className="text-[10px]">{t.common.upload}</span></>}
                             </Button>
-                            <Button variant="outline" size="sm" className="h-20 px-2 border-dashed" onClick={() => setDropZoneFor(`${item.id}-invoice`)} title="سحب وإفلات">
+                            <Button variant="outline" size="sm" className="h-20 px-2 border-dashed" onClick={() => setDropZoneFor(`${item.id}-invoice`)} title={t.purchaseOrders.dragAndDrop}>
                               <Upload className="w-3.5 h-3.5" />
                             </Button>
                           </div>
@@ -818,8 +842,8 @@ const visibleItems = useMemo(() => {
                           <DropZone
                             maxFiles={1}
                             accept="image/*"
-                            label="اسحب صورة الصنف"
-                            sublabel="صورة واحدة"
+                            label={t.purchaseOrders.dragItemPhoto}
+                            sublabel={t.purchaseOrders.onePhoto}
                             onFilesUploaded={(files: UploadedFile[]) => {
                               const done = files.find(f => f.status === "done" && f.url);
                               if (done?.url) { setItemPhotos(p => ({ ...p, [item.id]: { ...p[item.id], purchased: done.url } })); setDropZoneFor(null); }
@@ -835,7 +859,7 @@ const visibleItems = useMemo(() => {
                             }} disabled={uploadingItem === `${item.id}-purchased`}>
                               {uploadingItem === `${item.id}-purchased` ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Camera className="w-4 h-4" /><span className="text-[10px]">{t.common.upload}</span></>}
                             </Button>
-                            <Button variant="outline" size="sm" className="h-20 px-2 border-dashed" onClick={() => setDropZoneFor(`${item.id}-purchased`)} title="سحب وإفلات">
+                            <Button variant="outline" size="sm" className="h-20 px-2 border-dashed" onClick={() => setDropZoneFor(`${item.id}-purchased`)} title={t.purchaseOrders.dragAndDrop}>
                               <Upload className="w-3.5 h-3.5" />
                             </Button>
                           </div>
@@ -916,8 +940,8 @@ const visibleItems = useMemo(() => {
                         <DropZone
                           maxFiles={1}
                           accept="image/*"
-                          label="اسحب صورة الاستلام"
-                          sublabel="صورة واحدة"
+                          label={t.purchaseOrders.dragWarehousePhoto}
+                          sublabel={t.purchaseOrders.onePhoto}
                           onFilesUploaded={(files: UploadedFile[]) => {
                             const done = files.find(f => f.status === "done" && f.url);
                             if (done?.url) {
@@ -940,9 +964,9 @@ const visibleItems = useMemo(() => {
                             };
                             input.click();
                           }} disabled={uploadingItem === `${item.id}-warehouse`}>
-                            {uploadingItem === `${item.id}-warehouse` ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Camera className="w-4 h-4" /><span className="text-[10px]">التقط صورة</span></>}
+                            {uploadingItem === `${item.id}-warehouse` ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Camera className="w-4 h-4" /><span className="text-[10px]">{t.common.photo}</span></>}
                           </Button>
-                          <Button variant="outline" size="sm" className="h-20 px-2 border-dashed border-green-300" onClick={() => setDropZoneFor(`${item.id}-warehouse`)} title="سحب وإفلات">
+                          <Button variant="outline" size="sm" className="h-20 px-2 border-dashed border-green-300" onClick={() => setDropZoneFor(`${item.id}-warehouse`)} title={t.purchaseOrders.dragAndDrop}>
                             <Upload className="w-3.5 h-3.5" />
                           </Button>
                         </div>
@@ -951,7 +975,7 @@ const visibleItems = useMemo(() => {
                     <Button size="sm" className="w-full gap-1.5" onClick={() => {
                       const d = receiveData[item.id];
                       if (!d?.cost || !d?.supplier) { toast.error(t.purchaseOrders.supplier); return; }
-                      if (!d?.warehousePhotoUrl) { toast.error("صورة الصنف مطلوبة"); return; }
+                      if (!d?.warehousePhotoUrl) { toast.error(t.purchaseOrders.itemPhotoRequired); return; }
                       receiveItemMut.mutate({ itemId: item.id, actualUnitCost: d.cost, supplierName: d.supplier, supplierItemName: d.supplierItemName, warehousePhotoUrl: d.warehousePhotoUrl });
                     }} disabled={receiveItemMut.isPending}>
                       {receiveItemMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Package className="w-3.5 h-3.5" />}
@@ -976,7 +1000,7 @@ const visibleItems = useMemo(() => {
                 <span className="text-muted-foreground">{t.purchaseOrders.totalEstimated}:</span>
                 <span className="font-bold text-lg">{totalEstimated.toLocaleString(locale)} {currency}</span>
               </div>
-              <p className="text-xs text-muted-foreground text-left">({numberToArabicWords(totalEstimated)})</p>
+              <p className="text-xs text-muted-foreground text-left">({numberToWords(totalEstimated, language)})</p>
             </div>
           )}
           {totalActual > 0 && (
@@ -985,7 +1009,7 @@ const visibleItems = useMemo(() => {
                 <span className="text-muted-foreground">{t.purchaseOrders.totalActual}:</span>
                 <span className="font-bold text-lg text-emerald-700">{totalActual.toLocaleString(locale)} {currency}</span>
               </div>
-              <p className="text-xs text-emerald-600 text-left">({numberToArabicWords(totalActual)})</p>
+              <p className="text-xs text-emerald-600 text-left">({numberToWords(totalActual, language)})</p>
             </div>
           )}
           {totalEstimated > 0 && totalActual > 0 && (
@@ -1088,7 +1112,7 @@ const visibleItems = useMemo(() => {
                       <div className="space-y-1">
                         <Label className="text-xs">{t.purchaseOrders.justification} *</Label>
                         <Input
-                          placeholder="سبب الرفض"
+                          placeholder={t.purchaseOrders.rejectReasonShort}
                           value={decision.rejectionReason || ""}
                           onChange={e => setReviewDecisions(p => ({ ...p, [item.id]: { ...p[item.id], rejectionReason: e.target.value } }))}
                           className="bg-white"
@@ -1128,7 +1152,7 @@ const visibleItems = useMemo(() => {
           <CardContent className="space-y-3">
             <div className="space-y-1">
               <label className="text-xs font-medium text-orange-800">مبلغ العهدة المُصرف للمندوب (ر.س.) - اختياري</label>
-              <Input type="number" placeholder="مثال: 500" value={custodyAmount} onChange={e => setCustodyAmount(e.target.value)} className="bg-white" />
+              <Input type="number" placeholder={t.purchaseOrders.custodyAmountPlaceholder} value={custodyAmount} onChange={e => setCustodyAmount(e.target.value)} className="bg-white" />
             </div>
             
             <div className="bg-white p-3 rounded-md border border-orange-100 space-y-2 mb-3">
@@ -1146,7 +1170,7 @@ const visibleItems = useMemo(() => {
                     className={lateRejections[item.id] ? "text-orange-600 border-orange-200 bg-orange-50" : "text-red-600 hover:text-red-700 hover:bg-red-50"}
                     onClick={() => setLateRejections(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
                   >
-                    {lateRejections[item.id] ? "تراجع عن الرفض" : "رفض الصنف"}
+                    {lateRejections[item.id] ? t.purchaseOrders.undoReject : t.purchaseOrders.rejectItem}
                   </Button>
                 </div>
               ))}
@@ -1156,7 +1180,7 @@ const visibleItems = useMemo(() => {
               <Button onClick={() => {
                 const rejectedIds = Object.keys(lateRejections).filter(id => lateRejections[Number(id)]).map(Number);
                 if (rejectedIds.length > 0 && !rejectReason.trim()) {
-                  toast.error("يرجى إدخال سبب لرفض الأصناف المحددة");
+                  toast.error(t.purchaseOrders.enterRejectReason);
                   return;
                 }
                 approveAccMut.mutate({ 
@@ -1167,7 +1191,7 @@ const visibleItems = useMemo(() => {
                 });
               }} disabled={approveAccMut.isPending} className="flex-1 gap-1.5">
                 {approveAccMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                {Object.values(lateRejections).some(Boolean) ? "اعتماد مع استبعاد المرفوض" : t.common.confirm}
+                {Object.values(lateRejections).some(Boolean) ? t.purchaseOrders.approveWithExclusion : t.common.confirm}
               </Button>
               <Button variant="destructive" onClick={() => {
                 if (!rejectReason.trim()) { toast.error(t.purchaseOrders.justification); return; }
@@ -1176,7 +1200,7 @@ const visibleItems = useMemo(() => {
                 <XCircle className="w-4 h-4" /> رفض الطلب بالكامل
               </Button>
             </div>
-            <Input placeholder="سبب الرفض (مطلوب في حال رفض أصناف أو رفض الطلب)" value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
+            <Input placeholder={t.purchaseOrders.rejectReasonPlaceholder} value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
           </CardContent>
         </Card>
       )}
@@ -1200,7 +1224,7 @@ const visibleItems = useMemo(() => {
                     className={lateRejections[item.id] ? "text-orange-600 border-orange-200 bg-orange-50" : "text-red-600 hover:text-red-700 hover:bg-red-50"}
                     onClick={() => setLateRejections(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
                   >
-                    {lateRejections[item.id] ? "تراجع عن الرفض" : "رفض الصنف"}
+                    {lateRejections[item.id] ? t.purchaseOrders.undoReject : t.purchaseOrders.rejectItem}
                   </Button>
                 </div>
               ))}
@@ -1210,7 +1234,7 @@ const visibleItems = useMemo(() => {
               <Button onClick={() => {
                 const rejectedIds = Object.keys(lateRejections).filter(id => lateRejections[Number(id)]).map(Number);
                 if (rejectedIds.length > 0 && !rejectReason.trim()) {
-                  toast.error("يرجى إدخال سبب لرفض الأصناف المحددة");
+                  toast.error(t.purchaseOrders.enterRejectReason);
                   return;
                 }
                 approveMgmtMut.mutate({ 
@@ -1220,7 +1244,7 @@ const visibleItems = useMemo(() => {
                 });
               }} disabled={approveMgmtMut.isPending} className="flex-1 gap-1.5">
                 {approveMgmtMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                {Object.values(lateRejections).some(Boolean) ? "اعتماد مع استبعاد المرفوض" : t.common.confirm}
+                {Object.values(lateRejections).some(Boolean) ? t.purchaseOrders.approveWithExclusion : t.common.confirm}
               </Button>
               <Button variant="destructive" onClick={() => {
                 if (!rejectReason.trim()) { toast.error(t.purchaseOrders.justification); return; }
@@ -1229,7 +1253,7 @@ const visibleItems = useMemo(() => {
                 <XCircle className="w-4 h-4" /> رفض الطلب بالكامل
               </Button>
             </div>
-            <Input placeholder="سبب الرفض (مطلوب في حال رفض أصناف أو رفض الطلب)" value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
+            <Input placeholder={t.purchaseOrders.rejectReasonPlaceholder} value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
           </CardContent>
         </Card>
       )}
@@ -1300,7 +1324,7 @@ const visibleItems = useMemo(() => {
             <div className="space-y-2">
               <Label>{t.purchaseOrders.revisionReason} *</Label>
               <Textarea 
-                placeholder="مثال: يرجى تعديل الكمية في الصنف الأول لتكون 5 بدلاً من 10..." 
+                placeholder={t.purchaseOrders.revisionNoteExample} 
                 value={revisionNote}
                 onChange={e => setRevisionNote(e.target.value)}
                 rows={4}
@@ -1342,7 +1366,7 @@ const visibleItems = useMemo(() => {
         <Textarea
           value={itemRevisionReason}
           onChange={(e) => setItemRevisionReason(e.target.value)}
-          placeholder="مثال: يرجى تعديل الكمية أو المواصفات"
+          placeholder={t.purchaseOrders.revisionNoteExample}
           rows={4}
         />
       </div>
@@ -1379,7 +1403,7 @@ const visibleItems = useMemo(() => {
         {requestItemRevisionMut.isPending ? (
           <Loader2 className="w-4 h-4 animate-spin" />
         ) : (
-          "إرسال طلب المراجعة"
+          t.purchaseOrders.itemRevisionRequested
         )}
       </Button>
     </DialogFooter>
@@ -1502,13 +1526,13 @@ const visibleItems = useMemo(() => {
               <div className="space-y-2">
                 <Label className="text-xs font-medium">سبب إلغاء الشراء *</Label>
                 <Textarea
-                  placeholder="اكتب سبب إلغاء شراء هذا الصنف (مثال: الصنف غير متوفر في السوق)"
+                  placeholder={t.purchaseOrders.cancelPurchaseReason}
                   value={cancelPurchaseNote}
                   onChange={(e) => setCancelPurchaseNote(e.target.value)}
                   rows={4}
                   className="resize-none"
                 />
-                <p className="text-[11px] text-muted-foreground">سيعود هذا الصنف لمنشئ الطلب بحالة "تم إلغاء شراءه" ولا يمكن التراجع.</p>
+                <p className="text-[11px] text-muted-foreground">{t.purchaseOrders.cancelItemWillReturn}</p>
               </div>
             </div>
           )}
@@ -1519,7 +1543,7 @@ const visibleItems = useMemo(() => {
               className="gap-1.5"
               disabled={cancelPurchaseNote.trim().length < 3 || cancelPurchaseMut.isPending}
               onClick={() => {
-                if (cancelPurchaseNote.trim().length < 3) { toast.error("يجب كتابة سبب الإلغاء"); return; }
+                if (cancelPurchaseNote.trim().length < 3) { toast.error(t.purchaseOrders.cancelReasonRequired); return; }
                 cancelPurchaseMut.mutate({ itemId: cancelPurchaseDialog.id, note: cancelPurchaseNote });
               }}
             >
