@@ -84,7 +84,7 @@ export default function PurchaseOrders() {
   };
 
   const locale = language === "ar" ? "ar-SA" : language === "ur" ? "ur-PK" : "en-US";
-  const currency = language === "en" ? "SAR" : "ر.س";
+  const currency = t.common.currency;
 
   // البحث الديناميكي: رقم الطلب، اسم المنشئ، عدد الأصناف، أسماء الأصناف، الحالة، الملاحظات، التاريخ
   const normalizedSearch = searchQuery.trim().toLowerCase();
@@ -125,7 +125,7 @@ export default function PurchaseOrders() {
         <Input
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
-          placeholder={t.common.search ?? "ابحث برقم الطلب، المنشئ، اسم الصنف..."}
+          placeholder={t.common.searchPlaceholder}
           className="pr-9 max-w-md"
         />
       </div>
@@ -146,7 +146,7 @@ export default function PurchaseOrders() {
 
         {/* فلتر من تاريخ */}
         <div className="flex flex-col gap-1">
-          <span className="text-xs text-muted-foreground">{t.common.dateFrom ?? "من تاريخ"}</span>
+          <span className="text-xs text-muted-foreground">{t.common.fromDate}</span>
           <Input
             type="date"
             value={dateFrom}
@@ -157,7 +157,7 @@ export default function PurchaseOrders() {
 
         {/* فلتر إلى تاريخ */}
         <div className="flex flex-col gap-1">
-          <span className="text-xs text-muted-foreground">{t.common.dateTo ?? "إلى تاريخ"}</span>
+          <span className="text-xs text-muted-foreground">{t.common.toDate}</span>
           <Input
             type="date"
             value={dateTo}
@@ -169,11 +169,11 @@ export default function PurchaseOrders() {
         {/* فلتر المنشئ — فقط للأدوار الكاملة الصلاحيات */}
         {canFilterByUser && (
           <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">{t.common.createdBy ?? "منشئ الطلب"}</span>
+            <span className="text-xs text-muted-foreground">{t.common.createdBy}</span>
             <Select value={requestedById} onValueChange={setRequestedById}>
-              <SelectTrigger className="w-[200px]"><SelectValue placeholder={t.common.all ?? "الكل"} /></SelectTrigger>
+              <SelectTrigger className="w-[200px]"><SelectValue placeholder={t.common.all} /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">{t.common.all ?? "الكل"}</SelectItem>
+                <SelectItem value="all">{t.common.all}</SelectItem>
                 {allUsers.map((u: any) => (
                   <SelectItem key={u.id} value={String(u.id)}>
                     {u.name || u.username}
@@ -198,7 +198,7 @@ export default function PurchaseOrders() {
               setSearchQuery("");
             }}
           >
-            {t.common.clearFilters ?? "مسح الفلاتر"}
+            {t.common.clearFilters}
           </Button>
         )}
       </div>
@@ -232,7 +232,7 @@ export default function PurchaseOrders() {
                       {/* عدد الأصناف */}
                       <span className="flex items-center gap-1">
                         <Package className="w-3 h-3" />
-                        {(po as any).itemCount ?? 0} {t.purchaseOrders.items ?? "صنف"}
+                        {(po as any).itemCount ?? 0} {t.purchaseOrders.items}
                       </span>
                       {po.totalEstimatedCost && <span>{t.purchaseOrders.totalEstimated}: {Number(po.totalEstimatedCost).toLocaleString(locale)} {currency}</span>}
                       {po.totalActualCost && <span>{t.purchaseOrders.totalActual}: {Number(po.totalActualCost).toLocaleString(locale)} {currency}</span>}
