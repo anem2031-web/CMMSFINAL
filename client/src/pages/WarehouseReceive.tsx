@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { ArrowRight, Package, CheckCircle2, Loader2, Link } from "lucide-react";
 import { toast } from "sonner";
 import BarcodeScanner from "@/components/BarcodeScanner";
+import { useTranslation } from "@/contexts/LanguageContext";
 
 interface ReceiveItem {
   purchaseOrderItemId: number;
@@ -29,6 +30,7 @@ export default function WarehouseReceive() {
   const search = useSearch();
   const params = new URLSearchParams(search);
   const poId = params.get("poId") ? parseInt(params.get("poId")!) : null;
+  const { t } = useTranslation();
 
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<ReceiveItem[]>([]);
@@ -49,7 +51,7 @@ export default function WarehouseReceive() {
           itemName: i.itemName,
           requestedQuantity: i.quantity,
           receivedQuantity: i.quantity,
-          unit: i.unit || "قطعة",
+          unit: i.unit || t.inventory.defaultUnit,
           supplierName: i.supplierName || "",
           actualUnitCost: i.actualUnitCost || "",
           warehousePhotoUrl: i.purchasedPhotoUrl || "",
@@ -83,7 +85,7 @@ export default function WarehouseReceive() {
       setScanningItemIndex(null);
     },
     onError: () => {
-      toast.info("الصنف غير موجود في المخزون — سيتم إنشاؤه جديداً");
+      toast.info(t.inventory.itemNewWillCreate);
       setScanningItemIndex(null);
     },
   });
@@ -133,7 +135,7 @@ export default function WarehouseReceive() {
 
       {items.length === 0 && initialized && (
         <div className="text-center text-muted-foreground py-8">
-          لا توجد أصناف بحالة "تم الشراء" في هذا الطلب
+          {t.inventory.noItemsPurchased}
         </div>
       )}
 
@@ -157,53 +159,53 @@ export default function WarehouseReceive() {
           <CardContent className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label>الكمية المستلمة فعلياً *</Label>
+                <Label>{t.inventory.receive} *</Label>
                 <Input type="number" min={1} value={item.receivedQuantity}
                   onChange={e => updateItem(index, "receivedQuantity", parseInt(e.target.value) || 1)} />
               </div>
               <div className="space-y-1">
-                <Label>الوحدة *</Label>
-                <Input value={item.unit} onChange={e => updateItem(index, "unit", e.target.value)} placeholder="قطعة / لتر / كيلو" />
+                <Label>{t.inventory.unit} *</Label>
+                <Input value={item.unit} onChange={e => updateItem(index, "unit", e.target.value)} placeholder={t.inventory.unitPlaceholder} />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label>اسم المورد *</Label>
-                <Input value={item.supplierName} onChange={e => updateItem(index, "supplierName", e.target.value)} placeholder="اسم المورد" />
+                <Label>{t.inventory.supplierName} *</Label>
+                <Input value={item.supplierName} onChange={e => updateItem(index, "supplierName", e.target.value)} placeholder={t.inventory.supplierPlaceholder} />
               </div>
               <div className="space-y-1">
-                <Label>التكلفة الفعلية للوحدة *</Label>
+                <Label>{t.inventory.actualCost} *</Label>
                 <Input type="number" value={item.actualUnitCost} onChange={e => updateItem(index, "actualUnitCost", e.target.value)} placeholder="0.00" />
               </div>
             </div>
             <div className="space-y-1">
-              <Label>رابط صورة الصنف *</Label>
+              <Label>{t.purchaseOrders.warehousePhoto} *</Label>
               <Input value={item.warehousePhotoUrl} onChange={e => updateItem(index, "warehousePhotoUrl", e.target.value)} placeholder="https://..." dir="ltr" />
             </div>
             <div className="space-y-1">
-              <Label>باركود المصنّع (اختياري)</Label>
+              <Label>{t.common.optionalNote}</Label>
               <Input value={item.manufacturerBarcode} onChange={e => updateItem(index, "manufacturerBarcode", e.target.value)}
-                placeholder="أدخل أو امسح باركود المصنّع" dir="ltr" className="font-mono" />
+                placeholder={t.inventory.barcodePlaceholder} dir="ltr" className="font-mono" />
             </div>
             <div className="space-y-2">
-              <Label>ربط بصنف موجود في المخزون (اختياري)</Label>
+              <Label>{t.common.optionalNote}</Label>
               {item.inventoryId ? (
                 <div className="flex items-center gap-2 p-2 bg-green-50 rounded-lg border border-green-200">
                   <CheckCircle2 className="w-4 h-4 text-green-600" />
-                  <span className="text-sm text-green-700">مرتبط — {item.internalCode}</span>
+                  <span className="text-sm text-green-700">{item.internalCode}</span>
                   <Button type="button" size="sm" variant="ghost" className="mr-auto text-red-500 h-6"
-                    onClick={() => updateItem(index, "inventoryId", undefined)}>إلغاء الربط</Button>
+                    onClick={() => updateItem(index, "inventoryId", undefined)}>{t.common.cancel}</Button>
                 </div>
               ) : (
                 <div>
                   {scanningItemIndex === index ? (
                     <div className="space-y-2">
-                      <BarcodeScanner onScan={(code) => searchMut.mutate({ code })} placeholder="امسح باركود الصنف للربط" />
-                      <Button type="button" size="sm" variant="outline" onClick={() => setScanningItemIndex(null)}>إلغاء</Button>
+                      <BarcodeScanner onScan={(code) => searchMut.mutate({ code })} placeholder={t.inventory.barcodeSearch} />
+                      <Button type="button" size="sm" variant="outline" onClick={() => setScanningItemIndex(null)}>{t.common.cancel}</Button>
                     </div>
                   ) : (
                     <Button type="button" size="sm" variant="outline" className="gap-1" onClick={() => setScanningItemIndex(index)}>
-                      <Link className="w-3 h-3" /> ربط بصنف موجود
+                      <Link className="w-3 h-3" /> {t.inventory.receive}
                     </Button>
                   )}
                   <p className="text-xs text-muted-foreground mt-1">إذا لم تربطه، سيُنشأ صنف جديد تلقائياً</p>
@@ -215,8 +217,8 @@ export default function WarehouseReceive() {
       ))}
 
       <div className="space-y-1">
-        <Label>ملاحظات (اختياري)</Label>
-        <Input value={notes} onChange={e => setNotes(e.target.value)} placeholder="ملاحظات الاستلام" />
+        <Label>{t.common.optionalNote}</Label>
+        <Input value={notes} onChange={e => setNotes(e.target.value)} placeholder={t.inventory.receivingNotes} />
       </div>
 
       <Button className="w-full h-12 text-base gap-2" onClick={handleSubmit}
