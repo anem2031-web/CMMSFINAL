@@ -27,14 +27,14 @@ type ItemForm = {
   notes: string;
 };
 
-const emptyItem = (): ItemForm => ({
+const emptyItem = (defaultUnit = ""): ItemForm => ({
   sourceType: "manual",
 
   itemName: "",
   description: "",
 
   quantity: 1,
-  unit: "قطعة",
+  unit: defaultUnit,
 
   photoUrls: [],
   notes: ""
@@ -64,6 +64,7 @@ onSelect: (item: {
   unit?: string;
 }) => void;
 }) {
+  const { t } = useTranslation();
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState<number | null>(null);
@@ -192,7 +193,7 @@ onSelect: (item: {
                 !selectedNodeId && "bg-primary/10 text-primary font-medium"
               )}
             >
-              الكل
+              {t.common.all}
             </button>
             {roots.map(node => renderNode(node))}
           </div>
@@ -207,16 +208,16 @@ onSelect: (item: {
                   ref={inputRef}
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
-                  placeholder="ابحث بالاسم أو الكود..."
+                  placeholder={t.common.searchPlaceholder}
                   className="pr-9"
                   dir="rtl"
                 />
               </div>
               <p className="text-xs text-muted-foreground mt-1.5 h-4">
                 {isFetching
-                  ? "جارٍ البحث..."
+                  ? t.common.loading
                   : items.length > 0
-                    ? `${items.length} صنف${items.length === 80 ? " (الأحدث أولاً)" : ""}`
+                    ? `${items.length} ${t.purchaseOrders.items}`
                     : ""}
               </p>
             </div>
@@ -226,11 +227,11 @@ onSelect: (item: {
               {isFetching ? (
                 <div className="text-center py-10 text-sm text-muted-foreground">
                   <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" />
-                  جارٍ التحميل...
+                  {t.common.loading}
                 </div>
               ) : items.length === 0 ? (
                 <div className="text-center py-10 text-sm text-muted-foreground">
-                  لا توجد نتائج
+                  {t.common.noData}
                 </div>
               ) : (
                 items.map((item: any) => (
@@ -369,7 +370,7 @@ export default function CreatePurchaseOrder() {
 
   const saveDraftMut = trpc.purchaseOrders.saveDraft.useMutation({
     onSuccess: (data) => {
-      toast.success(`تم حفظ المسودة ${data.poNumber}`);
+      toast.success(`${t.purchaseOrders.saveDraft} — ${data.poNumber}`);
       setLocation(`/purchase-orders/${data.id}`);
     },
     onError: (err) => toast.error(err.message),
@@ -377,14 +378,14 @@ export default function CreatePurchaseOrder() {
 
   const updateDraftMut = trpc.purchaseOrders.updateDraft.useMutation({
     onSuccess: () => {
-      toast.success("تم حفظ التعديلات");
+      toast.success(t.purchaseOrders.saveChangesSuccess);
       setLocation(`/purchase-orders/${draftId}`);
     },
     onError: (err) => toast.error(err.message),
   });
 
   const [draftLoaded, setDraftLoaded] = useState(false);
-  const [items, setItems] = useState<ItemForm[]>([emptyItem()]);
+  const [items, setItems] = useState<ItemForm[]>([emptyItem(t.purchaseOrders.defaultUnit)]);
 
   // تحميل أصناف المسودة عند فتح صفحة التعديل
   useEffect(() => {
@@ -396,7 +397,7 @@ export default function CreatePurchaseOrder() {
           itemName: i.itemName || "",
           description: i.description || "",
           quantity: i.quantity || 1,
-          unit: i.unit || "قطعة",
+          unit: i.unit || t.purchaseOrders.defaultUnit,
           photoUrls: i.photoUrls || (i.photoUrl ? [i.photoUrl] : []),
           notes: i.notes || "",
           _existingId: i.id, // نحفظ id الصنف الأصلي
@@ -431,7 +432,7 @@ const handleUpload = async (idx: number, file: File) => {
         updateItem(idx, "photoUrls", [...current, data.url]);
         toast.success(t.common.save);
       } else {
-        toast.error("الحد الأقصى 4 صور");
+        toast.error(t.purchaseOrders.maxPhotos);
       }
     }
   } catch { toast.error(t.common.close); }
@@ -452,7 +453,7 @@ const handleCatalogSelect = (catalogItem: any) => {
             itemName: catalogItem.nameAr || "",
             description: catalogItem.nameEn || "",
             // ✅ سحب وحدة الصنف من الكاتلوج تلقائياً — "قطعة" كافتراضي إذا لم تكن محددة
-            unit: catalogItem.unit?.trim() || "قطعة",
+            unit: catalogItem.unit?.trim() || t.purchaseOrders.defaultUnit,
 
             photoUrls: catalogItem.primaryImageUrl ? [catalogItem.primaryImageUrl] : [],
           }
@@ -660,7 +661,9 @@ const handleCatalogSelect = (catalogItem: any) => {
             <SelectContent>
               {(catalogUnits || []).map((u: any) => (
                 <SelectItem key={u.id} value={u.nameAr}>
-                  {u.nameAr}
+                  {u.nameEn && u.nameEn !== u.nameAr
+                    ? `${u.nameEn} / ${u.nameAr}`
+                    : u.nameAr}
                 </SelectItem>
               ))}
               {/* في حال القيمة الحالية غير موجودة ضمن وحدات الكاتلوج (بيانات قديمة) */}
@@ -712,8 +715,8 @@ const handleCatalogSelect = (catalogItem: any) => {
       <DropZone
         maxFiles={4 - (item.photoUrls || []).length}
         accept="image/*"
-        label="اسحب صور الصنف"
-        sublabel={`حتى ${4 - (item.photoUrls || []).length} صور`}
+        label={t.purchaseOrders.dragItemPhoto}
+        sublabel={`${t.purchaseOrders.maxPhotos}`}
         onFilesUploaded={(files: UploadedFile[]) => {
           const uploaded = files
             .filter(f => f.status === "done" && f.url)
@@ -760,7 +763,7 @@ const handleCatalogSelect = (catalogItem: any) => {
           size="sm"
           className="h-16 px-3 border-dashed"
           onClick={() => setShowDropZoneIdx(idx)}
-          title="سحب وإفلات"
+          title={t.purchaseOrders.dragAndDrop}
         >
           <Upload className="w-4 h-4" />
         </Button>
@@ -796,7 +799,7 @@ const handleCatalogSelect = (catalogItem: any) => {
 {/* زر إضافة صنف */}
 <Button
   variant="outline"
-  onClick={() => setItems(prev => [...prev, emptyItem()])}
+  onClick={() => setItems(prev => [...prev, emptyItem(t.purchaseOrders.defaultUnit)])}
   className="w-full gap-2 border-dashed h-12"
 >
   <Plus className="w-4 h-4" /> {t.common.add}
@@ -829,7 +832,7 @@ const handleCatalogSelect = (catalogItem: any) => {
                 size="lg"
               >
                 {updateDraftMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                حفظ التعديلات
+                {t.purchaseOrders.saveChanges}
               </Button>
             ) : (
             <div className="flex gap-2">
@@ -843,7 +846,7 @@ const handleCatalogSelect = (catalogItem: any) => {
                 {saveDraftMut.isPending
                   ? <Loader2 className="w-4 h-4 animate-spin" />
                   : <BookOpen className="w-4 h-4" />}
-                حفظ كمسودة
+                {t.purchaseOrders.saveDraft}
               </Button>
               <Button
                 onClick={handleSubmit}
