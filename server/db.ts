@@ -533,15 +533,25 @@ export async function getPurchaseOrders(filters?: {
     .select({
       purchaseOrderId: purchaseOrderItems.purchaseOrderId,
       itemName: purchaseOrderItems.itemName,
+      itemName_ar: purchaseOrderItems.itemName_ar,
+      itemName_en: purchaseOrderItems.itemName_en,
+      itemName_ur: purchaseOrderItems.itemName_ur,
     })
     .from(purchaseOrderItems)
     .where(inArray(purchaseOrderItems.purchaseOrderId, poIds));
 
   const namesMap = new Map<number, string[]>();
+  const namesMapEn = new Map<number, string[]>();
+  const namesMapAr = new Map<number, string[]>();
+  const namesMapUr = new Map<number, string[]>();
   for (const row of itemRows) {
     const arr = namesMap.get(row.purchaseOrderId) ?? [];
     arr.push(row.itemName);
     namesMap.set(row.purchaseOrderId, arr);
+    // translated names
+    if (row.itemName_en) { const a = namesMapEn.get(row.purchaseOrderId) ?? []; a.push(row.itemName_en); namesMapEn.set(row.purchaseOrderId, a); }
+    if (row.itemName_ar) { const a = namesMapAr.get(row.purchaseOrderId) ?? []; a.push(row.itemName_ar); namesMapAr.set(row.purchaseOrderId, a); }
+    if (row.itemName_ur) { const a = namesMapUr.get(row.purchaseOrderId) ?? []; a.push(row.itemName_ur); namesMapUr.set(row.purchaseOrderId, a); }
   }
 
   // دمج النتائج
@@ -550,6 +560,9 @@ export async function getPurchaseOrders(filters?: {
     ...po,
     itemCount: countMap.get(po.id) ?? 0,
     itemNames: namesMap.get(po.id) ?? [],
+    itemNames_en: namesMapEn.get(po.id) ?? [],
+    itemNames_ar: namesMapAr.get(po.id) ?? [],
+    itemNames_ur: namesMapUr.get(po.id) ?? [],
   }));
 }
 
