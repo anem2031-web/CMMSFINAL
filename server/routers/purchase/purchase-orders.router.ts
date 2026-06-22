@@ -7,6 +7,36 @@ import { detectLanguage } from "../../services/translation";
 import { queueTranslation } from "../../translationEngine";
 import { notifyItemRejection } from "../_shared/router-helpers";
 
+// ── دالة مشتركة: ترجمة أصناف طلب الشراء في الخلفية ──────────────────────────
+async function queuePOItemsTranslation(items: any[], userId: number): Promise<void> {
+  for (const item of items) {
+    if (!item.itemName || !item.id) continue;
+    const fields = [
+      { fieldName: "itemName", text: item.itemName },
+      ...(item.description ? [{ fieldName: "description", text: item.description }] : []),
+      ...(item.notes ? [{ fieldName: "notes", text: item.notes }] : []),
+    ];
+    queueTranslation({
+      entityType: "PO_ITEM",
+      entityId: item.id,
+      fields,
+      sourceLanguage: await detectLanguage(item.itemName).catch(() => "ar" as const),
+      userId,
+    }).catch(e => console.error("[PO_ITEM] Queue translation failed:", e));
+  }
+}
+
+// ── دالة مشتركة: ترجمة ملاحظات طلب الشراء في الخلفية ────────────────────────
+async function queuePONotesTranslation(poId: number, notes: string, userId: number): Promise<void> {
+  queueTranslation({
+    entityType: "PO",
+    entityId: poId,
+    fields: [{ fieldName: "notes", text: notes }],
+    sourceLanguage: await detectLanguage(notes).catch(() => "ar" as const),
+    userId,
+  }).catch(e => console.error("[PO] Queue translation failed:", e));
+}
+
 export const purchaseOrdersRouter = router({
   cancelItem: protectedProcedure.input(z.object({
     itemId: z.number(),
@@ -391,6 +421,13 @@ export const purchaseOrdersRouter = router({
     const itemsData = input.items.map(item => ({ ...item, purchaseOrderId: poId!, status: "pending" }));
     await db.createPOItems(itemsData);
 
+    // ترجمة الأصناف في الخلفية
+    const poItemsCreated = await db.getPOItems(poId!);
+    queuePOItemsTranslation(poItemsCreated, ctx.user.id);
+
+    // ترجمة ملاحظات الطلب إذا وجدت
+    if (input.notes) queuePONotesTranslation(poId!, input.notes, ctx.user.id);
+
     await db.createAuditLog({ userId: ctx.user.id, action: "save_draft_po", entityType: "purchase_order", entityId: poId! });
     return { id: poId, poNumber };
   }),
@@ -433,6 +470,12 @@ export const purchaseOrdersRouter = router({
     }
 
     await db.createAuditLog({ userId: ctx.user.id, action: "submit_draft_po", entityType: "purchase_order", entityId: input.id });
+
+    // ترجمة الأصناف التي لم تُترجم بعد (قد تكون فاتت عند حفظ المسودة)
+    const itemsNeedingTranslation = items.filter((i: any) => !i.itemName_en && !i.itemName_ar);
+    if (itemsNeedingTranslation.length > 0) queuePOItemsTranslation(itemsNeedingTranslation, ctx.user.id);
+    if (po.notes) queuePONotesTranslation(input.id, po.notes, ctx.user.id);
+
     return { success: true };
   }),
 
@@ -505,6 +548,12 @@ export const purchaseOrdersRouter = router({
     }
 
     await db.createAuditLog({ userId: ctx.user.id, action: "update_draft_po", entityType: "purchase_order", entityId: input.id });
+
+    // ترجمة جميع الأصناف بعد التعديل (تشمل الجديدة والمعدّلة)
+    const allItems = await db.getPOItems(input.id);
+    queuePOItemsTranslation(allItems, ctx.user.id);
+    if (input.notes) queuePONotesTranslation(input.id, input.notes, ctx.user.id);
+
     return { success: true };
   }),
 
@@ -541,34 +590,10 @@ export const purchaseOrdersRouter = router({
     const itemsData = input.items.map(item => ({ ...item, purchaseOrderId: poId!, status: "pending" }));
     await db.createPOItems(itemsData);
 
-    // ترجمة حقول PO في الخلفية
-    if (input.notes) {
-      queueTranslation({
-        entityType: "PO",
-        entityId: poId!,
-        fields: [{ fieldName: "notes", text: input.notes }],
-        sourceLanguage: await detectLanguage(input.notes).catch(() => "ar" as const),
-        userId: ctx.user.id,
-      }).catch(e => console.error("[PO] Queue translation failed:", e));
-    }
-
-    // ترجمة أسماء وأوصاف الأصناف في الخلفية
+    // ترجمة حقول الطلب والأصناف في الخلفية
     const poItemsCreated = await db.getPOItems(poId!);
-    for (const item of poItemsCreated) {
-      if (item.itemName) {
-        queueTranslation({
-          entityType: "PO_ITEM",
-          entityId: item.id,
-          fields: [
-            { fieldName: "itemName", text: item.itemName },
-            ...(item.description ? [{ fieldName: "description", text: item.description }] : []),
-            ...(item.notes ? [{ fieldName: "notes", text: item.notes }] : []),
-          ],
-          sourceLanguage: await detectLanguage(item.itemName).catch(() => "ar" as const),
-          userId: ctx.user.id,
-        }).catch(e => console.error("[PO_ITEM] Queue translation failed:", e));
-      }
-    }
+    queuePOItemsTranslation(poItemsCreated, ctx.user.id);
+    if (input.notes) queuePONotesTranslation(poId!, input.notes, ctx.user.id);
 
     // Update ticket status if linked (Path C: keep at work_approved — gate security controls status)
     if (input.ticketId) {
