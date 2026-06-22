@@ -91,7 +91,7 @@ function PhaseTimeline({ phases }: { phases: Array<{ phase: string; durationHour
                 key={i}
                 className={cn("transition-all", PHASE_COLORS[i % PHASE_COLORS.length])}
                 style={{ width: `${pct}%` }}
-                title={`${p.phase}: ${formatHours(p.durationHours, tr)}`}
+                title={`${translatePhase(p.phase, tr)}: ${formatHours(p.durationHours, tr)}`}
               />
             ) : null;
           })}
@@ -101,7 +101,7 @@ function PhaseTimeline({ phases }: { phases: Array<{ phase: string; durationHour
         {phases.map((p, i) => (
           <div key={i} className="flex items-center gap-1.5 text-xs">
             <span className={cn("w-2.5 h-2.5 rounded-sm flex-shrink-0", PHASE_COLORS[i % PHASE_COLORS.length])} />
-            <span className="text-muted-foreground truncate">{p.phase}</span>
+            <span className="text-muted-foreground truncate">{translatePhase(p.phase, tr)}</span>
             <span className={cn("font-semibold ml-auto", p.durationHours === null ? "text-muted-foreground" : "text-foreground")}>
               {formatHours(p.durationHours)}
             </span>
@@ -112,16 +112,39 @@ function PhaseTimeline({ phases }: { phases: Array<{ phase: string; durationHour
   );
 }
 
+// ─── Phase name translator ────────────────────────────────────────────────────
+// Backend returns Arabic phase names - we map them to translation keys
+const PHASE_KEY_MAP: Record<string, string> = {
+  "إنشاء الطلب": "createOrder",
+  "مراجعة الأصناف": "reviewItems",
+  "موافقة الحسابات": "accountingApproval",
+  "موافقة الإدارة": "managementApproval",
+  "شراء المندوب": "delegatePurchase",
+  "استلام المستودع": "warehouseReceive",
+  "تسليم للفني": "deliverToTechnician",
+  "انتظار التسعير": "waitingPricing",
+  "اعتماد الشراء": "purchaseApproval",
+};
+
+function translatePhase(phaseName: string, tr: any): string {
+  const key = PHASE_KEY_MAP[phaseName];
+  return (key && tr?.purchaseCycleReport?.phases?.[key]) || phaseName;
+}
+
 // ─── Actor Cell ───────────────────────────────────────────────────────────────
 function ActorCell({ phase }: { phase: any }) {
+  const { t: tr } = useLanguage();
   const [open, setOpen] = useState(false);
 
-  if (phase.phase === "تسليم للفني") {
+  // detect delivery-to-technician phase by Arabic key (backend always sends Arabic)
+  const isDeliveryPhase = phase.phase === "تسليم للفني";
+
+  if (isDeliveryPhase) {
     if (!phase.actor && !phase.deliveredTo) return <span className="text-muted-foreground text-xs">—</span>;
     return (
       <div className="text-xs space-y-0.5">
-        {phase.actor && <div className="flex items-center gap-1"><span className="text-muted-foreground">سلّمه:</span><span className="font-medium">{phase.actor}</span></div>}
-        {phase.deliveredTo && <div className="flex items-center gap-1"><span className="text-muted-foreground">استلمه:</span><span className="font-medium">{phase.deliveredTo}</span></div>}
+        {phase.actor && <div className="flex items-center gap-1"><span className="text-muted-foreground">{tr?.purchaseCycleReport?.deliveredBy}:</span><span className="font-medium">{phase.actor}</span></div>}
+        {phase.deliveredTo && <div className="flex items-center gap-1"><span className="text-muted-foreground">{tr?.purchaseCycleReport?.receivedBy}:</span><span className="font-medium">{phase.deliveredTo}</span></div>}
       </div>
     );
   }
@@ -137,7 +160,7 @@ function ActorCell({ phase }: { phase: any }) {
           onClick={e => { e.stopPropagation(); setOpen(o => !o); }}
           className="flex items-center gap-1 text-xs text-primary hover:underline font-medium"
         >
-          متعدد ({phase.actors.length})
+          {tr?.common?.results || "×"} ({phase.actors.length})
           {open ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
         </button>
         {open && (
@@ -178,7 +201,7 @@ function ItemRow({ item }: { item: any }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-medium text-sm">{item.itemName}</span>
-            <span className="text-xs text-muted-foreground">({item.quantity} {item.unit || "وحدة"})</span>
+            <span className="text-xs text-muted-foreground">({item.quantity} {item.unit || tr?.common?.unitLabel || "unit"})</span>
             <span className={cn("text-xs px-2 py-0.5 rounded-full font-medium", getStatusColor(item.currentStatus))}>
               {getStatusLabel(item.currentStatus, tr)}
             </span>
@@ -208,12 +231,12 @@ function ItemRow({ item }: { item: any }) {
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-border">
-                    <th className="text-right py-1.5 pr-2 font-semibold text-muted-foreground">{tr.purchaseCycleReport?.stage || "المرحلة"}</th>
-                    <th className="text-right py-1.5 font-semibold text-muted-foreground">{tr.purchaseCycleReport?.start || "بداية"}</th>
-                    <th className="text-right py-1.5 font-semibold text-muted-foreground">{tr.purchaseCycleReport?.end || "نهاية"}</th>
-                    <th className="text-right py-1.5 font-semibold text-muted-foreground">{tr.purchaseCycleReport?.duration || "المدة"}</th>
-                    <th className="text-right py-1.5 font-semibold text-muted-foreground">المنفذ</th>
-                    <th className="text-right py-1.5 font-semibold text-muted-foreground">{tr.common?.status || "الحالة"}</th>
+                    <th className="text-right py-1.5 font-semibold text-muted-foreground">{tr.purchaseCycleReport?.stage || "Stage"}</th>
+                    <th className="text-right py-1.5 font-semibold text-muted-foreground">{tr.purchaseCycleReport?.start || "Start"}</th>
+                    <th className="text-right py-1.5 font-semibold text-muted-foreground">{tr.purchaseCycleReport?.end || "End"}</th>
+                    <th className="text-right py-1.5 font-semibold text-muted-foreground">{tr.purchaseCycleReport?.duration || "Duration"}</th>
+                    <th className="text-right py-1.5 font-semibold text-muted-foreground">{tr.purchaseCycleReport?.delegate || "Executor"}</th>
+                    <th className="text-right py-1.5 font-semibold text-muted-foreground">{tr.common?.status || "Status"}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -222,7 +245,7 @@ function ItemRow({ item }: { item: any }) {
                       <td className="py-1.5 pr-2">
                         <div className="flex items-center gap-1.5">
                           <span className={cn("w-2 h-2 rounded-full", PHASE_COLORS[i % PHASE_COLORS.length])} />
-                          {p.phase}
+                          {translatePhase(p.phase, tr)}
                         </div>
                       </td>
                       <td className="py-1.5 text-muted-foreground">
@@ -311,16 +334,16 @@ function POCard({ po }: { po: any }) {
 <div className="p-4 bg-muted/20 border-b border-border">
   <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
     <BarChart3 className="w-4 h-4 text-primary" />
-    مراحل الطلب
+    {tr.purchaseCycleReport?.stages || "Order Stages"}
   </h4>
   <div className="overflow-x-auto">
     <table className="w-full text-xs">
       <thead>
         <tr className="border-b border-border">
-          <th className="text-right py-1.5 pr-2 font-semibold text-muted-foreground">المرحلة</th>
-          <th className="text-right py-1.5 font-semibold text-muted-foreground">التاريخ</th>
-          <th className="text-right py-1.5 font-semibold text-muted-foreground">المنفذ</th>
-          <th className="text-right py-1.5 font-semibold text-muted-foreground">الحالة</th>
+          <th className="text-right py-1.5 pr-2 font-semibold text-muted-foreground">{tr.purchaseCycleReport?.stage || "Stage"}</th>
+          <th className="text-right py-1.5 font-semibold text-muted-foreground">{tr.common?.date || "Date"}</th>
+          <th className="text-right py-1.5 font-semibold text-muted-foreground">{tr.purchaseCycleReport?.delegate || "Executor"}</th>
+          <th className="text-right py-1.5 font-semibold text-muted-foreground">{tr.common?.status || "Status"}</th>
         </tr>
       </thead>
       <tbody>
@@ -329,7 +352,7 @@ function POCard({ po }: { po: any }) {
             <td className="py-1.5 pr-2">
               <div className="flex items-center gap-1.5">
                 <span className={cn("w-2 h-2 rounded-full flex-shrink-0", PHASE_COLORS[i % PHASE_COLORS.length])} />
-                <span className="font-medium">{p.phase}</span>
+                <span className="font-medium">{translatePhase(p.phase, tr)}</span>
               </div>
             </td>
             <td className="py-1.5 text-muted-foreground">
@@ -507,7 +530,7 @@ export default function PurchaseCycleReport() {
                     <div className="flex items-center justify-between text-sm">
                       <div className="flex items-center gap-2">
                         <span className={cn("w-2.5 h-2.5 rounded-sm", PHASE_COLORS[i % PHASE_COLORS.length])} />
-                        <span className="font-medium">{p.phase}</span>
+                        <span className="font-medium">{translatePhase(p.phase, tr)}</span>
                         <span className="text-xs text-muted-foreground">({p.count} {tr.purchaseCycleReport?.item || "صنف"})</span>
                       </div>
                       <span className="font-bold">{formatHours(p.avgHours)}</span>
