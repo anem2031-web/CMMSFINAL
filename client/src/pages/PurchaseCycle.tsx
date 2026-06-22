@@ -42,9 +42,9 @@ export default function PurchaseCycle() {
   const refetchAll = () => { refetchEstimate(); refetchPurchase(); refetchWarehouse(); refetchDelivery(); };
 
   // Mutations
-  const estimateCostMut = trpc.purchaseOrders.estimateCost.useMutation({ onSuccess: () => { toast.success("تم حفظ التسعير"); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
+  const estimateCostMut = trpc.purchaseOrders.estimateCost.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.pricingSaved); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
   const confirmPurchaseMut = trpc.purchaseOrders.confirmItemPurchase.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.purchased); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
-  const cancelPurchaseMut = trpc.purchaseOrders.cancelItemPurchase.useMutation({ onSuccess: () => { toast.success("تم إلغاء شراء الصنف"); refetchAll(); setCancelDialog(null); setCancelNote(""); }, onError: (e: any) => toast.error(e.message) });
+  const cancelPurchaseMut = trpc.purchaseOrders.cancelItemPurchase.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.cancelPurchaseSuccess); refetchAll(); setCancelDialog(null); setCancelNote(""); }, onError: (e: any) => toast.error(e.message) });
   const confirmWarehouseMut = trpc.purchaseOrders.confirmDeliveryToWarehouse.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.deliveredToWarehouse); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
   const confirmDeliveryMut = trpc.purchaseOrders.confirmDeliveryToRequester.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.deliveredToRequester); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
 
@@ -294,7 +294,7 @@ export default function PurchaseCycle() {
                         disabled={!estimateValues[item.id] || parseFloat(estimateValues[item.id]) <= 0 || estimateCostMut.isPending}
                         onClick={() => {
                           if (!estimateValues[item.id] || parseFloat(estimateValues[item.id]) <= 0) {
-                            toast.error("يرجى إدخال السعر");
+                            toast.error(t.purchaseOrders.enterPrice);
                             return;
                           }
                           estimateCostMut.mutate({
@@ -304,7 +304,7 @@ export default function PurchaseCycle() {
                         }}
                         className="shrink-0"
                       >
-                        {estimateCostMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : "حفظ التسعير"}
+                        {estimateCostMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : t.purchaseOrders.savePricing}
                       </Button>
                     </div>
                   </CardContent>
@@ -489,15 +489,15 @@ export default function PurchaseCycle() {
                 <p className="text-xs text-muted-foreground">{t.purchaseOrders.quantity}: {cancelDialog.quantity} {cancelDialog.unit}</p>
               </div>
               <div className="space-y-2">
-                <Label className="text-xs font-medium">سبب إلغاء الشراء *</Label>
+                <Label className="text-xs font-medium">{t.purchaseOrders.revisionReason} *</Label>
                 <Textarea
-                  placeholder="اكتب سبب إلغاء شراء هذا الصنف (مثال: الصنف غير متوفر في السوق)"
+                  placeholder={t.purchaseOrders.cancelPurchaseReason}
                   value={cancelNote}
                   onChange={(e) => setCancelNote(e.target.value)}
                   rows={4}
                   className="resize-none"
                 />
-                <p className="text-[11px] text-muted-foreground">سيعود هذا الصنف لمنشئ الطلب بحالة "تم إلغاء شراءه" ولا يمكن التراجع.</p>
+                <p className="text-[11px] text-muted-foreground">{t.purchaseOrders.cancelItemWillReturn}</p>
               </div>
             </div>
           )}
@@ -508,12 +508,12 @@ export default function PurchaseCycle() {
               className="gap-1.5"
               disabled={cancelNote.trim().length < 3 || cancelPurchaseMut.isPending}
               onClick={() => {
-                if (cancelNote.trim().length < 3) { toast.error("يجب كتابة سبب الإلغاء"); return; }
+                if (cancelNote.trim().length < 3) { toast.error(t.purchaseOrders.cancelReasonRequired); return; }
                 cancelPurchaseMut.mutate({ itemId: cancelDialog.id, note: cancelNote });
               }}
             >
               {cancelPurchaseMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Ban className="w-4 h-4" />}
-              تأكيد إلغاء الشراء
+              {t.common.confirm}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -671,7 +671,7 @@ export default function PurchaseCycle() {
                 <TechnicianCombobox
                   value={deliveryUserId}
                   onValueChange={setDeliveryUserId}
-                  placeholder="اختر الفني..."
+                  placeholder={t.common.technician + "..."}
                   options={allUsers
                     .filter((u: any) => u.role === "technician" || u.role === "supervisor" || u.role === "maintenance_manager")
                     .map((u: any) => ({
