@@ -33,7 +33,7 @@ async function assertProjectAccess(projectId: number, userId: number, requireEdi
     .limit(1);
 
   const isOwnerOrManager =
-    project[0].ownerId === userId || project[0].managerId === userId;
+    Number(project[0].ownerId) === Number(userId) || Number(project[0].managerId) === Number(userId);
 
   if (!isOwnerOrManager && !member[0]) {
     throw new TRPCError({ code: "FORBIDDEN", message: "ليس لديك صلاحية لهذا المشروع" });
@@ -124,8 +124,8 @@ export const projectsRouter = router({
           .where(eq(constructionPhases.projectId, input.id)),
         db.select({
           total: count(),
-          completed: sql<number>`SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)`,
-          overdue: sql<number>`SUM(CASE WHEN end_date_planned < CURDATE() AND status NOT IN ('completed','cancelled') THEN 1 ELSE 0 END)`,
+          completed: sql<number>`SUM(CASE WHEN \`status\` = 'completed' THEN 1 ELSE 0 END)`,
+          overdue: sql<number>`SUM(CASE WHEN \`endDatePlanned\` < CURDATE() AND \`status\` NOT IN ('completed','cancelled') THEN 1 ELSE 0 END)`,
         }).from(constructionTasks).where(eq(constructionTasks.projectId, input.id)),
         db.select({ cnt: count() }).from(constructionProjectMembers)
           .where(eq(constructionProjectMembers.projectId, input.id)),
@@ -171,7 +171,18 @@ export const projectsRouter = router({
       };
 
       const result = await db.insert(constructionProjects).values(data);
-      const newId = Number((result as any).insertId);
+      // TiDB/MySQL2 returns insertId in different formats
+      const rawResult = result as any;
+      const newId = Number(
+        rawResult?.insertId ??
+        rawResult?.[0]?.insertId ??
+        rawResult?.lastInsertRowid ??
+        0
+      );
+
+      if (!newId || isNaN(newId)) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "فشل إنشاء المشروع — لم يُعاد الـ ID" });
+      }
 
       // Auto-add creator as manager member
       await db.insert(constructionProjectMembers).values({
