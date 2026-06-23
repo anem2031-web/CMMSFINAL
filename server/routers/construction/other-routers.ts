@@ -48,7 +48,7 @@ export const taskCommentsRouter = router({
         userName: ctx.user.name ?? ctx.user.username ?? "مستخدم",
         userRole: ctx.user.role,
       });
-      return { id: Number((result as any).insertId) };
+      return { id: Number((result as any)?.insertId ?? (result as any)?.[0]?.insertId ?? 0) };
     }),
 
   update: protectedProcedure
@@ -101,7 +101,7 @@ export const taskDependenciesRouter = router({
       const result = await db.insert(constructionTaskDependencies).values({
         ...input, createdById: ctx.user.id,
       });
-      return { id: Number((result as any).insertId) };
+      return { id: Number((result as any)?.insertId ?? (result as any)?.[0]?.insertId ?? 0) };
     }),
 
   delete: protectedProcedure
@@ -139,7 +139,7 @@ export const membersRouter = router({
       const result = await db.insert(constructionProjectMembers).values({
         ...input, addedById: ctx.user.id,
       });
-      return { id: Number((result as any).insertId) };
+      return { id: Number((result as any)?.insertId ?? (result as any)?.[0]?.insertId ?? 0) };
     }),
 
   updateRole: protectedProcedure
@@ -225,7 +225,7 @@ export const timeLogsRouter = router({
         totalCost,
         userId: ctx.user.id,
       });
-      return { id: Number((result as any).insertId) };
+      return { id: Number((result as any)?.insertId ?? (result as any)?.[0]?.insertId ?? 0) };
     }),
 
   delete: protectedProcedure
@@ -278,7 +278,7 @@ export const customFieldsRouter = router({
         orderIndex: (last?.maxOrder ?? -1) + 1,
         createdById: ctx.user.id,
       });
-      return { id: Number((result as any).insertId) };
+      return { id: Number((result as any)?.insertId ?? (result as any)?.[0]?.insertId ?? 0) };
     }),
 
   delete: protectedProcedure
@@ -339,7 +339,7 @@ export const automationsRouter = router({
         actionConfig: input.actionConfig ?? null,
         createdById: ctx.user.id,
       });
-      return { id: Number((result as any).insertId) };
+      return { id: Number((result as any)?.insertId ?? (result as any)?.[0]?.insertId ?? 0) };
     }),
 
   toggle: protectedProcedure
@@ -386,7 +386,7 @@ export const goalsRouter = router({
       const result = await db.insert(constructionGoals).values({
         ...input, createdById: ctx.user.id,
       });
-      return { id: Number((result as any).insertId) };
+      return { id: Number((result as any)?.insertId ?? (result as any)?.[0]?.insertId ?? 0) };
     }),
 
   update: protectedProcedure
@@ -470,7 +470,7 @@ export const dailyReportsRouter = router({
         photoUrls: input.photoUrls ?? null,
         submittedById: ctx.user.id,
       });
-      return { id: Number((result as any).insertId) };
+      return { id: Number((result as any)?.insertId ?? (result as any)?.[0]?.insertId ?? 0) };
     }),
 
   approve: protectedProcedure
@@ -519,7 +519,7 @@ export const quantityTrackingRouter = router({
       const result = await db.insert(constructionQuantityTracking).values({
         ...input, createdById: ctx.user.id,
       });
-      return { id: Number((result as any).insertId) };
+      return { id: Number((result as any)?.insertId ?? (result as any)?.[0]?.insertId ?? 0) };
     }),
 
   update: protectedProcedure
@@ -581,7 +581,7 @@ export const changeOrdersRouter = router({
         attachmentUrls: input.attachmentUrls ?? null,
         requestedById: ctx.user.id,
       });
-      return { id: Number((result as any).insertId), changeNumber };
+      return { id: Number((result as any)?.insertId ?? (result as any)?.[0]?.insertId ?? 0), changeNumber };
     }),
 
   approve: protectedProcedure
@@ -652,7 +652,7 @@ export const safetyLogsRouter = router({
         photoUrls: input.photoUrls ?? null,
         reportedById: ctx.user.id,
       });
-      return { id: Number((result as any).insertId) };
+      return { id: Number((result as any)?.insertId ?? (result as any)?.[0]?.insertId ?? 0) };
     }),
 
   close: protectedProcedure
