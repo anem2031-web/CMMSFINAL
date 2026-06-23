@@ -206,7 +206,7 @@ export const tasksRouter = router({
       };
 
       const result = await db.insert(constructionTasks).values(data);
-      return { id: Number((result as any).insertId), taskNumber };
+      return { id: Number((result as any)?.insertId ?? (result as any)?.[0]?.insertId ?? 0), taskNumber };
     }),
 
   update: protectedProcedure
