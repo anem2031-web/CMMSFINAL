@@ -91,15 +91,10 @@ export default function Login() {
                 <span className="text-2xl font-black tracking-[0.15em] text-primary">CMMS</span>
               </div>
               {/* اسم النظام */}
-              <h1 className="text-base font-bold tracking-tight leading-snug whitespace-nowrap">
+              <h1 className="text-xl font-bold tracking-tight leading-snug">
                 {t.appName}
               </h1>
-              {/* فاصل أنيق */}
-              <div className="flex items-center gap-3 justify-center">
-                <div className="h-px w-12 bg-primary/20" />
-                <p className="text-xs text-muted-foreground">{t.loginDesc}</p>
-                <div className="h-px w-12 bg-primary/20" />
-              </div>
+
             </div>
           </div>
 
