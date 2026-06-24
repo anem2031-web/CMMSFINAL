@@ -53,11 +53,28 @@ async function assertProjectAccess(projectId: number, userId: number, userRole: 
 
 async function generateProjectNumber(db: NonNullable<Awaited<ReturnType<typeof getDb>>>) {
   const year = new Date().getFullYear();
+  // Use MAX id approach to avoid duplicate project numbers
   const result = await db
-    .select({ cnt: count() })
+    .select({ maxId: sql<number>`COALESCE(MAX(id), 0)` })
     .from(constructionProjects);
-  const num = (result[0]?.cnt ?? 0) + 1;
-  return `PRJ-${year}-${String(num).padStart(4, "0")}`;
+  const maxId = Number(result[0]?.maxId ?? 0);
+  // Generate unique number based on timestamp to avoid conflicts
+  const timestamp = Date.now().toString().slice(-4);
+  const num = maxId + 1;
+  const candidate = `PRJ-${year}-${String(num).padStart(4, "0")}`;
+  
+  // Check if it already exists and increment if needed
+  const existing = await db
+    .select({ id: constructionProjects.id })
+    .from(constructionProjects)
+    .where(eq(constructionProjects.projectNumber, candidate))
+    .limit(1);
+  
+  if (existing[0]) {
+    // Fallback: use timestamp-based number
+    return `PRJ-${year}-${timestamp}`;
+  }
+  return candidate;
 }
 
 // ── Router ──────────────────────────────────────────────────
