@@ -47,7 +47,7 @@ export const phasesRouter = router({
         phaseId: constructionTasks.phaseId,
         total: count(),
         completed: sql<number>`SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)`,
-        overdue: sql<number>`SUM(CASE WHEN end_date_planned < CURDATE() AND status NOT IN ('completed') THEN 1 ELSE 0 END)`,
+        overdue: sql<number>`SUM(CASE WHEN endDatePlanned < CURDATE() AND status NOT IN ('completed') THEN 1 ELSE 0 END)`,
       }).from(constructionTasks)
         .where(eq(constructionTasks.projectId, input.projectId))
         .groupBy(constructionTasks.phaseId);
@@ -83,7 +83,7 @@ export const phasesRouter = router({
     .mutation(async ({ input, ctx }) => {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB not available" });
       // Get next order index
-      const [last] = await db.select({ maxOrder: sql<number>`MAX(order_index)` })
+      const [last] = await db.select({ maxOrder: sql<number>`COALESCE(MAX(\`orderIndex\`), -1)` })
         .from(constructionPhases).where(eq(constructionPhases.projectId, input.projectId));
 
       const data: InsertConstructionPhase = {
