@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Wrench, Loader2, Eye, EyeOff, AlertTriangle, Clock } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "@/contexts/LanguageContext";
+import LanguageSwitcher from "@/components/LanguageSwitcher";
 
 
 export default function Login() {
@@ -56,6 +57,10 @@ export default function Login() {
     <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-primary/5 via-background to-primary/10" dir="rtl">
       <Card className="w-full max-w-md mx-4 shadow-xl border">
         <CardContent className="p-8 space-y-6">
+          {/* زر تغيير اللغة */}
+          <div className="flex justify-start [&_button]:text-foreground [&_button]:hover:bg-accent">
+            <LanguageSwitcher />
+          </div>
           {/* Grace Period Warning */}
           {gracePeriodWarning && (
             <Alert className="border-orange-200 bg-orange-50">
@@ -101,27 +106,27 @@ export default function Login() {
           {!twoFactorRequired && (
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="username">{(t.users as any)?.username || "اسم المستخدم"}</Label>
+              <Label htmlFor="username">{(t as any).users?.username ?? "اسم المستخدم"}</Label>
               <Input
                 id="username"
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder={"أدخل اسم المستخدم"}
+                placeholder={(t as any).users?.username ?? "اسم المستخدم"}
                 autoComplete="username"
                 autoFocus
                 className="text-right"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password">{(t.users as any)?.password || "كلمة المرور"}</Label>
+              <Label htmlFor="password">{(t as any).users?.password ?? "كلمة المرور"}</Label>
               <div className="relative">
                 <Input
                   id="password"
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder={"أدخل كلمة المرور"}
+                  placeholder={(t as any).users?.password ?? "كلمة المرور"}
                   autoComplete="current-password"
                   className="text-right pl-10"
                 />
