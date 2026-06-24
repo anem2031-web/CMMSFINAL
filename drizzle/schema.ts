@@ -1442,3 +1442,9 @@ export const deliveryDocuments = mysqlTable("delivery_documents", {
   printCount: int("printCount").default(0).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
+
+export const deliveryNumberCounter = mysqlTable("delivery_number_counter", {
+  id: int("id").autoincrement().primaryKey(),
+  year: int("year").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
