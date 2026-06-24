@@ -1,7 +1,7 @@
 import type { TranslationKeys } from "./ar";
 
 const en: TranslationKeys = {
-  appName: "Integrated Maintenance Management System",
+  appName: "Computerized Maintenance Management System",
   appShort: "CMMS",
   login: "Sign In",
   loginDesc: "Sign in to access the control panel and manage maintenance operations",
