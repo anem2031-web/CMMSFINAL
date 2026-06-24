@@ -101,27 +101,27 @@ export default function Login() {
           {!twoFactorRequired && (
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="username">{(t as any).users?.username ?? "اسم المستخدم"}</Label>
+              <Label htmlFor="username">{(t as any).userManagement?.username ?? "اسم المستخدم"}</Label>
               <Input
                 id="username"
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder={(t as any).users?.username ?? "اسم المستخدم"}
+                placeholder={(t as any).userManagement?.username ?? "اسم المستخدم"}
                 autoComplete="username"
                 autoFocus
                 className="text-right"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password">{(t as any).users?.password ?? "كلمة المرور"}</Label>
+              <Label htmlFor="password">{(t as any).userManagement?.password ?? "كلمة المرور"}</Label>
               <div className="relative">
                 <Input
                   id="password"
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder={(t as any).users?.password ?? "كلمة المرور"}
+                  placeholder={(t as any).userManagement?.password ?? "كلمة المرور"}
                   autoComplete="current-password"
                   className="text-right pl-10"
                 />
