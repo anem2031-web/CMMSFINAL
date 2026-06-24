@@ -19,7 +19,8 @@ import {
   type InsertWarehouseReturn,
   ticketConfirmations,
   type InsertTicketConfirmation,
-  deliveryDocuments
+  deliveryDocuments,
+  deliveryNumberCounter
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
@@ -2118,15 +2119,12 @@ export async function getNextInventoryCode(): Promise<string> {
 
 export async function getNextDeliveryNumber(): Promise<string> {
   const db = await getDb();
-  if (!db) return `DLV-${new Date().getFullYear()}-0001`;
   const year = new Date().getFullYear();
-  const rows = await db.select({ id: purchaseOrderItems.id })
-    .from(purchaseOrderItems)
-    .where(like(purchaseOrderItems.deliveryNumber, `DLV-${year}-%`))
-    .orderBy(desc(purchaseOrderItems.id))
-    .limit(1);
-  const next = rows.length > 0 ? parseInt(rows[0].id.toString()) + 1 : 1;
-  return `DLV-${year}-${String(next).padStart(4, "0")}`;
+  if (!db) return `DLV-${year}-0001`;
+  // نُدرج سجلاً جديداً في جدول العداد — قاعدة البيانات تضمن AUTO_INCREMENT فريداً حتى مع الطلبات المتزامنة
+  const [result] = await db.insert(deliveryNumberCounter).values({ year });
+  const seq = (result as any).insertId as number;
+  return `DLV-${year}-${String(seq).padStart(4, "0")}`;
 }
 
 export async function getNextReturnNumber(): Promise<string> {
