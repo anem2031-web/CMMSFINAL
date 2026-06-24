@@ -53,28 +53,25 @@ async function assertProjectAccess(projectId: number, userId: number, userRole: 
 
 async function generateProjectNumber(db: NonNullable<Awaited<ReturnType<typeof getDb>>>) {
   const year = new Date().getFullYear();
-  // Use MAX id approach to avoid duplicate project numbers
-  const result = await db
-    .select({ maxId: sql<number>`COALESCE(MAX(id), 0)` })
-    .from(constructionProjects);
-  const maxId = Number(result[0]?.maxId ?? 0);
-  // Generate unique number based on timestamp to avoid conflicts
-  const timestamp = Date.now().toString().slice(-4);
-  const num = maxId + 1;
-  const candidate = `PRJ-${year}-${String(num).padStart(4, "0")}`;
   
-  // Check if it already exists and increment if needed
+  // Get all existing project numbers for this year to find next available
   const existing = await db
-    .select({ id: constructionProjects.id })
+    .select({ projectNumber: constructionProjects.projectNumber })
     .from(constructionProjects)
-    .where(eq(constructionProjects.projectNumber, candidate))
-    .limit(1);
-  
-  if (existing[0]) {
-    // Fallback: use timestamp-based number
-    return `PRJ-${year}-${timestamp}`;
+    .where(like(constructionProjects.projectNumber, `PRJ-${year}-%`));
+
+  // Extract sequence numbers and find max
+  let maxSeq = 0;
+  for (const row of existing) {
+    const parts = row.projectNumber?.split("-");
+    if (parts && parts.length === 3) {
+      const seq = parseInt(parts[2], 10);
+      if (!isNaN(seq) && seq > maxSeq) maxSeq = seq;
+    }
   }
-  return candidate;
+
+  const nextSeq = maxSeq + 1;
+  return `PRJ-${year}-${String(nextSeq).padStart(4, "0")}`;
 }
 
 // ── Router ──────────────────────────────────────────────────
