@@ -61,7 +61,7 @@ export const activitiesRouter = router({
     }))
     .mutation(async ({ input, ctx }) => {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB not available" });
-      const [last] = await db.select({ maxOrder: sql<number>`MAX(order_index)` })
+      const [last] = await db.select({ maxOrder: sql<number>`COALESCE(MAX(\`orderIndex\`), -1)` })
         .from(constructionActivities).where(eq(constructionActivities.phaseId, input.phaseId));
 
       const data: InsertConstructionActivity = {
