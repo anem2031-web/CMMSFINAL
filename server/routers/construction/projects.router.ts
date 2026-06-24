@@ -12,7 +12,10 @@ import {
 } from "../../../drizzle/schema";
 
 // ── Helpers ─────────────────────────────────────────────────
-async function assertProjectAccess(projectId: number, userId: number, requireEdit = false) {
+// الأدوار المسموح لها بالوصول لجميع المشاريع
+const CONSTRUCTION_ALLOWED_ROLES = ["owner", "admin", "maintenance_manager", "senior_management"] as const;
+
+async function assertProjectAccess(projectId: number, userId: number, userRole: string, requireEdit = false) {
   const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB not available" });
   const project = await db
     .select()
@@ -21,6 +24,13 @@ async function assertProjectAccess(projectId: number, userId: number, requireEdi
     .limit(1);
   if (!project[0]) throw new TRPCError({ code: "NOT_FOUND", message: "المشروع غير موجود" });
 
+  // الأدوار المحددة ترى جميع المشاريع بدون قيود
+  const isAllowedRole = (CONSTRUCTION_ALLOWED_ROLES as readonly string[]).includes(userRole);
+  if (isAllowedRole) {
+    return { project: project[0], member: null };
+  }
+
+  // باقي الأدوار تحتاج عضوية في المشروع
   const member = await db
     .select()
     .from(constructionProjectMembers)
@@ -32,13 +42,10 @@ async function assertProjectAccess(projectId: number, userId: number, requireEdi
     )
     .limit(1);
 
-  const isOwnerOrManager =
-    Number(project[0].ownerId) === Number(userId) || Number(project[0].managerId) === Number(userId);
-
-  if (!isOwnerOrManager && !member[0]) {
+  if (!member[0]) {
     throw new TRPCError({ code: "FORBIDDEN", message: "ليس لديك صلاحية لهذا المشروع" });
   }
-  if (requireEdit && !isOwnerOrManager && !member[0]?.canEdit) {
+  if (requireEdit && !member[0]?.canEdit) {
     throw new TRPCError({ code: "FORBIDDEN", message: "ليس لديك صلاحية التعديل" });
   }
   return { project: project[0], member: member[0] };
@@ -108,7 +115,7 @@ export const projectsRouter = router({
     .input(z.object({ id: z.number() }))
     .query(async ({ input, ctx }) => {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB not available" });
-      await assertProjectAccess(input.id, ctx.user.id);
+      await assertProjectAccess(input.id, ctx.user.id, ctx.user.role);
 
       const [project] = await db
         .select()
@@ -222,7 +229,7 @@ export const projectsRouter = router({
     .mutation(async ({ input, ctx }) => {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB not available" });
       const { id, ...data } = input;
-      await assertProjectAccess(id, ctx.user.id, true);
+      await assertProjectAccess(id, ctx.user.id, ctx.user.role, true);
       await db.update(constructionProjects).set(data).where(eq(constructionProjects.id, id));
       return { success: true };
     }),
@@ -232,7 +239,7 @@ export const projectsRouter = router({
     .input(z.object({ id: z.number() }))
     .mutation(async ({ input, ctx }) => {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB not available" });
-      const { project } = await assertProjectAccess(input.id, ctx.user.id, true);
+      const { project } = await assertProjectAccess(input.id, ctx.user.id, ctx.user.role, true);
       if (project.ownerId !== ctx.user.id) {
         throw new TRPCError({ code: "FORBIDDEN", message: "فقط مالك المشروع يستطيع الحذف" });
       }
