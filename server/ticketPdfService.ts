@@ -1,13 +1,8 @@
 /**
  * ticketPdfService.ts
  * ============================================================
- * Isolated Ticket Report PDF Generator using Puppeteer + HTML.
- *
- * Generates professional, printable PDF reports for maintenance tickets.
- * Supports full Arabic/English mixed content with RTL layout.
- *
- * Architecture: Completely isolated from React UI.
- * Uses htmlToPdfService for rendering.
+ * Ticket PDF Generator — Single Page A4
+ * تقرير بلاغ الصيانة في صفحة واحدة A4
  * ============================================================
  */
 
@@ -19,13 +14,10 @@ import {
   getSiteById,
   getSections,
   getPurchaseOrders,
-  getAttachments
+  getAttachments,
 } from "./db";
 
-/**
- * ✅ يجلب الصورة مباشرة من التخزين (iDrive e2) بدل HTTP fetch على الدومين
- * هذا يحل مشكلة عدم ظهور الصور في PDF عند النشر على Railway (دومين خارجي/منفذ مختلف)
- */
+/** جلب الصورة من التخزين وتحويلها إلى base64 */
 async function fileKeyToBase64(fileKey: string): Promise<string | null> {
   try {
     const { stream, contentType } = await storageGetStream(fileKey);
@@ -41,7 +33,27 @@ async function fileKeyToBase64(fileKey: string): Promise<string | null> {
   }
 }
 
-// Status labels for display
+/** استرجاع fileKey الصحيح للمرفقات */
+function resolveFileKey(a: any): string {
+  if (a.fileKey && a.fileKey.startsWith("cmms/")) return a.fileKey;
+  try {
+    const url = new URL(a.fileUrl, "http://x");
+    const recovered = url.searchParams.get("key");
+    if (recovered) return decodeURIComponent(recovered);
+  } catch {}
+  return a.fileKey;
+}
+
+function escapeHtml(text: string | null | undefined): string {
+  if (!text) return "—";
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 const STATUS_LABELS: Record<string, string> = {
   open: "مفتوح",
   in_progress: "قيد التنفيذ",
@@ -61,6 +73,13 @@ const PRIORITY_LABELS: Record<string, string> = {
   critical: "حرجة",
 };
 
+const PRIORITY_COLORS: Record<string, string> = {
+  low: "#dcfce7;color:#166534",
+  medium: "#fef9c3;color:#854d0e",
+  high: "#fee2e2;color:#991b1b",
+  critical: "#fce7f3;color:#be185d",
+};
+
 const CATEGORY_LABELS: Record<string, string> = {
   electrical: "كهرباء",
   plumbing: "سباكة",
@@ -72,539 +91,342 @@ const CATEGORY_LABELS: Record<string, string> = {
   other: "أخرى",
 };
 
-const PO_STATUS_LABELS: Record<string, string> = {
-  draft: "مسودة",
-  pending_approval: "بانتظار الاعتماد",
-  approved: "معتمد",
-  quoted: "تم التسعير",
-  funded: "تم التمويل",
-  purchased: "تم الشراء",
-  received: "تم الاستلام",
-  rejected: "مرفوض",
-  cancelled: "ملغي",
-  revision_needed: "يحتاج مراجعة",
-};
-
-/** Escape HTML special characters to prevent XSS in generated report */
-function escapeHtml(text: string | null | undefined): string {
-  if (!text) return "-";
-  return String(text)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 export async function generateTicketPDF(ticketId: number): Promise<Buffer> {
-  // Fetch ticket data
   const ticket = await getTicketById(ticketId);
-
   if (!ticket) throw new Error("Ticket not found");
 
-  console.log("PHOTO URL:", ticket.beforePhotoUrl);
+  // جلب البيانات المرتبطة
+  const reportedBy   = ticket.reportedById ? await getUserById(ticket.reportedById) : null;
+  const assignedTo   = ticket.assignedToId ? await getUserById(ticket.assignedToId) : null;
+  const site         = ticket.siteId ? await getSiteById(ticket.siteId) : null;
+  const allSections  = await getSections(ticket.siteId ?? undefined);
+  const section      = allSections?.find((s: any) => s.id === ticket.sectionId) || null;
 
-  // Enrich with related data
-  const reportedBy = ticket.reportedById ? await getUserById(ticket.reportedById) : null;
-  const assignedTo = ticket.assignedToId ? await getUserById(ticket.assignedToId) : null;
-  const site = ticket.siteId ? await getSiteById(ticket.siteId) : null;
-  const allSections = await getSections(ticket.siteId ?? undefined);
-  const section = allSections?.find((s: any) => s.id === ticket.sectionId) || null;
-  const allPOs = await getPurchaseOrders();
-  const linkedPOs = (allPOs as any[]).filter((po: any) => po.linkedTicketIds?.includes(ticketId)) || [];
+  // جلب الصور (أول 4 فقط للحفاظ على صفحة واحدة)
+  const attachments      = await getAttachments("ticket", ticketId);
+  const imageAttachments = attachments
+    .filter((a: any) => a.mimeType?.startsWith("image/"))
+    .slice(0, 4);
 
-  // Format dates
-  const createdDate = new Date(ticket.createdAt).toLocaleDateString("ar-SA", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-  const closedDate = ticket.closedAt
-    ? new Date(ticket.closedAt).toLocaleDateString("ar-SA", {
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      })
-    : "-";
+  const imageBase64List = await Promise.all(
+    imageAttachments.map((a: any) => fileKeyToBase64(resolveFileKey(a)))
+  );
+  const validImages = imageBase64List.filter(Boolean) as string[];
 
-  // Build PO table rows if any
-  const poRowsHtml =
-    linkedPOs.length > 0
-      ? linkedPOs
-          .map(
-            (po: any, i: number) => `
-        <tr class="${i % 2 === 0 ? "even" : "odd"}">
-          <td>${escapeHtml(po.poNumber)}</td>
-          <td>${escapeHtml(PO_STATUS_LABELS[po.status] || po.status)}</td>
-          <td>${po.totalEstimatedCost ? Number(po.totalEstimatedCost).toLocaleString("ar-SA") + " ر.س" : "-"}</td>
-          <td>${po.totalActualCost ? Number(po.totalActualCost).toLocaleString("ar-SA") + " ر.س" : "-"}</td>
-        </tr>
-      `
-          )
-          .join("")
-      : '<tr><td colspan="4" style="text-align: center; color: #9ca3af;">لا توجد طلبات شراء مرتبطة</td></tr>';
+  // تنسيق التواريخ
+  const fmt = (d: any) =>
+    d ? new Date(d).toLocaleDateString("ar-SA", { year: "numeric", month: "long", day: "numeric" }) : "—";
 
-  // Build HTML document
-const attachments = await getAttachments("ticket", ticketId);
+  const createdDate = fmt(ticket.createdAt);
+  const closedDate  = fmt(ticket.closedAt);
 
-const imageAttachments = attachments.filter((a: any) =>
-  a.mimeType?.startsWith("image/")
-);
+  const priorityStyle = PRIORITY_COLORS[ticket.priority] || "background:#e2e8f0;color:#334155";
+  const statusLabel   = escapeHtml(STATUS_LABELS[ticket.status]   || ticket.status);
+  const priorityLabel = escapeHtml(PRIORITY_LABELS[ticket.priority] || ticket.priority);
+  const categoryLabel = escapeHtml(CATEGORY_LABELS[ticket.category] || ticket.category);
 
-/**
- * ✅ استرجاع fileKey الصحيح للمرفقات القديمة المعطوبة
- * بعض السجلات القديمة خُزِّن فيها fileKey خاطئ (نتيجة خلل سابق في استخراجه من الرابط).
- * fileUrl يبقى دائماً صحيحاً (مثل: /api/media?key=cmms%2Fuploads%2F...)، فنستخرج
- * المفتاح الحقيقي منه كحل بديل عندما يكون fileKey المخزن غير سليم.
- */
-function resolveFileKey(a: any): string {
-  if (a.fileKey && a.fileKey.startsWith("cmms/")) return a.fileKey;
-  try {
-    const url = new URL(a.fileUrl, "http://x");
-    const recovered = url.searchParams.get("key");
-    if (recovered) return decodeURIComponent(recovered);
-  } catch {}
-  return a.fileKey;
-}
+  // بناء شبكة الصور (صفين × عمودين)
+  const photosHtml = validImages.length > 0 ? `
+  <div>
+    <div class="sec-hdr">
+      <div class="sec-num">٢</div>
+      <div class="sec-title">صور البلاغ</div>
+      <div class="sec-line"></div>
+    </div>
+    <div class="photos-grid">
+      ${validImages.map((img, i) => `
+        <div class="photo-item">
+          <img src="${img}" />
+          <div class="photo-caption">صورة ${i + 1}</div>
+        </div>
+      `).join("")}
+    </div>
+  </div>` : "";
 
-const imageBase64List = await Promise.all(
-  imageAttachments.map(async (a: any) =>
-    // ✅ قراءة مباشرة من التخزين عبر fileKey — لا يعتمد على دومين أو منفذ
-    await fileKeyToBase64(resolveFileKey(a))
-  )
-);
+  const sectionNum = validImages.length > 0 ? "٣" : "٢";
+
   const html = `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>تقرير البلاغ - ${escapeHtml(ticket.ticketNumber)}</title>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Arabic:wght@400;700&family=Noto+Sans:wght@400;700&display=swap');
-    
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-    
-    body {
-      font-family: 'Noto Sans Arabic', 'Noto Sans', Arial, sans-serif;
-      font-size: 12px;
-      color: #1e293b;
-      background: #fff;
-      padding: 0;
-      line-height: 1.6;
-      width: 100%;
-      max-width: 100%;
-      overflow-x: hidden; /* حماية إضافية من قص المحتوى عند الأطراف */
-    }
-    
-    /* Header Banner */
-    .header {
-      background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 100%);
-      color: #fff;
-      padding: 20px 24px;
-      margin-bottom: 24px;
-      border-radius: 4px;
-    }
-    
-    .header-title {
-      font-size: 20px;
-      font-weight: 700;
-      margin-bottom: 4px;
-    }
-    
-    .header-subtitle {
-      font-size: 11px;
-      color: #bfdbfe;
-    }
-    
-    .header-meta {
-      display: flex;
-      justify-content: space-between;
-      margin-top: 12px;
-      font-size: 10px;
-      color: #dbeafe;
-    }
-    
-    /* Status Badge */
-    .status-badge {
-      display: inline-block;
-      padding: 4px 12px;
-      border-radius: 20px;
-      font-weight: 700;
-      font-size: 11px;
-      margin-inline-start: 8px;
-    }
-    
-    .status-open { background: #dbeafe; color: #1e40af; }
-    .status-in_progress { background: #fed7aa; color: #92400e; }
-    .status-closed { background: #dcfce7; color: #166534; }
-    .status-pending_approval { background: #fce7f3; color: #be185d; }
-    .status-revision_needed { background: #fecaca; color: #991b1b; }
-    
-    /* Section Header */
-    .section-header {
-      background: #1e40af;
-      color: #fff;
-      padding: 10px 16px;
-      font-size: 13px;
-      font-weight: 700;
-      margin: 20px 0 12px 0;
-      border-radius: 3px;
-    }
-    
-    /* Info Grid */
-    .info-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-      margin-bottom: 16px;
-    }
-    
-    .info-box {
-      border: 1px solid #e2e8f0;
-      border-radius: 4px;
-      padding: 12px;
-      background: #f8fafc;
-    }
-    
-    .info-box h3 {
-      font-size: 12px;
-      font-weight: 700;
-      color: #1e40af;
-      margin-bottom: 8px;
-      border-bottom: 1px solid #cbd5e1;
-      padding-bottom: 6px;
-    }
-    
-    .info-row {
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 6px;
-      font-size: 11px;
-    }
-    
-    .info-label {
-      font-weight: 700;
-      color: #4b5563;
-      min-width: 100px;
-    }
-    
-    .info-value {
-      color: #1e293b;
-      text-align: start;
-      unicode-bidi: plaintext;
-      direction: auto;
-    }
-    
-    /* Content Block */
-    .content-block {
-      margin-bottom: 16px;
-    }
-    
-    .content-label {
-      font-weight: 700;
-      color: #4b5563;
-      font-size: 11px;
-      margin-bottom: 6px;
-      display: block;
-    }
-    
-    .content-text {
-      background: #f1f5f9;
-      padding: 10px 12px;
-      border-right: 3px solid #1e40af;
-      border-radius: 3px;
-      font-size: 11px;
-      color: #1e293b;
-      line-height: 1.5;
-      text-align: start;
-      unicode-bidi: plaintext;
-      direction: auto;
-    }
-    
-    /* Table */
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 8px;
-      font-size: 11px;
-    }
-    
-    thead tr {
-      background: #1e40af;
-      color: #fff;
-    }
-    
-    thead th {
-      padding: 8px 6px;
-      text-align: center;
-      font-weight: 700;
-      border: 1px solid #1e3a8a;
-    }
-    
-    tbody tr.even { background: #f8fafc; }
-    tbody tr.odd { background: #fff; }
-    
-    tbody td {
-      padding: 7px 6px;
-      border: 1px solid #e2e8f0;
-      text-align: center;
-    }
-    
-    /* Footer */
-    .footer {
-      margin-top: 24px;
-      padding-top: 12px;
-      border-top: 1px solid #e2e8f0;
-      font-size: 9px;
-      color: #64748b;
-      text-align: center;
-    }
+<meta charset="UTF-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
 
-.photos-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  margin-bottom: 20px;
-}
+  @page { size: A4; margin: 0; }
 
-.photo-item {
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  overflow: hidden;
-  background: #fff;
-  padding: 6px;
-  page-break-inside: avoid;
-}
-
-.photo-item img {
-  width: 100%;
-  height: 220px;
-  object-fit: cover;
-  border-radius: 4px;
-}
-
-.inspection-box {
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  padding: 16px;
-  margin-bottom: 24px;
-  min-height: 220px;
-}
-
-.inspection-line {
-  border-bottom: 1px dashed #94a3b8;
-  height: 32px;
-}
-
-.inspection-signatures {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 32px;
-  gap: 16px;
-}
-
-    /* Print-specific adjustments */
-@page {
-  size: A4;
-}
-
-@media print {
-  html,
   body {
-    width: 100%;
-    margin: 0;
-    padding: 0;
+    font-family: Arial, sans-serif;
+    font-size: 12.5px;
+    color: #1e293b;
     background: #fff;
+    width: 210mm;
+    height: 297mm;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
 
+  /* ── HEADER ── */
   .header {
-    page-break-after: avoid;
+    background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+    color: #fff;
+    padding: 11px 18px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .header-title { font-size: 15px; font-weight: 900; }
+  .header-sub { font-size: 10.6px; color: #bfdbfe; margin-top: 2px; }
+  .ticket-number {
+    background: rgba(255,255,255,0.15);
+    border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 6px;
+    padding: 5px 13px;
+    text-align: center;
+  }
+  .ticket-number .label { font-size: 9.9px; color: #bfdbfe; }
+  .ticket-number .value { font-size: 14px; font-weight: 900; letter-spacing: 1px; }
+
+  /* ── STATUS BAR ── */
+  .status-bar {
+    background: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 5px 18px;
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 9px; border-radius: 20px;
+    font-size: 10.6px; font-weight: 700;
+  }
+  .pill-status { background: #dbeafe; color: #1e40af; }
+  .meta { font-size: 10.6px; color: #64748b; }
+  .meta b { color: #334155; }
+
+  /* ── CONTENT ── */
+  .content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 8px 18px 6px;
+    gap: 6px;
+    overflow: hidden;
   }
 
-  .section-header {
-    page-break-after: avoid;
+  /* ── SECTION HEADER ── */
+  .sec-hdr { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
+  .sec-num {
+    width: 20px; height: 20px;
+    background: #1e40af; color: #fff;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10.6px; font-weight: 900; flex-shrink: 0;
+  }
+  .sec-title { font-size: 13.2px; font-weight: 800; color: #1e3a8a; }
+  .sec-line { flex: 1; height: 1px; background: #e2e8f0; }
+
+  /* ── MERGED BLOCK (القسمان 1+2 بدون فراغ) ── */
+  .merged-block {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .merged-inner { display: grid; grid-template-columns: 1fr 1fr; }
+  .info-col { padding: 7px 10px; }
+  .info-col:first-child { border-left: 1px solid #e2e8f0; }
+  .info-col-title {
+    font-size: 11.3px; font-weight: 800; color: #1e40af;
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 3px; margin-bottom: 4px;
+  }
+  .info-row { display: flex; justify-content: space-between; margin-bottom: 2.5px; font-size: 11.3px; }
+  .info-label { font-weight: 700; color: #64748b; }
+  .info-value { color: #1e293b; }
+  .desc-row {
+    border-top: 1px solid #e2e8f0;
+    padding: 6px 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .desc-label { font-size: 10.6px; font-weight: 700; color: #64748b; margin-bottom: 3px; }
+  .desc-text {
+    background: #fff;
+    border-right: 2.5px solid #1e40af;
+    border-radius: 3px;
+    padding: 4px 8px;
+    font-size: 11.3px;
+    color: #334155;
+    line-height: 1.45;
   }
 
-  table,
-  .info-box,
-  .content-block,
-  .inspection-box,
-  .photo-item {
-    page-break-inside: avoid;
+  /* ── PHOTOS ── */
+  .photos-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 5px;
   }
+  .photo-item { border: 1px solid #e2e8f0; border-radius: 5px; overflow: hidden; }
+  .photo-item img { width: 100%; height: 140px; object-fit: contain; display: block; background: #f8fafc; }
+  .photo-caption { font-size: 9.3px; color: #64748b; text-align: center; padding: 2px 0; background: #f8fafc; }
 
-  img {
-    max-width: 100%;
-    display: block;
+  /* ── FIELD BOX (القسم الميداني) ── */
+  .field-box {
+    background: #fff;
+    border: 1.5px solid #1e40af;
+    border-radius: 7px;
+    padding: 6px 10px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
   }
-}
-  </style>
+  .field-title {
+    font-size: 13.2px; font-weight: 900; color: #1e3a8a;
+    padding-bottom: 4px;
+    border-bottom: 1.5px dashed #cbd5e1;
+    margin-bottom: 5px;
+  }
+  .write-lines { flex: 1; display: flex; flex-direction: column; gap: 0; }
+  .write-line { border-bottom: 1px dashed #94a3b8; height: 17.6px; }
+  .signatures {
+    display: flex; justify-content: space-between;
+    margin-top: 6px; padding-top: 5px;
+    border-top: 1px solid #e2e8f0; gap: 10px;
+  }
+  .sig-item { flex: 1; text-align: center; }
+  .sig-label { font-size: 9.9px; font-weight: 700; color: #64748b; display: block; margin-bottom: 11px; }
+  .sig-line { border-bottom: 1.5px solid #334155; width: 80%; margin: 0 auto; }
+
+  /* ── FOOTER ── */
+  .footer {
+    background: #f1f5f9;
+    border-top: 1px solid #e2e8f0;
+    padding: 4px 18px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .footer-text { font-size: 7px; color: #94a3b8; }
+  .footer-logo { font-size: 11.3px; font-weight: 900; color: #1e40af; }
+</style>
 </head>
 <body>
-  <!-- Header -->
-  <div class="header">
-    <div class="header-title">
-      تقرير بلاغ الصيانة
-      <span class="status-badge status-${ticket.status}">
-        ${escapeHtml(STATUS_LABELS[ticket.status] || ticket.status)}
-      </span>
-    </div>
-    <div class="header-subtitle">نظام إدارة الصيانة المركزية (CMMS)</div>
-    <div class="header-meta">
-      <span>رقم البلاغ: ${escapeHtml(ticket.ticketNumber)}</span>
-      <span>تاريخ الإنشاء: ${createdDate}</span>
-    </div>
-  </div>
 
-  <!-- Section 1: Ticket Details -->
-  <div class="section-header">1. تفاصيل البلاغ</div>
-  <div class="info-grid">
-    <div class="info-box">
-      <h3>معلومات عامة</h3>
-      <div class="info-row">
-        <span class="info-label">الحالة:</span>
-        <span class="info-value">${escapeHtml(STATUS_LABELS[ticket.status] || ticket.status)}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">الأولوية:</span>
-        <span class="info-value">${escapeHtml(PRIORITY_LABELS[ticket.priority] || ticket.priority)}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">الفئة:</span>
-        <span class="info-value">${escapeHtml(CATEGORY_LABELS[ticket.category] || ticket.category)}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">تاريخ الإغلاق:</span>
-        <span class="info-value">${closedDate}</span>
-      </div>
-    </div>
-    
-    <div class="info-box">
-      <h3>الموقع والأطراف</h3>
-      <div class="info-row">
-        <span class="info-label">الموقع:</span>
-        <span class="info-value">${escapeHtml(site?.name || ticket.locationDetail || "-")}</span>
-      </div>
-      ${section ? `
-      <div class="info-row">
-        <span class="info-label">القسم:</span>
-        <span class="info-value">${escapeHtml(section.name)}</span>
-      </div>
-      ` : ""}
-      <div class="info-row">
-        <span class="info-label">مقدم البلاغ:</span>
-        <span class="info-value">${escapeHtml(reportedBy?.name || "-")}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">الفني المسند:</span>
-        <span class="info-value">${escapeHtml(assignedTo?.name || "-")}</span>
-      </div>
-    </div>
+<!-- HEADER -->
+<div class="header">
+  <div>
+    <div class="header-title">تقرير بلاغ الصيانة</div>
+    <div class="header-sub">نظام إدارة الصيانة المركزية · CMMS</div>
   </div>
-
-  <!-- Section 2: Problem Description -->
-  <div class="section-header">2. وصف المشكلة</div>
-  <div class="content-block">
-    <span class="content-label">العنوان:</span>
-    <div class="content-text">${escapeHtml(ticket.title)}</div>
+  <div class="ticket-number">
+    <div class="label">رقم البلاغ</div>
+    <div class="value">${escapeHtml(ticket.ticketNumber)}</div>
   </div>
-  <div class="content-block">
-    <span class="content-label">الوصف التفصيلي:</span>
-    <div class="content-text">${escapeHtml(ticket.description || "لا يوجد وصف إضافي")}</div>
-  </div>
-
-<!-- Section 3: Ticket Photos -->
-${imageBase64List.length > 0 ? `
-<div class="section-header">3. صور البلاغ</div>
-
-<div class="photos-grid">
-  ${imageBase64List
-    .filter(Boolean)
-    .map((img) => `
-      <div class="photo-item">
-        <img src="${img}" />
-      </div>
-    `)
-    .join("")}
 </div>
-` : ""}
 
-  <!-- Section 4: Inspection Result -->
-  <div class="section-header">4. تسجيل نتيجة الفحص</div>
+<!-- STATUS BAR -->
+<div class="status-bar">
+  <span class="pill pill-status">● ${statusLabel}</span>
+  <span class="pill" style="background:${priorityStyle};">▲ ${priorityLabel}</span>
+  <span class="pill" style="background:#f0fdf4;color:#166534;">✦ ${categoryLabel}</span>
+  <span class="meta">الإنشاء: <b>${createdDate}</b></span>
+  <span class="meta">الإغلاق: <b>${closedDate}</b></span>
+</div>
 
-  <div class="inspection-box">
-    <div class="inspection-line"></div>
-    <div class="inspection-line"></div>
-    <div class="inspection-line"></div>
-    <div class="inspection-line"></div>
-    <div class="inspection-line"></div>
+<!-- CONTENT -->
+<div class="content">
 
-    <div class="inspection-signatures">
-      <div>
-        <strong>اسم الفني:</strong>
+  <!-- القسم 1: تفاصيل البلاغ + وصف المشكلة (مدمجان) -->
+  <div>
+    <div class="sec-hdr">
+      <div class="sec-num">١</div>
+      <div class="sec-title">تفاصيل البلاغ ووصف المشكلة</div>
+      <div class="sec-line"></div>
+    </div>
+    <div class="merged-block">
+      <div class="merged-inner">
+        <div class="info-col">
+          <div class="info-col-title">معلومات عامة</div>
+          <div class="info-row"><span class="info-label">الحالة</span><span class="info-value">${statusLabel}</span></div>
+          <div class="info-row"><span class="info-label">الأولوية</span><span class="info-value">${priorityLabel}</span></div>
+          <div class="info-row"><span class="info-label">الفئة</span><span class="info-value">${categoryLabel}</span></div>
+          <div class="info-row"><span class="info-label">تاريخ الإغلاق</span><span class="info-value">${closedDate}</span></div>
+        </div>
+        <div class="info-col">
+          <div class="info-col-title">الموقع والأطراف</div>
+          <div class="info-row"><span class="info-label">الموقع</span><span class="info-value">${escapeHtml(site?.name || ticket.locationDetail)}</span></div>
+          ${section ? `<div class="info-row"><span class="info-label">القسم</span><span class="info-value">${escapeHtml(section.name)}</span></div>` : ""}
+          <div class="info-row"><span class="info-label">مقدم البلاغ</span><span class="info-value">${escapeHtml(reportedBy?.name)}</span></div>
+          <div class="info-row"><span class="info-label">الفني المسند</span><span class="info-value">${escapeHtml(assignedTo?.name)}</span></div>
+        </div>
       </div>
-
-      <div>
-        <strong>التوقيع:</strong>
-      </div>
-
-      <div>
-        <strong>التاريخ:</strong>
+      <div class="desc-row">
+        <div>
+          <div class="desc-label">العنوان</div>
+          <div class="desc-text">${escapeHtml(ticket.title)}</div>
+        </div>
+        <div>
+          <div class="desc-label">الوصف التفصيلي</div>
+          <div class="desc-text">${escapeHtml(ticket.description || "لا يوجد وصف إضافي")}</div>
+        </div>
       </div>
     </div>
   </div>
 
-  <!-- Section 5: Work Execution Details -->
-  ${ticket.inspectionNotes || ticket.repairNotes || ticket.materialsUsed ? `
-  <div class="section-header">5. تفاصيل التنفيذ</div>
+  <!-- القسم 2: صور البلاغ (إن وجدت) -->
+  ${photosHtml}
 
-  ${ticket.inspectionNotes ? `
-  <div class="content-block">
-    <span class="content-label">ملاحظات الفحص:</span>
-    <div class="content-text">${escapeHtml(ticket.inspectionNotes)}</div>
+  <!-- القسم الميداني -->
+  <div class="sec-hdr">
+    <div class="sec-num">${sectionNum}</div>
+    <div class="sec-title">تسجيل نتيجة الفحص الميداني</div>
+    <div class="sec-line"></div>
   </div>
-  ` : ""}
 
-  ${ticket.repairNotes ? `
-  <div class="content-block">
-    <span class="content-label">ملاحظات الإصلاح:</span>
-    <div class="content-text">${escapeHtml(ticket.repairNotes)}</div>
+  <div class="field-box">
+    <div class="field-title">📋 ملاحظات الفني — تُكتب بعد الفحص في الموقع</div>
+    <div class="write-lines">
+      <div class="write-line"></div>
+      <div class="write-line"></div>
+      <div class="write-line"></div>
+      <div class="write-line"></div>
+      <div class="write-line"></div>
+    </div>
+    <div class="signatures">
+      <div class="sig-item">
+        <span class="sig-label">اسم الفني</span>
+        <div class="sig-line"></div>
+      </div>
+      <div class="sig-item">
+        <span class="sig-label">التوقيع</span>
+        <div class="sig-line"></div>
+      </div>
+      <div class="sig-item">
+        <span class="sig-label">التاريخ</span>
+        <div class="sig-line"></div>
+      </div>
+      <div class="sig-item">
+        <span class="sig-label">توقيع المشرف</span>
+        <div class="sig-line"></div>
+      </div>
+    </div>
   </div>
-  ` : ""}
-  ${ticket.materialsUsed ? `
-  <div class="content-block">
-    <span class="content-label">المواد والمهمات المستخدمة:</span>
-    <div class="content-text">${escapeHtml(ticket.materialsUsed)}</div>
-  </div>
-  ` : ""}
-  ` : ""}
 
-  <!-- Section 4: Linked Purchase Orders -->
-  ${linkedPOs.length > 0 ? `
-  <div class="section-header">4. طلبات الشراء المرتبطة</div>
-  <table>
-    <thead>
-      <tr>
-        <th>رقم الطلب</th>
-        <th>الحالة</th>
-        <th>التكلفة التقديرية</th>
-        <th>التكلفة الفعلية</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${poRowsHtml}
-    </tbody>
-  </table>
-  ` : ""}
+</div>
 
-  <!-- Footer -->
-  <div class="footer">
-    تم إنشاء هذا التقرير آلياً من نظام إدارة الصيانة المركزية (CMMS) بتاريخ ${new Date().toLocaleDateString("ar-SA")} الساعة ${new Date().toLocaleTimeString("ar-SA")}
-  </div>
+<!-- FOOTER -->
+<div class="footer">
+  <div class="footer-text">تم إنشاؤه آلياً · CMMS · ${new Date().toLocaleDateString("ar-SA")} — ${new Date().toLocaleTimeString("ar-SA")}</div>
+  <div class="footer-logo">CMMS ⬡</div>
+</div>
+
 </body>
 </html>`;
 
