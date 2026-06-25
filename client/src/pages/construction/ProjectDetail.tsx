@@ -21,6 +21,7 @@ const ProjectWhiteboard = lazy(() => import("./ProjectWhiteboard"));
 const ProjectMindMap = lazy(() => import("./ProjectMindMap"));
 import ProjectAutomations from "./ProjectAutomations";
 import PhaseManager from "../../components/construction/PhaseManager";
+import ConstructionDetailModal from "../../components/construction/ConstructionDetailModal";
 
 const statusColors: Record<string, string> = {
   planning:  "bg-slate-100 text-slate-700",
@@ -39,6 +40,8 @@ export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("overview");
+  const [showProjectDetail, setShowProjectDetail] = useState(false);
+  const utils = trpc.useUtils();
   const projectId = Number(id);
 
   const { data: project, isLoading } = trpc.construction.projects.getById.useQuery(
@@ -109,11 +112,11 @@ export default function ProjectDetail() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => navigate(`/construction/projects/${projectId}/edit`)}
+              onClick={() => setShowProjectDetail(true)}
               className="gap-2 flex-shrink-0"
             >
               <Pencil className="w-3.5 h-3.5" />
-              تعديل
+              تفاصيل المشروع
             </Button>
           </div>
 
@@ -216,7 +219,7 @@ export default function ProjectDetail() {
         </TabsContent>
 
         <TabsContent value="structure" className="mt-4">
-          <PhaseManager projectId={projectId} />
+          <PhaseManager projectId={projectId} projectName={project.name} />
         </TabsContent>
 
         <TabsContent value="whiteboard" className="mt-4">
@@ -514,6 +517,19 @@ function ReportsTab({ projectId }: { projectId: number }) {
           </div>
         </CardContent>
       </Card>
+
+      {/* Project Detail Modal */}
+      {showProjectDetail && project && (
+        <ConstructionDetailModal
+          open={showProjectDetail}
+          onClose={() => setShowProjectDetail(false)}
+          type="project"
+          id={projectId}
+          projectId={projectId}
+          breadcrumb={[{ label: project.name, type: "project" }]}
+          onUpdated={() => utils.construction.projects.getById.invalidate({ id: projectId })}
+        />
+      )}
     </div>
   );
 }

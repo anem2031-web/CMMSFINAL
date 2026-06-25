@@ -79,6 +79,11 @@ export const phasesRouter = router({
       startDatePlanned: z.string().optional(),
       endDatePlanned: z.string().optional(),
       budgetPlanned: z.string().optional(),
+      laborCost: z.string().optional(),
+      issueLevel: z.enum(["low", "medium", "high", "critical"]).optional(),
+      tags: z.array(z.string()).optional(),
+      checklist: z.array(z.object({ id: z.string(), text: z.string(), done: z.boolean() })).optional(),
+      attachments: z.array(z.object({ name: z.string(), url: z.string(), uploadedAt: z.string() })).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB not available" });
@@ -108,6 +113,11 @@ export const phasesRouter = router({
       endDateActual: z.string().optional(),
       budgetPlanned: z.string().optional(),
       budgetActual: z.string().optional(),
+      laborCost: z.string().optional(),
+      issueLevel: z.enum(["low", "medium", "high", "critical"]).nullable().optional(),
+      tags: z.array(z.string()).optional(),
+      checklist: z.array(z.object({ id: z.string(), text: z.string(), done: z.boolean() })).optional(),
+      attachments: z.array(z.object({ name: z.string(), url: z.string(), uploadedAt: z.string() })).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB not available" });

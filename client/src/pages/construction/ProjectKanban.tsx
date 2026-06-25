@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, Clock, AlertTriangle, User, Paperclip, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
-import TaskDetailModal from "../../components/construction/TaskDetailModal";
+import ConstructionDetailModal from "../../components/construction/ConstructionDetailModal";
 import HoldReasonModal from "../../components/construction/HoldReasonModal";
 import TaskForm from "../../components/construction/TaskForm";
 
@@ -211,12 +211,17 @@ export default function ProjectKanban({ projectId }: { projectId: number }) {
       </div>
 
       {/* Task Detail Modal */}
-      {selectedTaskId !== null && (
-        <TaskDetailModal
-          taskId={selectedTaskId === -1 ? null : selectedTaskId}
+      {selectedTaskId !== null && selectedTaskId !== -1 && (
+        <ConstructionDetailModal
+          open={true}
+          type="task"
+          id={selectedTaskId}
           projectId={projectId}
+          breadcrumb={[{ label: "المشروع", type: "project" }]}
           onClose={() => setSelectedTaskId(null)}
-          onStatusChange={(taskId: number, status: string) => handleStatusChange(taskId, status as Status)}
+          onUpdated={() => {
+            utils.construction.tasks.kanban.invalidate({ projectId });
+          }}
         />
       )}
 
