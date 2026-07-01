@@ -1,5 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import { InventoryItemCard } from "@/components/InventoryItemCard";
+import BarcodeScanner from "@/components/BarcodeScanner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,7 @@ export default function Inventory() {
   const [deliverQty, setDeliverQty] = useState("");
   const [deliverToId, setDeliverToId] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchMode, setSearchMode] = useState<"name" | "code" | "qr">("name");
   const [sortBy, setSortBy] = useState<"recent" | "name" | "quantity">("recent");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -82,9 +84,15 @@ export default function Inventory() {
     .filter((item: any) => {
       if (!searchQuery.trim()) return true;
       const q = searchQuery.trim().toLowerCase();
+      if (searchMode === "code" || searchMode === "qr") {
+        return (
+          String(item.internalCode ?? "").toLowerCase().includes(q) ||
+          String(item.manufacturerBarcode ?? "").toLowerCase().includes(q)
+        );
+      }
       const haystack = [
-        item.itemName, item.description, item.quantity, item.unit,
-        item.location, item.manufacturerBarcode, item.invoiceDate,
+        item.itemName, item.description, item.unit,
+        item.location, item.invoiceDate,
       ].filter(Boolean).join(" ").toLowerCase();
       return haystack.includes(q);
     })
@@ -158,23 +166,51 @@ export default function Inventory() {
         </Card>
       </div>
 
-      {/* خانة البحث التزايدي + الترتيب + فلتر التاريخ */}
+      {/* خانة البحث الذكية + الترتيب + فلتر التاريخ */}
       <div className="flex flex-col md:flex-row gap-2">
-        <div className="relative flex-1">
-          <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            placeholder="بحث في الأصناف..."
-            className="pr-9 pl-9"
-          />
-          {searchQuery && (
-            <button
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              onClick={() => setSearchQuery("")}
-            >
-              <X className="w-4 h-4" />
-            </button>
+        <div className="flex-1 space-y-1.5">
+          {/* أزرار طريقة البحث */}
+          <div className="flex gap-1.5">
+            <Button size="sm" variant={searchMode === "name" ? "default" : "outline"} onClick={() => { setSearchMode("name"); setSearchQuery(""); }} className="gap-1 h-7 text-xs">
+              <Search className="w-3 h-3" /> بالاسم
+            </Button>
+            <Button size="sm" variant={searchMode === "code" ? "default" : "outline"} onClick={() => { setSearchMode("code"); setSearchQuery(""); }} className="gap-1 h-7 text-xs">
+              <QrCode className="w-3 h-3" /> بالرقم
+            </Button>
+            <Button size="sm" variant={searchMode === "qr" ? "default" : "outline"} onClick={() => { setSearchMode("qr"); setSearchQuery(""); }} className="gap-1 h-7 text-xs">
+              <QrCode className="w-3 h-3" /> QR Code
+            </Button>
+            {searchQuery && (
+              <Button size="sm" variant="ghost" className="h-7 text-xs text-muted-foreground" onClick={() => { setSearchQuery(""); setSearchMode("name"); }}>
+                <X className="w-3 h-3" />
+              </Button>
+            )}
+          </div>
+
+          {/* QR Scanner أو خانة نصية */}
+          {searchMode === "qr" ? (
+            <BarcodeScanner
+              onScan={(code) => {
+                setSearchQuery(code);
+                setSearchMode("code");
+              }}
+              placeholder="امسح QR Code الصنف..."
+            />
+          ) : (
+            <div className="relative">
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder={searchMode === "name" ? "بحث باسم الصنف..." : "بحث برقم الصنف أو الباركود..."}
+                className="pr-9 pl-9"
+              />
+              {searchQuery && (
+                <button className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setSearchQuery("")}>
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           )}
         </div>
 
