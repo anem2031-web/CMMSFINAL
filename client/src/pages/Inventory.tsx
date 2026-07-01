@@ -462,9 +462,12 @@ export default function Inventory() {
                 <div style={{ flexShrink: 0 }}>
                   <BarcodeQRCanvas value={printBarcode.manufacturerBarcode} size={110} />
                 </div>
-                <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "flex-end", justifyContent: "center", overflow: "hidden", paddingRight: "2px" }}>
-                  <span style={{ fontFamily: "monospace", fontWeight: "bold", fontSize: "14px", color: "#000", textAlign: "right", direction: "ltr" }}>
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "flex-end", justifyContent: "center", overflow: "hidden", paddingRight: "2px", gap: "3px" }}>
+                  <span style={{ fontFamily: "monospace", fontWeight: "bold", fontSize: "13px", color: "#000", textAlign: "right", direction: "ltr" }}>
                     {printBarcode.manufacturerBarcode}
+                  </span>
+                  <span style={{ fontSize: "10px", color: "#222", textAlign: "right", direction: "rtl", lineHeight: "1.3", wordBreak: "break-word", maxWidth: "100%" }}>
+                    {printBarcode.itemName}
                   </span>
                 </div>
               </div>
