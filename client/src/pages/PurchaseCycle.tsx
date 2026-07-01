@@ -476,6 +476,27 @@ export default function PurchaseCycle() {
     });
   };
 
+  // ── دالة فلترة التسليم — تحترم وضع البحث (اسم / رقم / QR) ──
+  const filterDeliveryItems = (items: any[], search: string) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(item => {
+      if (deliverySearchMode === "code" || deliverySearchMode === "qr") {
+        // بالرقم أو QR: يبحث في الكود الداخلي وباركود المصنع فقط
+        return (
+          String(item.internalCode ?? "").toLowerCase().includes(q) ||
+          String(item.manufacturerBarcode ?? "").toLowerCase().includes(q)
+        );
+      }
+      // بالاسم: يبحث في اسم الصنف (عربي/إنجليزي)
+      return (
+        String(item.itemName ?? "").toLowerCase().includes(q) ||
+        String(item.itemName_ar ?? "").toLowerCase().includes(q) ||
+        String(item.itemName_en ?? "").toLowerCase().includes(q)
+      );
+    });
+  };
+
   // ── مكوّن الصفحات ───────────────────────────────────────────
   const StepIndicator = ({ currentStep }: { currentStep: number }) => {
     const steps = [
@@ -1010,7 +1031,7 @@ export default function PurchaseCycle() {
               </div>
             )}
           </div>
-          {filterItems(inventoryItems as any[], searchDelivery, dateFrom, dateTo).length === 0 ? (
+          {filterDeliveryItems(inventoryItems as any[], searchDelivery).length === 0 ? (
             <Card><CardContent className="p-8 text-center text-muted-foreground">
               <CheckCircle2 className="w-10 h-10 mx-auto mb-3 text-green-500" />
               <p className="font-medium">{t.purchaseOrders.noItemsPending}</p>
@@ -1018,7 +1039,7 @@ export default function PurchaseCycle() {
             </CardContent></Card>
           ) : (
             <><div className="space-y-3">
-              {filterItems(inventoryItems as any[], searchDelivery, dateFrom, dateTo).slice((pageDelivery-1)*PAGE_SIZE, pageDelivery*PAGE_SIZE).map((item: any) => (
+              {filterDeliveryItems(inventoryItems as any[], searchDelivery).slice((pageDelivery-1)*PAGE_SIZE, pageDelivery*PAGE_SIZE).map((item: any) => (
                 <Card key={item.id} className="hover:shadow-md transition-shadow">
                   <CardContent className="p-4">
                     <div className="flex items-start justify-between gap-3">
@@ -1077,7 +1098,7 @@ export default function PurchaseCycle() {
 
 
             </div>
-            <Pagination total={filterItems(inventoryItems as any[], searchDelivery, dateFrom, dateTo).length} page={pageDelivery} setPage={setPageDelivery} /></>)}
+            <Pagination total={filterDeliveryItems(inventoryItems as any[], searchDelivery).length} page={pageDelivery} setPage={setPageDelivery} /></>)}
         </TabsContent>
 
         {/* ==================== TAB 5: Delivery Documents ==================== */}
