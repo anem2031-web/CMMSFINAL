@@ -1055,6 +1055,7 @@ list: protectedProcedure.input(z.object({
         inv.unit,
         inv.averageCost,
         inv.internalCode,
+        inv.manufacturerBarcode,
         inv.receiptId,
         wr.purchaseOrderId,
         wr.receiptNumber,
