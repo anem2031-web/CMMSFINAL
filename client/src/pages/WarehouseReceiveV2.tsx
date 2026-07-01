@@ -1042,12 +1042,14 @@ function BarcodesPrintScreen({ items, onDone }: { items: any[]; onDone: () => vo
             <div style={{ flexShrink: 0 }}>
               <QRCodeCanvas value={item.manufacturerBarcode || item.internalCode || String(idx)} size={110} />
             </div>
-            {/* الرقم على اليمين */}
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "flex-end", justifyContent: "center", overflow: "hidden", paddingRight: "2px" }}>
-              <span style={{ fontFamily: "monospace", fontWeight: "bold", fontSize: "14px", color: "#000", textAlign: "right", direction: "ltr" }}>
+            {/* الرقم + اسم الصنف على اليمين */}
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "flex-end", justifyContent: "center", overflow: "hidden", paddingRight: "2px", gap: "3px" }}>
+              <span style={{ fontFamily: "monospace", fontWeight: "bold", fontSize: "13px", color: "#000", textAlign: "right", direction: "ltr" }}>
                 {item.manufacturerBarcode || item.internalCode}
               </span>
-
+              <span style={{ fontSize: "10px", color: "#222", textAlign: "right", direction: "rtl", lineHeight: "1.3", wordBreak: "break-word", maxWidth: "100%" }}>
+                {item.itemName}
+              </span>
             </div>
           </div>
         ))}
