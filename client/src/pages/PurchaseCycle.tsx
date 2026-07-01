@@ -11,10 +11,12 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { TechnicianCombobox } from "@/components/TechnicianCombobox";
+import BarcodeScanner from "@/components/BarcodeScanner";
 import {
   ShoppingCart, Package, Truck, CheckCircle2, Camera, Loader2,
   Clock, ArrowLeft, ArrowRight, Image as ImageIcon, FileText,
-  AlertCircle, User, Hash, Calendar, Ban, Archive, Sparkles
+  AlertCircle, User, Hash, Calendar, Ban, Archive, Sparkles,
+  Search, QrCode, X
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
@@ -439,6 +441,7 @@ export default function PurchaseCycle() {
   const [searchPurchase,   setSearchPurchase]   = useState("");
   const [searchWarehouse,  setSearchWarehouse]  = useState("");
   const [searchDelivery,   setSearchDelivery]   = useState("");
+  const [deliverySearchMode, setDeliverySearchMode] = useState<"name" | "code" | "qr">("name");
   const [searchDocs,       setSearchDocs]       = useState("");
 
   const [dateFrom, setDateFrom] = useState("");
@@ -967,7 +970,46 @@ export default function PurchaseCycle() {
         {/* ==================== TAB 3: Delivery to Assigned Technician ==================== */}
         <TabsContent value="delivery" className="mt-4 space-y-4">
           <StepIndicator currentStep={3} />
-          <FilterBar search={searchDelivery} setSearch={v => { setSearchDelivery(v); setPageDelivery(1); }} from={dateFrom} setFrom={v => { setDateFrom(v); setPageDelivery(1); }} to={dateTo} setTo={v => { setDateTo(v); setPageDelivery(1); }} placeholder="بحث في أصناف التسليم..." />
+
+          {/* ── خانة البحث الذكية ── */}
+          <div className="space-y-2 p-3 border rounded-lg bg-muted/20">
+            <div className="flex gap-2">
+              <Button size="sm" variant={deliverySearchMode === "name" ? "default" : "outline"} onClick={() => setDeliverySearchMode("name")} className="gap-1">
+                <Search className="w-3.5 h-3.5" /> بالاسم
+              </Button>
+              <Button size="sm" variant={deliverySearchMode === "code" ? "default" : "outline"} onClick={() => setDeliverySearchMode("code")} className="gap-1">
+                <Package className="w-3.5 h-3.5" /> بالرقم
+              </Button>
+              <Button size="sm" variant={deliverySearchMode === "qr" ? "default" : "outline"} onClick={() => setDeliverySearchMode("qr")} className="gap-1">
+                <QrCode className="w-3.5 h-3.5" /> QR Code
+              </Button>
+              {searchDelivery && (
+                <Button size="sm" variant="ghost" className="text-muted-foreground mr-auto" onClick={() => { setSearchDelivery(""); setDeliverySearchMode("name"); }}>
+                  <X className="w-3.5 h-3.5" />
+                </Button>
+              )}
+            </div>
+
+            {deliverySearchMode === "qr" ? (
+              <BarcodeScanner
+                onScan={(code) => {
+                  setSearchDelivery(code);
+                  setDeliverySearchMode("name");
+                }}
+                placeholder="امسح QR Code الصنف..."
+              />
+            ) : (
+              <div className="relative">
+                <input
+                  className="w-full border rounded-md px-3 py-1.5 text-sm pr-8 focus:outline-none focus:ring-1 focus:ring-primary"
+                  placeholder={deliverySearchMode === "name" ? "ابحث باسم الصنف..." : "ابحث برقم الصنف أو الباركود..."}
+                  value={searchDelivery}
+                  onChange={e => { setSearchDelivery(e.target.value); setPageDelivery(1); }}
+                />
+                <Search className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              </div>
+            )}
+          </div>
           {filterItems(inventoryItems as any[], searchDelivery, dateFrom, dateTo).length === 0 ? (
             <Card><CardContent className="p-8 text-center text-muted-foreground">
               <CheckCircle2 className="w-10 h-10 mx-auto mb-3 text-green-500" />
