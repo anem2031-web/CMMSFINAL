@@ -270,6 +270,14 @@ export default function InventoryStandaloneReceive() {
       return;
     }
 
+    // إلزامي: توثيق سبب الاستلام المستقل (بدون طلب شراء) قبل الإضافة للمخزون
+    if (!notes.trim() || notes.trim().length < 10) {
+      toast.error(
+        "يرجى كتابة سبب الاستلام المستقل (10 أحرف على الأقل) — مثال: \"بضاعة وصلت مباشرة من المورد بدون طلب شراء مسبق\""
+      );
+      return;
+    }
+
     receiveMut.mutate({
       vendorName:       invoiceData.vendorName,
       vendorNameEn:     invoiceData.vendorNameEn,
@@ -654,13 +662,23 @@ export default function InventoryStandaloneReceive() {
           </Card>
 
           <div className="space-y-2">
-            <Label className="text-sm">ملاحظات (اختياري)</Label>
+            <Label className="text-sm text-red-600">
+              سبب الاستلام المستقل (إلزامي) <span className="text-red-600">*</span>
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              هذا استلام بدون طلب شراء مسبق — وضّح لماذا وصل هذا الصنف مباشرة
+              (مثال: بضاعة مصاريف نثرية، مواد وصلت طارئة، تصحيح جرد... إلخ)
+            </p>
             <Textarea
               value={notes}
               onChange={e => setNotes(e.target.value)}
-              placeholder="أي ملاحظات على عملية الاستلام..."
+              placeholder='مثال: "بضاعة وصلت مباشرة من المورد بدون طلب شراء مسبق"'
               rows={2}
+              className={notes.trim().length > 0 && notes.trim().length < 10 ? "border-red-400" : ""}
             />
+            {notes.trim().length > 0 && notes.trim().length < 10 && (
+              <p className="text-xs text-red-600">10 أحرف على الأقل ({notes.trim().length}/10)</p>
+            )}
           </div>
 
           <div className="flex gap-2">
@@ -670,7 +688,7 @@ export default function InventoryStandaloneReceive() {
             <Button
               className="flex-1 h-12 gap-2"
               onClick={handleSubmit}
-              disabled={receiveMut.isPending}
+              disabled={receiveMut.isPending || notes.trim().length < 10}
             >
               {receiveMut.isPending
                 ? <><Loader2 className="w-4 h-4 animate-spin" /> جاري الحفظ...</>

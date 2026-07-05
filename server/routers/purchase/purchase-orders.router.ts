@@ -1545,4 +1545,21 @@ list: protectedProcedure.input(z.object({
     }
     return { success: true };
   }),
+
+  // ── تتبع صنف: خطوة 1 — البحث عن الأسماء المطابقة فقط (لاختيار الصنف بدقة)
+  searchItemNames: protectedProcedure
+    .input(z.object({ query: z.string().min(2, "اكتب حرفين على الأقل") }))
+    .query(async ({ input }) => {
+      return db.searchItemNames(input.query);
+    }),
+
+  // ── تتبع صنف: خطوة 2 — قصة زمنية كاملة (Timeline) لاسم صنف محدد بدقة
+  trackItem: protectedProcedure
+    .input(z.object({
+      itemName: z.string().min(2, "اكتب حرفين على الأقل"),
+      exactMatch: z.boolean().default(false),
+    }))
+    .query(async ({ input }) => {
+      return db.trackItemHistory(input.itemName, input.exactMatch);
+    }),
 });

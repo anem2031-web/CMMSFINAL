@@ -174,7 +174,11 @@ export const receiptsV2Router = router({
       ocrJobId:         z.number().optional(),
       hasDiscrepancy:   z.boolean().default(false),
       discrepancyNotes: z.string().optional(),
-      notes:            z.string().optional(),
+      // إلزامي عمداً: الاستلام المستقل بلا طلب شراء يحتاج توثيق السبب
+      // (مثال: "بضاعة وصلت مباشرة من المورد بدون طلب شراء مسبق")
+      notes: z.string().trim().min(10, {
+        message: "سبب الاستلام المستقل إلزامي — يرجى توضيح لماذا وصل هذا الصنف بدون طلب شراء مسبق (10 أحرف على الأقل)",
+      }),
       items:            z.array(receivedItemSchema),
     }))
     .mutation(async ({ input, ctx }) => {

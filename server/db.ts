@@ -719,6 +719,190 @@ export async function getPOItemsPendingInventoryEntry() {
   return rows as any[];
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// ITEM TRACKER — خطوة 1: البحث عن الأسماء المطابقة فقط (بدون تفاصيل)
+// تُستخدم لعرض قائمة اختيار للمستخدم قبل جلب التايم لاين الكامل، لتفادي دمج
+// أصناف مختلفة (مثل "سلك تربيط" و"سلك كهرباء" و"سلك نحاس") بنتيجة واحدة مبهمة.
+// ══════════════════════════════════════════════════════════════════════════════
+export async function searchItemNames(searchTerm: string) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const like = `%${searchTerm.trim()}%`;
+
+  const [poNames] = await (db as any).execute(sql`
+    SELECT DISTINCT itemName FROM purchase_order_items WHERE itemName LIKE ${like}
+  `);
+  const [invNames] = await (db as any).execute(sql`
+    SELECT DISTINCT itemName FROM inventory WHERE itemName LIKE ${like}
+  `);
+
+  const namesSet = new Set<string>();
+  for (const row of poNames as any[]) namesSet.add(row.itemName);
+  for (const row of invNames as any[]) namesSet.add(row.itemName);
+
+  return Array.from(namesSet).sort((a, b) => a.localeCompare(b, "ar"));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ITEM TRACKER — تتبع دورة حياة صنف بالاسم عبر كل الجداول (بديل استعلامات SQL
+// اليدوية). كل حدث بالتايم لاين موسوم بمصدر الإدخال:
+//   - "purchase_cycle": الصنف دخل عبر دورة شراء رسمية (purchase_order_items)
+//   - "inventory": الصنف دخل كاستلام مستقل بدون طلب شراء (warehouse_receipts
+//     بدون purchaseOrderId)
+// ══════════════════════════════════════════════════════════════════════════════
+export async function trackItemHistory(searchTerm: string, exactMatch: boolean = false) {
+  const db = await getDb();
+  if (!db) return { events: [], sourceType: null as null };
+
+  // ملاحظة: LIKE بدون علامتي % تتصرف كمطابقة تامة بـ MySQL، فلا حاجة لتغيير
+  // أي من الاستعلامات أدناه — فقط نتحكم بوجود % من عدمه هنا.
+  const like = exactMatch ? searchTerm.trim() : `%${searchTerm.trim()}%`;
+
+  // 1) بنود طلبات الشراء المطابقة (دورة الشراء الرسمية)
+  const [poItemRows] = await (db as any).execute(sql`
+    SELECT poi.id, poi.purchaseOrderId, po.poNumber, poi.itemName, poi.quantity, poi.unit,
+           poi.status, poi.supplierName, poi.supplierInvoiceNumber,
+           poi.estimatedUnitCost, poi.actualUnitCost, poi.actualTotalCost,
+           poi.purchasedAt, poi.purchasedById, up.name AS purchasedByName,
+           poi.receivedAt, poi.receivedById, ur.name AS receivedByName, poi.receivedQuantity,
+           poi.deliveredAt, poi.deliveredById, ud.name AS deliveredByName, poi.deliveredToId, ut.name AS deliveredToName,
+           poi.deliveredQuantity, poi.deliveryNumber,
+           poi.returnedQuantity, poi.returnReason, poi.returnedAt,
+           poi.createdAt
+    FROM purchase_order_items poi
+    JOIN purchase_orders po ON po.id = poi.purchaseOrderId
+    LEFT JOIN users up ON up.id = poi.purchasedById
+    LEFT JOIN users ur ON ur.id = poi.receivedById
+    LEFT JOIN users ud ON ud.id = poi.deliveredById
+    LEFT JOIN users ut ON ut.id = poi.deliveredToId
+    WHERE poi.itemName LIKE ${like}
+    ORDER BY poi.createdAt DESC
+  `);
+
+  // 2) سجلات المخزون المطابقة + هل مصدرها استلام مستقل أو مرتبط بطلب شراء
+  // ملاحظة مهمة: التصنيف يعتمد على ربط البند نفسه (warehouse_receipt_items.purchaseOrderItemId)
+  // وليس رأس الإيصال (warehouse_receipts.purchaseOrderId) — لأنه ممكن يكون الإيصال
+  // مرتبط برأسه بطلب شراء، لكن أحد بنوده (مستخرج عبر OCR) غير مطابق لأي بند فعلي
+  // بذلك الطلب (حالة حقيقية رصدناها: إيصال RCV-2026-210012).
+  const [inventoryRows] = await (db as any).execute(sql`
+    SELECT inv.id, inv.itemName, inv.quantity, inv.unit, inv.internalCode,
+           inv.receiptId, wr.receiptNumber, wr.vendorName, wr.invoiceNumber,
+           wr.receivedAt, wr.receivedById, u.name AS receivedByName, wr.notes AS receiptNotes,
+           wri.purchaseOrderItemId AS linkedPoItemId
+    FROM inventory inv
+    LEFT JOIN warehouse_receipts wr ON wr.id = inv.receiptId
+    LEFT JOIN users u ON u.id = wr.receivedById
+    LEFT JOIN warehouse_receipt_items wri
+           ON wri.receiptId = inv.receiptId AND wri.itemName = inv.itemName
+    WHERE inv.itemName LIKE ${like}
+  `);
+
+  // 3) حركات المخزون (in/out) لكل سجل مخزون مطابق
+  const inventoryIds = (inventoryRows as any[]).map(r => r.id);
+  let transactionRows: any[] = [];
+  if (inventoryIds.length > 0) {
+    const [txRows] = await (db as any).execute(sql`
+      SELECT it.id, it.inventoryId, it.type, it.transactionType, it.quantity, it.reason,
+             it.performedById, u.name AS performedByName, it.createdAt,
+             it.unitCost, it.totalCost, it.receiptId, it.returnId
+      FROM inventory_transactions it
+      LEFT JOIN users u ON u.id = it.performedById
+      WHERE it.inventoryId IN ${inventoryIds}
+      ORDER BY it.createdAt ASC
+    `);
+    transactionRows = txRows as any[];
+  }
+
+  // 4) وثائق التسليم المطابقة
+  const [deliveryRows] = await (db as any).execute(sql`
+    SELECT * FROM delivery_documents WHERE itemName LIKE ${like} ORDER BY createdAt ASC
+  `);
+  const deliveryDocs = deliveryRows as any[];
+
+  // ── بناء التايم لاين الموحّد ──────────────────────────────────────────────
+  const events: any[] = [];
+
+  for (const poi of poItemRows as any[]) {
+    events.push({
+      date: poi.createdAt, sourceType: "purchase_cycle",
+      stage: "طلب شراء", title: `إنشاء بند بطلب الشراء ${poi.poNumber}`,
+      itemName: poi.itemName, poNumber: poi.poNumber, status: poi.status,
+    });
+    if (poi.purchasedAt) {
+      events.push({
+        date: poi.purchasedAt, sourceType: "purchase_cycle",
+        stage: "تم الشراء", title: `اشتراه ${poi.purchasedByName || "—"}`,
+        itemName: poi.itemName, poNumber: poi.poNumber,
+        supplierName: poi.supplierName, unitCost: poi.actualUnitCost,
+      });
+    }
+    if (poi.receivedAt) {
+      events.push({
+        date: poi.receivedAt, sourceType: "purchase_cycle",
+        stage: "استلام بالمستودع", title: `استلمه ${poi.receivedByName || "—"} بكمية ${poi.receivedQuantity ?? "—"}`,
+        itemName: poi.itemName, poNumber: poi.poNumber,
+      });
+    }
+    if (poi.deliveredAt) {
+      events.push({
+        date: poi.deliveredAt, sourceType: "purchase_cycle",
+        stage: "تسليم للطالب/الفني", title: `سلّمه ${poi.deliveredByName || "—"} إلى ${poi.deliveredToName || "—"} (${poi.deliveryNumber || "—"})`,
+        itemName: poi.itemName, poNumber: poi.poNumber, quantity: poi.deliveredQuantity,
+      });
+    }
+    if (poi.returnedAt) {
+      events.push({
+        date: poi.returnedAt, sourceType: "purchase_cycle",
+        stage: "مرتجع", title: `أُرجعت كمية ${poi.returnedQuantity} — السبب: ${poi.returnReason || "—"}`,
+        itemName: poi.itemName, poNumber: poi.poNumber,
+      });
+    }
+  }
+
+  for (const inv of inventoryRows as any[]) {
+    const isStandalone = inv.linkedPoItemId === null || inv.linkedPoItemId === undefined;
+    events.push({
+      date: inv.receivedAt, sourceType: isStandalone ? "inventory" : "purchase_cycle",
+      stage: "إضافة للمخزون",
+      title: isStandalone
+        ? `استلام مستقل (بلا طلب شراء) — ${inv.receiptNumber || "—"} من ${inv.vendorName || "—"}`
+        : `إضافة للمخزون عبر دورة شراء — ${inv.receiptNumber || "—"} من ${inv.vendorName || "—"}`,
+      itemName: inv.itemName, receiptNumber: inv.receiptNumber,
+      receivedBy: inv.receivedByName, invoiceNumber: inv.invoiceNumber,
+      standaloneReason: isStandalone ? inv.receiptNotes : null,
+      currentQuantity: inv.quantity, internalCode: inv.internalCode,
+    });
+  }
+
+  const txTypeLabels: Record<string, string> = {
+    return: "مرتجع",
+    delivery: "تسليم/صرف",
+    adjustment: "تسوية جرد",
+    disposal: "إتلاف/استبعاد",
+  };
+
+  for (const tx of transactionRows) {
+    if (tx.transactionType === "purchase") continue; // مغطاة أعلاه ضمن "إضافة للمخزون"
+    const typeLabel = txTypeLabels[tx.transactionType] || tx.transactionType;
+    events.push({
+      date: tx.createdAt,
+      sourceType: "inventory",
+      stage: tx.type === "in" ? `زيادة مخزون (${typeLabel})` : `خصم مخزون (${typeLabel})`,
+      title: `${tx.reason || typeLabel} — بواسطة ${tx.performedByName || "—"} (كمية ${tx.quantity})`,
+      quantity: tx.quantity,
+    });
+  }
+
+  events.sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime());
+
+  return {
+    events,
+    poItemsFound: (poItemRows as any[]).length,
+    inventoryRecordsFound: (inventoryRows as any[]).length,
+  };
+}
+
 // ============================================================
 // INVENTORY
 // ============================================================

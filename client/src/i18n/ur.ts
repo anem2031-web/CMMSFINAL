@@ -38,6 +38,7 @@ const ur: any = {
     notifications: "اطلاعات",
     translationMonitor: "ترجمہ مانیٹر",
     purchaseCycle: "خریداری سائیکل",
+    itemTracker: "شے ٹریکر",
     menu: "مینو",
     triage: "ٹریاج اور تصنیف",
     gateSecurity: "گیٹ سیکیورٹی",

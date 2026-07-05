@@ -40,7 +40,7 @@ const ar = {
     notifications: "الإشعارات",
     translationMonitor: "مراقبة الترجمات",
     purchaseCycle: "دورة الشراء",
-    menu: "القائمة",
+    itemTracker: "تتبع صنف",
     triage: "الفرز والتصنيف",
     gateSecurity: "حارس البوابة",
     scanAsset: "مسح الأصل (NFC)",

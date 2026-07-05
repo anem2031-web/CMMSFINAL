@@ -40,6 +40,7 @@ const en: TranslationKeys = {
     notifications: "Notifications",
     translationMonitor: "Translation Monitor",
     purchaseCycle: "Purchase Cycle",
+    itemTracker: "Item Tracker",
     menu: "Menu",
     triage: "Triage & Classification",
     gateSecurity: "Gate Security",

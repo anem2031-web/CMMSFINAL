@@ -118,6 +118,8 @@ const NAV_SECTIONS: NavSection[] = [
         roles: ["warehouse","owner","admin"] },
       { icon: Truck,        labelKey: "nav.purchaseCycle",  path: "/purchase-cycle",
         roles: ["delegate","warehouse","owner","admin"] },
+      { icon: Search,       labelKey: "nav.itemTracker",    path: "/item-tracker",
+        roles: ["warehouse","owner","admin","maintenance_manager","accountant"] },
     ],
   },
   // 4. الإدارة

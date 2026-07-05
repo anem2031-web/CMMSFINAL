@@ -30,6 +30,7 @@ import TechnicianReport from "./pages/TechnicianReport";
 import MyItems from "./pages/MyItems";
 import TranslationMonitor from "./pages/TranslationMonitor";
 import PurchaseCycle from "./pages/PurchaseCycle";
+import ItemTracker from "./pages/ItemTracker";
 import PurchaseCycleReport from "./pages/PurchaseCycleReport";
 import MaintenanceCycleReport from "./pages/MaintenanceCycleReport";
 import SectionReport from "./pages/SectionReport";
@@ -78,6 +79,7 @@ function Router() {
             <Route path="/purchase-orders/edit-draft/:id" component={CreatePurchaseOrder} />
             <Route path="/purchase-orders/:id" component={PurchaseOrderDetail} />
             <Route path="/purchase-cycle" component={PurchaseCycle} />
+            <Route path="/item-tracker" component={ItemTracker} />
             <Route path="/my-items" component={MyItems} />
             <Route path="/inventory" component={Inventory} />
             <Route path="/inventory-operations" component={InventoryOperations} />
