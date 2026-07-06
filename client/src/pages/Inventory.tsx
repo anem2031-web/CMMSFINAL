@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -30,6 +31,7 @@ export default function Inventory() {
   const [deliverItem, setDeliverItem] = useState<any>(null);
   const [deliverQty, setDeliverQty] = useState("");
   const [deliverToId, setDeliverToId] = useState("");
+  const [deliverNotes, setDeliverNotes] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMode, setSearchMode] = useState<"name" | "code" | "qr">("name");
   const [sortBy, setSortBy] = useState<"recent" | "name" | "quantity">("recent");
@@ -57,6 +59,7 @@ export default function Inventory() {
       setDeliverItem(null);
       setDeliverQty("");
       setDeliverToId("");
+      setDeliverNotes("");
     },
     onError: (err: any) => toast.error(err.message),
   });
@@ -301,7 +304,7 @@ export default function Inventory() {
                         {isWarehouse && (
                           <>
                             {item.quantity > 0 && (
-                              <Button variant="ghost" size="icon" className="h-7 w-7 text-blue-600 hover:text-blue-700" onClick={() => { setDeliverItem(item); setDeliverQty(""); setDeliverToId(""); }} title="تسليم للفني">
+                              <Button variant="ghost" size="icon" className="h-7 w-7 text-blue-600 hover:text-blue-700" onClick={() => { setDeliverItem(item); setDeliverQty(""); setDeliverToId(""); setDeliverNotes(""); }} title="تسليم للفني">
                                 <Truck className="w-3.5 h-3.5" />
                               </Button>
                             )}
@@ -388,6 +391,19 @@ export default function Inventory() {
                     .map((u: any) => ({ value: String(u.id), label: `${u.name} (${u.role})` }))}
                 />
               </div>
+
+              {/* ملاحظات — تظهر بعد اختيار الفني، كتابتها اختيارية */}
+              {deliverToId && (
+                <div className="space-y-1.5">
+                  <Label className="text-xs">ملاحظات (اختياري)</Label>
+                  <Textarea
+                    value={deliverNotes}
+                    onChange={e => setDeliverNotes(e.target.value)}
+                    placeholder="أي ملاحظات إضافية على عملية التسليم..."
+                    rows={2}
+                  />
+                </div>
+              )}
             </div>
           )}
           <DialogFooter>
@@ -410,6 +426,7 @@ export default function Inventory() {
                   deliveredToId: deliverToId ? parseInt(deliverToId) : undefined,
                   deliveryQty:   qty,
                   deliveryUnit:  deliverItem.unit || "قطعة",
+                  notes:         deliverNotes || undefined,
                 });
               }}
             >

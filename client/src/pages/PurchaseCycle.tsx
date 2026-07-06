@@ -147,7 +147,7 @@ body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:
 .sig-box{border-top:1px solid #bbb;padding-top:8px;text-align:center;font-size:11px;color:#555}
 .footer{margin-top:24px;border-top:1px solid #eee;padding-top:10px;display:flex;justify-content:space-between;font-size:10px;color:#aaa}
 .print-count{font-size:11px;color:#888;background:#f4f6fa;border:1px solid #dde3ea;border-radius:20px;padding:2px 12px}
-@media print{@page{margin:10mm}}
+@media print{@page{size:A4;margin:10mm}}
 </style></head>
 <body>
 <div class="header">
@@ -231,7 +231,7 @@ body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:
 .sig-box{border-top:1px solid #bbb;padding-top:8px;text-align:center;font-size:11px;color:#555}
 .footer{margin-top:24px;border-top:1px solid #eee;padding-top:10px;display:flex;justify-content:space-between;font-size:10px;color:#aaa}
 .print-count{font-size:11px;color:#888;background:#f4f6fa;border:1px solid #dde3ea;border-radius:20px;padding:2px 12px}
-@media print{@page{margin:10mm}}
+@media print{@page{size:A4;margin:10mm}}
 </style></head>
 <body>
 <div class="header">
@@ -403,6 +403,7 @@ export default function PurchaseCycle() {
   const [deliveryUserId, setDeliveryUserId] = useState<string>("");
   const [deliveryQty, setDeliveryQty]       = useState<string>("");
   const [deliveryUnit, setDeliveryUnit]     = useState<string>("");
+  const [deliveryNotes, setDeliveryNotes]   = useState<string>("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const currentUploadTarget = useRef<string>("");
@@ -486,27 +487,14 @@ export default function PurchaseCycle() {
       toast.success(t.purchaseOrders.deliveredToRequester);
       refetchInventory();
       refetchDelivery();
+      deliveryDocsQuery.refetch();
       setDeliveryPrintData((prev: any) => {
         if (prev) {
           const fullData = { ...prev, deliveryNumber: data?.deliveryNumber };
           printDeliveryReceipt(fullData);
-          setTimeout(() => {
-            generateDocMut.mutate({
-              deliveryNumber:    data?.deliveryNumber ?? "",
-              poItemId:          fullData.itemId,
-              itemName:          fullData.itemName,
-              deliveredByName:   fullData.deliveredByName,
-              deliveredToName:   fullData.deliveredToName,
-              quantity:          fullData.quantity,
-              unit:              fullData.unit,
-              supplierName:      fullData.supplierName,
-              actualUnitCost:    fullData.actualUnitCost,
-              poNumber:          fullData.poNumber,
-              warehousePhotoUrl: fullData.warehousePhotoUrl,
-              notes:             fullData.notes,
-              deliveredAt:       fullData.deliveredAt,
-            });
-          }, 0);
+          // ملاحظة: لا نستدعي generateDocMut هنا — السيرفر ينشئ وثيقة التسليم
+          // تلقائيًا ضمن db.issueDelivery() لعناصر المخزون المباشرة، فأي استدعاء
+          // إضافي هنا يسبب وثيقة مكررة لنفس عملية التسليم.
         }
         return null;
       });
@@ -787,7 +775,7 @@ export default function PurchaseCycle() {
     .toolbar { display: none !important; }
     body { background: #fff; }
     .page { box-shadow: none; margin: 0; padding: 20px 28px; border-radius: 0; }
-    @page { margin: 10mm; }
+    @page { size: A4; margin: 10mm; }
   }
 </style>
 </head>
@@ -1189,6 +1177,7 @@ export default function PurchaseCycle() {
                           setDeliveryUserId(preselect);
                           setDeliveryQty(String(item.quantity || ""));
                           setDeliveryUnit(item.unit || "قطعة");
+                          setDeliveryNotes("");
                           // نمرر بيانات الصنف من المخزون للـ dialog
                           setDeliveryDialog({
                             ...item,
@@ -1543,11 +1532,24 @@ export default function PurchaseCycle() {
                     }))}
                 />
               </div>
+
+              {/* ملاحظات — تظهر بعد اختيار الفني، كتابتها اختيارية */}
+              {deliveryUserId && (
+                <div className="space-y-1.5">
+                  <Label className="text-xs">ملاحظات (اختياري)</Label>
+                  <Textarea
+                    value={deliveryNotes}
+                    onChange={e => setDeliveryNotes(e.target.value)}
+                    placeholder="أي ملاحظات إضافية على عملية التسليم..."
+                    rows={2}
+                  />
+                </div>
+              )}
             </div>
           )}
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeliveryDialog(null)}>{t.common.cancel}</Button>
+            <Button variant="outline" onClick={() => { setDeliveryDialog(null); setDeliveryNotes(""); }}>{t.common.cancel}</Button>
             <Button
               className="gap-1.5"
               disabled={confirmDeliveryMut.isPending}
@@ -1576,6 +1578,7 @@ export default function PurchaseCycle() {
                   poNumber: deliveryDialog.poNumber,
                   itemId: deliveryDialog.id,
                   initialPrintCount: deliveryDialog.printCount ?? 0,
+                  notes: deliveryNotes || undefined,
                   deliveredAt: new Date().toLocaleDateString("ar-SA", { year: "numeric", month: "long", day: "numeric" }),
                 });
                 if (deliveryDialog.isInventoryItem) {
@@ -1584,6 +1587,7 @@ export default function PurchaseCycle() {
                     deliveredToId: deliveryUserId ? parseInt(deliveryUserId) : undefined,
                     deliveryQty:   qty,
                     deliveryUnit:  deliveryUnit || deliveryDialog.unit || "قطعة",
+                    notes:         deliveryNotes || undefined,
                   });
                 } else {
                   confirmDeliveryMut.mutate({
@@ -1591,9 +1595,11 @@ export default function PurchaseCycle() {
                     deliveredToId: deliveryUserId ? parseInt(deliveryUserId) : undefined,
                     deliveryQty:   qty,
                     deliveryUnit:  deliveryUnit || deliveryDialog.unit || "قطعة",
+                    notes:         deliveryNotes || undefined,
                   });
                 }
                 setDeliveryDialog(null);
+                setDeliveryNotes("");
               }}
             >
               {confirmDeliveryMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Truck className="w-4 h-4" />}

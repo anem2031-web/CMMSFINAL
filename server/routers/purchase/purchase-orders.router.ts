@@ -123,6 +123,7 @@ export const purchaseOrdersRouter = router({
     deliveredToId: z.number().optional(),
     deliveryQty:   z.number().positive("الكمية يجب أن تكون أكبر من صفر"),
     deliveryUnit:  z.string().min(1, "الوحدة مطلوبة"),
+    notes:         z.string().optional(),
   })).mutation(async ({ input, ctx }) => {
     const item = await db.getPOItemById(input.itemId);
     if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "الصنف غير موجود" });
@@ -152,7 +153,7 @@ export const purchaseOrdersRouter = router({
         inventoryId:         inventoryItem.id,
         type:                "out",
         quantity:            input.deliveryQty,
-        reason:              `تسليم للفني — طلب شراء`,
+        reason:              input.notes ? `تسليم للفني — طلب شراء (${input.notes})` : `تسليم للفني — طلب شراء`,
         purchaseOrderItemId: input.itemId,
         performedById:       ctx.user.id,
         transactionType:     "issue",
@@ -1093,6 +1094,7 @@ list: protectedProcedure.input(z.object({
     deliveryQty:   z.number().positive(),
     deliveryUnit:  z.string(),
     purchaseOrderId: z.number().optional(),
+    notes:         z.string().optional(),
   })).mutation(async ({ input, ctx }) => {
     // جلب الصنف من المخزون
     const invItem = await db.getInventoryItemById(input.inventoryId);
@@ -1112,7 +1114,7 @@ list: protectedProcedure.input(z.object({
       unit:            input.deliveryUnit,
       performedById:   ctx.user.id,
       deliveredToId:   input.deliveredToId,
-      notes:           "تسليم للفني",
+      notes:           input.notes || "تسليم للفني",
     });
 
     return {
