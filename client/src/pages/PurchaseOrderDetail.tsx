@@ -125,9 +125,9 @@ export default function PurchaseOrderDetail() {
   const getItemField = (item: any, fieldName: string) =>
     getLocalizedItemField(item, fieldName, language);
 
-  const estimateMut = trpc.purchaseOrders.estimateCost.useMutation({ onSuccess: () => { toast.success(t.common.save); refetch(); }, onError: (e) => toast.error(e.message) });
+  const estimateMut = trpc.purchaseOrders.estimateCost.useMutation({ onSuccess: () => { toast.success(t.common.save); refetch(); refetchBatches(); }, onError: (e) => toast.error(e.message) });
   const submitPricedBatchMut = trpc.purchaseOrders.submitPricedBatch.useMutation({
-    onSuccess: (res: any) => { toast.success(`تم إرسال ${res.itemCount} صنف للحسابات (دفعة رقم ${res.batchNumber})`); refetch(); },
+    onSuccess: (res: any) => { toast.success(`تم إرسال ${res.itemCount} صنف للحسابات (دفعة رقم ${res.batchNumber})`); refetch(); refetchBatches(); },
     onError: (e: any) => toast.error(e.message),
   });
   const { data: pricingBatches = [], refetch: refetchBatches } = trpc.purchaseOrders.listPricingBatches.useQuery(
@@ -1225,11 +1225,17 @@ const visibleItems = useMemo(() => {
         );
       })()}
 
-      {pricingBatches.length > 0 && (isAccountant || role === "senior_management" || isAdminOrOwner || isDelegate) && (
-        <Card className="border-teal-200 bg-teal-50/40">
-          <CardHeader className="pb-2"><CardTitle className="text-base text-teal-800">دفعات التسعير</CardTitle></CardHeader>
-          <CardContent className="space-y-3">
-            {(pricingBatches as any[]).map((batch: any) => (
+      {(() => {
+        const canSeeAllBatches = isAccountant || role === "senior_management" || isAdminOrOwner;
+        const visibleBatches = canSeeAllBatches
+          ? (pricingBatches as any[])
+          : (pricingBatches as any[]).filter((b: any) => b.submittedById === userId);
+        if (visibleBatches.length === 0) return null;
+        return (
+      <Card className="border-teal-200 bg-teal-50/40">
+        <CardHeader className="pb-2"><CardTitle className="text-base text-teal-800">دفعات التسعير</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          {visibleBatches.map((batch: any) => (
               <div key={batch.id} className="bg-white rounded-lg border p-3 flex flex-col gap-2">
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div>
@@ -1312,7 +1318,8 @@ const visibleItems = useMemo(() => {
             ))}
           </CardContent>
         </Card>
-      )}
+        );
+      })()}
 
       {isAccountant && po.status === "pending_accounting" && pricingBatches.length === 0 && (
         <Card className="border-orange-200 bg-orange-50/50">
