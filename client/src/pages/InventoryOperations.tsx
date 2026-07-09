@@ -15,8 +15,17 @@ import {
   Trash2, Plus, Search, QrCode, Package, AlertTriangle,
   Loader2, X, ChevronRight, ClipboardList, BookOpen, Printer
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
+
+// تحويل آمن لأي قيمة تاريخ (قد تصل ككائن Date حقيقي بسبب transformer: superjson بـ tRPC)
+// لصيغة YYYY-MM-DD المطلوبة تحديداً بـ <Input type="date"> (بعكس fmtDate أعلاه للعرض النصي)
+const toDateInputValue = (d: any): string => {
+  if (!d) return "";
+  const date = d instanceof Date ? d : new Date(d);
+  if (isNaN(date.getTime())) return "";
+  return date.toISOString().split("T")[0];
+};
 
 const REASON_LABELS: Record<string, string> = {
   damaged:  "تالف",
@@ -100,6 +109,373 @@ export default function InventoryOperations() {
 
   // ── البحث عن صنف ──
   const { data: inventoryList } = trpc.inventory.list.useQuery();
+
+  // ══════════════════════════════════════════════════════════
+  // وحدة الجرد وتسوية المخزون
+  // ══════════════════════════════════════════════════════════
+  const { data: countOperations, refetch: refetchCounts } = trpc.inventoryCount.listOperations.useQuery();
+  const [activeCountId, setActiveCountId] = useState<number | null>(null);
+  const { data: countDetail, refetch: refetchCountDetail } = trpc.inventoryCount.operationDetails.useQuery(
+    { operationId: activeCountId! }, { enabled: !!activeCountId }
+  );
+  const [showUncountedOnly, setShowUncountedOnly] = useState(false);
+
+  // ── لوحة إضافة/مسح صنف داخل جرد جزئي جارٍ (باركود/رقم/اختيار) ──
+  const [scanMode, setScanMode] = useState<"name" | "code" | "qr">("qr");
+  const [scanQuery, setScanQuery] = useState("");
+  // إضافة صنف للجرد: لا يُخمَّن أي كمية — يُنشأ سطر بانتظار العدّ ثم تُفتح
+  // نافذة "عدّ الصنف" مباشرة ليُدخل المستخدم الكمية الفعلية بنفسه.
+  const addItemMut = trpc.inventoryCount.addItem.useMutation({
+    onSuccess: (data) => {
+      setEditingItem({
+        countItemId: data.countItemId,
+        itemName: data.itemName,
+        unit: data.unit,
+        systemQuantity: data.systemQuantity,
+      });
+      setEditCountedQty(data.countedQuantity !== null ? String(data.countedQuantity) : "");
+      setEditLot(data.lotNumber ?? "");
+      setEditExpiry(toDateInputValue(data.expiryDate));
+      setEditNotes(data.notes ?? "");
+      refetchCountDetail();
+      setScanQuery("");
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  function handleScanResolved(code: string) {
+    const found = ((inventoryList as any[]) || []).find((i: any) =>
+      i.internalCode === code || i.manufacturerBarcode === code || String(i.id) === code
+    );
+    if (!found) { toast.error(`لم يتم العثور على صنف برقم: ${code}`); return; }
+    if (!activeCountId) return;
+    addItemMut.mutate({ operationId: activeCountId, inventoryId: found.id });
+  }
+  const scanSearchResults = scanMode !== "qr" && scanQuery.trim().length > 0
+    ? ((inventoryList as any[]) || []).filter((i: any) => {
+        const q = scanQuery.toLowerCase();
+        if (scanMode === "code") return i.internalCode?.toLowerCase().includes(q) || i.manufacturerBarcode?.toLowerCase().includes(q);
+        return i.itemName?.toLowerCase().includes(q);
+      }).slice(0, 8)
+    : [];
+
+  // ── بدء جرد جديد ──
+  const [showNewCount, setShowNewCount] = useState(false);
+  const [countScope, setCountScope] = useState<"full" | "partial">("full");
+  const [countUiMode, setCountUiMode] = useState<"auto" | "manual">("auto"); // auto = تحميل كل الأصناف دفعة، manual = بالباركود/الرقم/الاختيار تباعاً
+  const [countTitle, setCountTitle] = useState("");
+
+  // معاينة توقيت الرياض بالواجهة فقط — للعرض قبل الإنشاء (القيمة المعتمدة فعلياً
+  // تُحسب من ساعة الخادم نفسها عند الإنشاء، مو من هذا العرض ولا من جهاز المستخدم)
+  const [riyadhPreview, setRiyadhPreview] = useState({ date: "", dayName: "", time: "" });
+  useEffect(() => {
+    const update = () => {
+      const now = new Date();
+      setRiyadhPreview({
+        date: now.toLocaleDateString("en-CA", { timeZone: "Asia/Riyadh" }),
+        dayName: now.toLocaleDateString("ar-SA-u-ca-gregory", { timeZone: "Asia/Riyadh", weekday: "long" }),
+        time: now.toLocaleTimeString("en-GB", { timeZone: "Asia/Riyadh", hour12: false }),
+      });
+    };
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, []);
+  const [countItemSearch, setCountItemSearch] = useState("");
+  const [selectedPartialIds, setSelectedPartialIds] = useState<number[]>([]);
+
+  const createCountMut = trpc.inventoryCount.createOperation.useMutation({
+    onSuccess: (data) => {
+      toast.success(`تم بدء الجرد ${data.operationNumber} — ${data.itemCount} صنف`);
+      refetchCounts();
+      setActiveCountId(data.operationId);
+      setShowNewCount(false);
+      setCountTitle("");
+      setSelectedPartialIds([]);
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  // ── تسجيل عد صنف ──
+  const [editingItem, setEditingItem] = useState<any>(null);
+  const [editCountedQty, setEditCountedQty] = useState("");
+  const [editLot, setEditLot] = useState("");
+  const [editExpiry, setEditExpiry] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+
+  const recordItemMut = trpc.inventoryCount.recordItem.useMutation({
+    onSuccess: () => {
+      toast.success("تم تسجيل الكمية");
+      refetchCountDetail();
+      setEditingItem(null);
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const completeCountMut = trpc.inventoryCount.completeOperation.useMutation({
+    onSuccess: (data) => {
+      toast.success(`تم إنهاء الجرد — ${data.totalDiscrepancies} فرق من أصل ${data.totalItemsCounted}`);
+      refetchCounts();
+      refetchCountDetail();
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  // ── حذف مسودة جرد (المسودات فقط، قابلة للحذف قبل الحفظ النهائي) ──
+  const deleteCountMut = trpc.inventoryCount.deleteOperation.useMutation({
+    onSuccess: () => {
+      toast.success("تم حذف مسودة الجرد");
+      setActiveCountId(null);
+      refetchCounts();
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  // ── تسوية المخزون ──
+  const [showSettlement, setShowSettlement] = useState(false);
+  const [settlementSourceCountId, setSettlementSourceCountId] = useState<number | null>(null);
+  const { data: discrepancies } = trpc.inventoryCount.countDiscrepancies.useQuery(
+    { operationId: settlementSourceCountId! }, { enabled: !!settlementSourceCountId }
+  );
+  const [settlementItems, setSettlementItems] = useState<any[]>([]);
+  const [settlementReason, setSettlementReason] = useState("");
+
+  const applySettlementMut = trpc.inventoryCount.applySettlement.useMutation({
+    onSuccess: (data) => {
+      toast.success(`تم تطبيق التسوية ${data.settlementNumber} بنجاح`);
+      setShowSettlement(false);
+      setSettlementItems([]);
+      setSettlementReason("");
+      setSettlementSourceCountId(null);
+      refetchCounts();
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  // ── الأرشيف (عمليات جرد + تسويات) ──
+  const [countView, setCountView] = useState<"active" | "archive">("active");
+  const [archiveTab, setArchiveTab] = useState<"counts" | "settlements">("counts");
+  const { data: settlementsList } = trpc.inventoryCount.listSettlements.useQuery();
+  const [printSettlementId, setPrintSettlementId] = useState<number | null>(null);
+  const { data: printSettlementDetail } = trpc.inventoryCount.settlementDetails.useQuery(
+    { settlementId: printSettlementId! }, { enabled: !!printSettlementId }
+  );
+  const [printCountId, setPrintCountId] = useState<number | null>(null);
+  const { data: printCountDetail } = trpc.inventoryCount.operationDetails.useQuery(
+    { operationId: printCountId! }, { enabled: !!printCountId }
+  );
+
+  // ── طباعة وثيقة جرد رسمية (تصميم كامل، بنفس مستوى وثيقة الاستبعاد) ──────────
+  function printCountDocument(data: { operation: any; items: any[] }) {
+    const op = data.operation;
+    const itemsRows = (data.items || []).map((it: any) => {
+      const diff = it.diffQuantity !== null && it.diffQuantity !== undefined ? parseFloat(it.diffQuantity) : null;
+      const diffCell = diff === null
+        ? `<span style="color:#999">لم يُعدّ بعد</span>`
+        : diff === 0
+          ? `<span style="color:#059669;font-weight:700">مطابق</span>`
+          : `<span style="color:${diff > 0 ? "#2563eb" : "#dc2626"};font-weight:700">${diff > 0 ? `+${diff}` : diff}</span>`;
+      return `
+      <tr>
+        <td>${it.itemName}</td>
+        <td style="text-align:center;font-family:monospace">${parseFloat(it.systemQuantity).toLocaleString()} ${it.unit || ""}</td>
+        <td style="text-align:center;font-family:monospace">${it.countedQuantity !== null && it.countedQuantity !== undefined ? parseFloat(it.countedQuantity).toLocaleString() + " " + (it.unit || "") : "—"}</td>
+        <td style="text-align:center">${diffCell}</td>
+        <td style="text-align:center;font-size:11px">${it.lotNumber || "—"}${it.expiryDate ? ` / ${fmtDate(it.expiryDate)}` : ""}</td>
+        <td style="font-size:11px;color:#555">${it.notes || "—"}</td>
+      </tr>`;
+    }).join("");
+
+    const countedItems = (data.items || []).filter((it: any) => it.countedQuantity !== null && it.countedQuantity !== undefined);
+    const discrepancies = countedItems.filter((it: any) => parseFloat(it.diffQuantity || "0") !== 0);
+    const isFinal = op.status === "completed";
+    const themeColor = "#0f766e"; // teal — يميّز وثيقة الجرد عن وثيقة الاستبعاد (أحمر)
+
+    const html = `<!DOCTYPE html><html dir="rtl" lang="ar"><head>
+<meta charset="UTF-8"/><title>وثيقة جرد ${op.operationNumber}</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:32px 40px;font-size:13px}
+.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid ${themeColor};padding-bottom:16px;margin-bottom:20px}
+.header-title{font-size:22px;font-weight:900;color:${themeColor}}
+.header-sub{font-size:11px;color:#666;margin-top:4px}
+.header-meta{text-align:left;font-size:11px;color:#555;line-height:2.2}
+.badge{display:inline-block;background:${themeColor};color:#fff;padding:4px 14px;border-radius:6px;font-size:14px;font-weight:700}
+.status-badge{display:inline-block;padding:3px 10px;border-radius:5px;font-size:11px;font-weight:700;margin-right:6px}
+.info-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+.info-box{border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;background:#fafafa}
+.info-label{font-size:10px;color:#888;margin-bottom:3px}
+.info-value{font-size:13px;font-weight:700;color:#111}
+.section-title{font-size:12px;font-weight:700;color:${themeColor};background:#f0fdfa;padding:6px 12px;border-radius:6px;margin-bottom:12px;border-right:4px solid ${themeColor}}
+table{width:100%;border-collapse:collapse;margin-bottom:16px;font-size:12px}
+thead tr{background:${themeColor};color:#fff}
+thead th{padding:8px 10px;text-align:right;font-weight:600}
+tbody tr:nth-child(even){background:#f0fdfa}
+tbody tr:nth-child(odd){background:#fff}
+tbody td{padding:8px 10px;border-bottom:1px solid #f3f4f6}
+.totals-row{background:#1a1a1a!important;color:#fff!important;font-weight:700}
+.totals-row td{padding:10px;border:none!important;color:#fff}
+.sig-section{margin-top:36px;display:grid;grid-template-columns:1fr 1fr;gap:40px}
+.sig-box{border-top:2px solid ${themeColor};padding-top:10px;text-align:center;font-size:11px;color:#555}
+.sig-name{font-size:14px;font-weight:700;color:#1a1a1a;margin-top:4px}
+.footer{margin-top:24px;border-top:1px solid #e5e7eb;padding-top:10px;display:flex;justify-content:space-between;font-size:10px;color:#aaa}
+@media print{@page{margin:12mm}body{padding:0}}
+</style></head><body>
+<div class="header">
+  <div>
+    <div class="header-title">📋 وثيقة جرد مخزون</div>
+    <div class="header-sub">نظام إدارة الصيانة المتكامل — CMMS</div>
+  </div>
+  <div class="header-meta">
+    <div>التاريخ: <strong>${new Date(op.operationDate).toLocaleDateString("ar-SA",{year:"numeric",month:"long",day:"numeric"})}</strong> — اليوم: <strong>${op.riyadhDayName || "—"}</strong></div>
+    <div>وقت البدء: <strong>${op.riyadhStartTime || "—"}</strong> (بتوقيت الرياض)</div>
+    <div><span class="badge">${op.operationNumber}</span></div>
+  </div>
+</div>
+<div class="info-grid">
+  <div class="info-box"><div class="info-label">نطاق الجرد</div><div class="info-value">${op.scope === "full" ? "شامل" : "جزئي"}</div></div>
+  <div class="info-box"><div class="info-label">المنفذ</div><div class="info-value">${op.creatorName || "—"}</div></div>
+  <div class="info-box"><div class="info-label">عدد الأصناف المعدودة</div><div class="info-value">${countedItems.length} من ${data.items?.length || 0}</div></div>
+  <div class="info-box"><div class="info-label">الحالة</div><div class="info-value"><span class="status-badge" style="background:${isFinal ? "#dcfce7" : "#fef3c7"};color:${isFinal ? "#166534" : "#92400e"}">${isFinal ? "✅ نهائي (مقفل)" : "مسودة"}</span></div></div>
+</div>
+<div class="section-title">تفاصيل الأصناف</div>
+<table>
+  <thead><tr>
+    <th>اسم الصنف</th>
+    <th style="text-align:center">كمية النظام</th>
+    <th style="text-align:center">الكمية المعدودة</th>
+    <th style="text-align:center">الفرق</th>
+    <th style="text-align:center">دفعة/صلاحية</th>
+    <th>ملاحظة</th>
+  </tr></thead>
+  <tbody>
+    ${itemsRows}
+    <tr class="totals-row">
+      <td>الإجمالي</td>
+      <td style="text-align:center">${data.items?.length || 0} صنف</td>
+      <td style="text-align:center">${countedItems.length} معدود</td>
+      <td style="text-align:center">${discrepancies.length} فرق</td>
+      <td></td><td></td>
+    </tr>
+  </tbody>
+</table>
+<div class="sig-section">
+  <div class="sig-box"><div>توقيع المنفذ</div><div class="sig-name">${op.creatorName || "—"}</div></div>
+  <div class="sig-box"><div>اعتماد المسؤول</div><div class="sig-name">&nbsp;</div></div>
+</div>
+<div class="footer">
+  <span>وثيقة آلية — نظام CMMS | ${op.operationNumber}</span>
+  <span>تاريخ الطباعة: ${new Date().toLocaleDateString("ar-SA")}</span>
+</div>
+<script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();}<\/script>
+</body></html>`;
+    const win = window.open("", "_blank", "width=900,height=800");
+    if (win) { win.document.write(html); win.document.close(); }
+  }
+
+  // ── طباعة وثيقة تسوية مخزون رسمية ──────────────────────────────────────────
+  function printSettlementDocument(data: { settlement: any; items: any[] }) {
+    const s = data.settlement;
+    const itemsRows = (data.items || []).map((it: any) => {
+      const diff = parseFloat(it.diffQuantity || "0");
+      const diffCell = diff === 0
+        ? `<span style="color:#059669;font-weight:700">لا يوجد فرق</span>`
+        : `<span style="color:${diff > 0 ? "#2563eb" : "#dc2626"};font-weight:700">${diff > 0 ? `+${diff}` : diff}</span>`;
+      return `
+      <tr>
+        <td>${it.itemName}</td>
+        <td style="text-align:center;font-family:monospace">${parseFloat(it.beforeQuantity).toLocaleString()} ${it.unit || ""}</td>
+        <td style="text-align:center;font-family:monospace">${parseFloat(it.afterQuantity).toLocaleString()} ${it.unit || ""}</td>
+        <td style="text-align:center">${diffCell}</td>
+        <td style="text-align:center;font-size:11px">${it.lotNumber || "—"}${it.expiryDate ? ` / ${fmtDate(it.expiryDate)}` : ""}</td>
+      </tr>`;
+    }).join("");
+    const themeColor = "#7e22ce"; // بنفسجي — يميّز وثيقة التسوية
+
+    const html = `<!DOCTYPE html><html dir="rtl" lang="ar"><head>
+<meta charset="UTF-8"/><title>وثيقة تسوية ${s.settlementNumber}</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:32px 40px;font-size:13px}
+.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid ${themeColor};padding-bottom:16px;margin-bottom:20px}
+.header-title{font-size:22px;font-weight:900;color:${themeColor}}
+.header-sub{font-size:11px;color:#666;margin-top:4px}
+.header-meta{text-align:left;font-size:11px;color:#555;line-height:2.2}
+.badge{display:inline-block;background:${themeColor};color:#fff;padding:4px 14px;border-radius:6px;font-size:14px;font-weight:700}
+.info-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+.info-box{border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;background:#fafafa}
+.info-label{font-size:10px;color:#888;margin-bottom:3px}
+.info-value{font-size:13px;font-weight:700;color:#111}
+.section-title{font-size:12px;font-weight:700;color:${themeColor};background:#faf5ff;padding:6px 12px;border-radius:6px;margin-bottom:12px;border-right:4px solid ${themeColor}}
+.notes-box{border:1px solid #e5e7eb;border-radius:6px;padding:10px 14px;background:#fffbf0;font-size:12px;margin-bottom:16px}
+table{width:100%;border-collapse:collapse;margin-bottom:16px;font-size:12px}
+thead tr{background:${themeColor};color:#fff}
+thead th{padding:8px 10px;text-align:right;font-weight:600}
+tbody tr:nth-child(even){background:#faf5ff}
+tbody tr:nth-child(odd){background:#fff}
+tbody td{padding:8px 10px;border-bottom:1px solid #f3f4f6}
+.sig-section{margin-top:36px;display:grid;grid-template-columns:1fr 1fr;gap:40px}
+.sig-box{border-top:2px solid ${themeColor};padding-top:10px;text-align:center;font-size:11px;color:#555}
+.sig-name{font-size:14px;font-weight:700;color:#1a1a1a;margin-top:4px}
+.footer{margin-top:24px;border-top:1px solid #e5e7eb;padding-top:10px;display:flex;justify-content:space-between;font-size:10px;color:#aaa}
+@media print{@page{margin:12mm}body{padding:0}}
+</style></head><body>
+<div class="header">
+  <div>
+    <div class="header-title">🧾 وثيقة تسوية مخزون</div>
+    <div class="header-sub">نظام إدارة الصيانة المتكامل — CMMS</div>
+  </div>
+  <div class="header-meta">
+    <div>التاريخ: <strong>${new Date(s.appliedAt).toLocaleDateString("ar-SA",{year:"numeric",month:"long",day:"numeric"})}</strong></div>
+    <div>وقت الإصدار: <strong>${new Date().toLocaleTimeString("ar-SA")}</strong></div>
+    <div><span class="badge">${s.settlementNumber}</span></div>
+  </div>
+</div>
+<div class="info-grid">
+  <div class="info-box"><div class="info-label">المصدر</div><div class="info-value">${s.sourceType === "from_count" ? "من عملية جرد" : "تسوية مستقلة"}</div></div>
+  <div class="info-box"><div class="info-label">المسؤول</div><div class="info-value">${s.appliedByName || "—"}</div></div>
+  <div class="info-box"><div class="info-label">عدد الأصناف</div><div class="info-value">${data.items?.length || 0} صنف</div></div>
+</div>
+<div class="notes-box">📝 <strong>سبب التسوية:</strong> ${s.reason}</div>
+<div class="section-title">تفاصيل الأصناف المسوّاة</div>
+<table>
+  <thead><tr>
+    <th>اسم الصنف</th>
+    <th style="text-align:center">الكمية قبل</th>
+    <th style="text-align:center">الكمية بعد</th>
+    <th style="text-align:center">الفرق</th>
+    <th style="text-align:center">دفعة/صلاحية</th>
+  </tr></thead>
+  <tbody>${itemsRows}</tbody>
+</table>
+<div class="sig-section">
+  <div class="sig-box"><div>توقيع المنفذ</div><div class="sig-name">${s.appliedByName || "—"}</div></div>
+  <div class="sig-box"><div>اعتماد المسؤول</div><div class="sig-name">&nbsp;</div></div>
+</div>
+<div class="footer">
+  <span>وثيقة آلية — نظام CMMS | ${s.settlementNumber}</span>
+  <span>تاريخ الطباعة: ${new Date().toLocaleDateString("ar-SA")}</span>
+</div>
+<script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();}<\/script>
+</body></html>`;
+    const win = window.open("", "_blank", "width=900,height=800");
+    if (win) { win.document.write(html); win.document.close(); }
+  }
+
+  useEffect(() => {
+    if (printCountId && printCountDetail) {
+      printCountDocument(printCountDetail as any);
+      setPrintCountId(null);
+    }
+  }, [printCountId, printCountDetail]);
+
+  useEffect(() => {
+    if (printSettlementId && printSettlementDetail) {
+      printSettlementDocument(printSettlementDetail as any);
+      setPrintSettlementId(null);
+    }
+  }, [printSettlementId, printSettlementDetail]);
 
   const searchResults = searchQuery.trim().length > 0
     ? ((inventoryList as any[]) || []).filter((i: any) => {
@@ -363,17 +739,646 @@ ${op.notes ? `<div class="notes-box">📝 <strong>ملاحظات:</strong> ${op.
           )}
         </TabsContent>
 
-        {/* ══ تبويب الجرد — مستقبلاً ══ */}
-        <TabsContent value="inventory_count" className="mt-6">
-          <Card><CardContent className="p-12 text-center">
-            <BookOpen className="w-12 h-12 mx-auto text-muted-foreground/40 mb-4" />
-            <h3 className="font-semibold text-lg mb-1">الجرد</h3>
-            <p className="text-sm text-muted-foreground">هذه الميزة قيد التطوير وستكون متاحة قريباً</p>
-          </CardContent></Card>
+        {/* ══ تبويب الجرد وتسوية المخزون ══ */}
+        <TabsContent value="inventory_count" className="mt-6 space-y-4">
+
+          <div className="flex gap-2">
+            <Button size="sm" variant={countView === "active" ? "default" : "outline"} onClick={() => setCountView("active")}>
+              العمليات الحالية
+            </Button>
+            <Button size="sm" variant={countView === "archive" ? "default" : "outline"} onClick={() => setCountView("archive")}>
+              الأرشيف
+            </Button>
+          </div>
+
+          {countView === "archive" ? (
+            <div className="space-y-4">
+              <div className="flex gap-2">
+                <Button size="sm" variant={archiveTab === "counts" ? "default" : "outline"} onClick={() => setArchiveTab("counts")}>
+                  أرشيف الجرد
+                </Button>
+                <Button size="sm" variant={archiveTab === "settlements" ? "default" : "outline"} onClick={() => setArchiveTab("settlements")}>
+                  أرشيف التسويات
+                </Button>
+              </div>
+
+              {archiveTab === "counts" && (
+                <div className="space-y-2">
+                  {((countOperations as any[]) || []).filter(op => op.status === "completed").map((op) => (
+                    <Card key={op.id}>
+                      <CardContent className="p-4 flex items-center justify-between">
+                        <div className="cursor-pointer flex-1" onClick={() => { setActiveCountId(op.id); setCountView("active"); }}>
+                          <p className="font-medium">{op.operationTitle || op.operationNumber}</p>
+                          <p className="text-[11px] text-muted-foreground">{op.operationNumber}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {op.scope === "full" ? "شامل" : "جزئي"} — {fmtDate(op.operationDate)} — {op.totalItemsCounted} صنف
+                            {op.totalDiscrepancies > 0 && ` — ${op.totalDiscrepancies} فرق`}
+                          </p>
+                        </div>
+                        <Badge variant={op.status === "completed" ? "default" : "secondary"} className="ml-2">
+                          {op.status === "completed" ? "نهائي" : "مسودة"}
+                        </Badge>
+                        <Button variant="ghost" size="icon" onClick={() => setPrintCountId(op.id)} title="طباعة">
+                          <Printer className="w-4 h-4" />
+                        </Button>
+                      </CardContent>
+                    </Card>
+                  ))}
+                  {!(countOperations as any[])?.some(op => op.status === "completed") && (
+                    <p className="text-sm text-muted-foreground text-center py-8">لا توجد عمليات جرد بالأرشيف</p>
+                  )}
+                </div>
+              )}
+
+              {archiveTab === "settlements" && (
+                <div className="space-y-2">
+                  {((settlementsList as any[]) || []).map((s) => (
+                    <Card key={s.id}>
+                      <CardContent className="p-4 flex items-center justify-between">
+                        <div className="flex-1">
+                          <p className="font-medium">{s.settlementNumber}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {s.sourceType === "from_count" ? "من عملية جرد" : "تسوية مستقلة"} — {fmtDate(s.appliedAt)}
+                          </p>
+                          <p className="text-xs text-muted-foreground">{s.reason}</p>
+                        </div>
+                        <Button variant="ghost" size="icon" onClick={() => setPrintSettlementId(s.id)} title="طباعة">
+                          <Printer className="w-4 h-4" />
+                        </Button>
+                      </CardContent>
+                    </Card>
+                  ))}
+                  {!settlementsList?.length && (
+                    <p className="text-sm text-muted-foreground text-center py-8">لا توجد تسويات بالأرشيف</p>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+          <>
+          {/* ─── شاشة تفاصيل جرد نشط/مكتمل ─── */}
+          {activeCountId && countDetail ? (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <Button variant="ghost" size="sm" onClick={() => setActiveCountId(null)} className="mb-1">
+                    ← رجوع لقائمة عمليات الجرد
+                  </Button>
+                  <h3 className="font-semibold text-lg">
+                    {countDetail.operation.operationTitle || countDetail.operation.operationNumber}
+                    <Badge className="mr-2" variant={countDetail.operation.status === "completed" ? "default" : "secondary"}>
+                      {countDetail.operation.status === "completed" ? "نهائي (مقفل)" : "مسودة (قابلة للتعديل)"}
+                    </Badge>
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    {countDetail.operation.operationNumber} — {countDetail.operation.scope === "full" ? "جرد شامل" : "جرد جزئي"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    التاريخ: {fmtDate(countDetail.operation.operationDate)} — اليوم: {countDetail.operation.riyadhDayName || "—"} — وقت البدء: {countDetail.operation.riyadhStartTime || "—"} (بتوقيت الرياض)
+                  </p>
+                  {countDetail.operation.status === "in_progress" && !countDetail.items.some((it: any) => it.countedQuantity !== null) && (
+                    <p className="text-xs text-amber-600 mt-1">أضف/عُدَّ صنفاً واحداً على الأقل ليظهر خيار الحفظ النهائي</p>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline" size="sm"
+                    onClick={() => setShowUncountedOnly(!showUncountedOnly)}
+                  >
+                    {showUncountedOnly ? "عرض الكل" : "عرض الأصناف الغير مجرودة فقط"}
+                  </Button>
+                  {countDetail.operation.status === "in_progress" && (
+                    <>
+                      <Button
+                        variant="destructive" size="icon"
+                        title="حذف مسودة الجرد"
+                        onClick={() => {
+                          if (window.confirm("سيتم حذف مسودة الجرد هذه بكل ما تم عدّه فيها نهائياً. هل أنت متأكد؟")) {
+                            deleteCountMut.mutate({ operationId: activeCountId });
+                          }
+                        }}
+                        disabled={deleteCountMut.isPending}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                      {countDetail.items.some((it: any) => it.countedQuantity !== null) && (
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            if (window.confirm("بعد الحفظ النهائي لا يمكن التعديل على هذا الجرد إطلاقاً. هل أنت متأكد؟")) {
+                              completeCountMut.mutate({ operationId: activeCountId });
+                            }
+                          }}
+                          disabled={completeCountMut.isPending}
+                        >
+                          حفظ نهائي (لا يمكن التعديل لاحقاً)
+                        </Button>
+                      )}
+                    </>
+                  )}
+                  {countDetail.operation.status === "completed" && (
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setSettlementSourceCountId(activeCountId);
+                        setShowSettlement(true);
+                      }}
+                    >
+                      فتح تسوية من هذا الجرد
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {/* لوحة إضافة/مسح صنف — تظهر فقط للجرد الجزئي الجاري (وضع يدوي/باركود) */}
+              {countDetail.operation.status === "in_progress" && countDetail.operation.scope === "partial" && (
+                <Card className="bg-muted/20">
+                  <CardContent className="p-3 space-y-2">
+                    <p className="text-sm font-medium">إضافة صنف للجرد</p>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant={scanMode === "qr" ? "default" : "outline"} onClick={() => setScanMode("qr")} className="gap-1">
+                        <QrCode className="w-3.5 h-3.5" /> باركود/QR
+                      </Button>
+                      <Button size="sm" variant={scanMode === "code" ? "default" : "outline"} onClick={() => setScanMode("code")} className="gap-1">
+                        <Package className="w-3.5 h-3.5" /> بالرقم
+                      </Button>
+                      <Button size="sm" variant={scanMode === "name" ? "default" : "outline"} onClick={() => setScanMode("name")} className="gap-1">
+                        <Search className="w-3.5 h-3.5" /> بالاسم
+                      </Button>
+                    </div>
+
+                    {scanMode === "qr" && (
+                      <BarcodeScanner onScan={handleScanResolved} placeholder="امسح باركود/QR الصنف..." />
+                    )}
+
+                    {scanMode !== "qr" && (
+                      <div className="relative">
+                        <Input
+                          placeholder={scanMode === "name" ? "ابحث باسم الصنف..." : "ابحث برقم الصنف أو الباركود..."}
+                          value={scanQuery}
+                          onChange={e => setScanQuery(e.target.value)}
+                        />
+                        {scanSearchResults.length > 0 && (
+                          <div className="absolute z-10 w-full bg-background border rounded-md mt-1 max-h-48 overflow-y-auto">
+                            {scanSearchResults.map((i: any) => (
+                              <div
+                                key={i.id}
+                                className="p-2 text-sm cursor-pointer hover:bg-muted/50"
+                                onClick={() => {
+                                  if (!activeCountId) return;
+                                  addItemMut.mutate({ operationId: activeCountId, inventoryId: i.id });
+                                }}
+                              >
+                                {i.itemName} <span className="text-muted-foreground text-xs">({i.quantity} {i.unit})</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              <div className="border rounded-lg overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50">
+                    <tr>
+                      <th className="p-2 text-right">الصنف</th>
+                      <th className="p-2 text-right">كمية النظام</th>
+                      <th className="p-2 text-right">الكمية المعدودة</th>
+                      <th className="p-2 text-right">الفرق</th>
+                      <th className="p-2 text-right">دفعة/صلاحية</th>
+                      <th className="p-2 text-right">ملاحظة</th>
+                      <th className="p-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {countDetail.items
+                      .filter((it: any) => !showUncountedOnly || it.countedQuantity === null)
+                      .map((it: any) => {
+                        const diff = it.diffQuantity !== null ? parseFloat(it.diffQuantity) : null;
+                        return (
+                          <tr key={it.countItemId} className="border-t">
+                            <td className="p-2">{it.itemName}</td>
+                            <td className="p-2">{it.systemQuantity} {it.unit}</td>
+                            <td className="p-2">{it.countedQuantity ?? "—"}</td>
+                            <td className={`p-2 font-medium ${diff !== null && diff !== 0 ? (diff > 0 ? "text-blue-600" : "text-red-600") : ""}`}>
+                              {diff !== null ? (diff > 0 ? `+${diff}` : diff) : "—"}
+                            </td>
+                            <td className="p-2 text-xs text-muted-foreground">
+                              {it.lotNumber || "—"} {it.expiryDate ? `/ ${fmtDate(it.expiryDate)}` : ""}
+                            </td>
+                            <td className="p-2 text-xs text-muted-foreground">{it.notes || "—"}</td>
+                            <td className="p-2">
+                              {countDetail.operation.status === "in_progress" && (
+                                <Button
+                                  variant="ghost" size="sm"
+                                  onClick={() => {
+                                    setEditingItem(it);
+                                    setEditCountedQty(it.countedQuantity ?? "");
+                                    setEditLot(it.lotNumber ?? "");
+                                    setEditExpiry(toDateInputValue(it.expiryDate));
+                                    setEditNotes(it.notes ?? "");
+                                  }}
+                                >
+                                  عد الصنف
+                                </Button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            /* ─── قائمة عمليات الجرد ─── */
+            <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                <h3 className="font-semibold text-lg">عمليات الجرد</h3>
+                <Button onClick={() => setShowNewCount(true)} className="gap-1.5">
+                  <Plus className="w-4 h-4" /> بدء جرد جديد
+                </Button>
+              </div>
+
+              {!countOperations?.length ? (
+                <Card><CardContent className="p-12 text-center">
+                  <BookOpen className="w-12 h-12 mx-auto text-muted-foreground/40 mb-4" />
+                  <p className="text-sm text-muted-foreground">لا توجد مسودات جرد جارية</p>
+                </CardContent></Card>
+              ) : (
+                <div className="space-y-2">
+                  {(countOperations as any[]).filter(op => op.status === "in_progress").map((op) => (
+                    <Card key={op.id} className="cursor-pointer hover:border-primary" onClick={() => setActiveCountId(op.id)}>
+                      <CardContent className="p-4 flex items-center justify-between">
+                        <div>
+                          <p className="font-medium">{op.operationTitle || op.operationNumber}</p>
+                          <p className="text-[11px] text-muted-foreground">{op.operationNumber}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {op.scope === "full" ? "شامل" : "جزئي"} — {fmtDate(op.operationDate)} — {op.totalItemsCounted} صنف معدود
+                            {op.totalDiscrepancies > 0 && ` — ${op.totalDiscrepancies} فرق`}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Badge variant="secondary">مسودة</Badge>
+                          <Button
+                            variant="ghost" size="icon" className="h-8 w-8 text-destructive"
+                            title="حذف المسودة"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm(`سيتم حذف مسودة الجرد "${op.operationTitle || op.operationNumber}" نهائياً. هل أنت متأكد؟`)) {
+                                deleteCountMut.mutate({ operationId: op.id });
+                              }
+                            }}
+                            disabled={deleteCountMut.isPending}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+
+              <div className="pt-2">
+                <Button
+                  variant="outline"
+                  onClick={() => { setSettlementSourceCountId(null); setSettlementItems([]); setShowSettlement(true); }}
+                >
+                  تسوية مستقلة (بدون جرد)
+                </Button>
+              </div>
+            </div>
+          )}
+          </>
+          )}
         </TabsContent>
       </Tabs>
 
-      {/* ══ نافذة إنشاء عملية استبعاد جديدة ══ */}
+      {/* ══ نافذة بدء جرد جديد ══ */}
+      <Dialog open={showNewCount} onOpenChange={setShowNewCount}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>بدء جرد جديد</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs">عنوان الجرد (اختياري)</Label>
+              <Input
+                placeholder={`افتراضي: جرد يوم ${riyadhPreview.dayName} بتاريخ ${riyadhPreview.date}`}
+                value={countTitle}
+                onChange={e => setCountTitle(e.target.value)}
+              />
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">التاريخ (الرياض)</Label>
+                <Input value={riyadhPreview.date} disabled dir="ltr" className="bg-muted/40" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">اليوم</Label>
+                <Input value={riyadhPreview.dayName} disabled className="bg-muted/40" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">وقت البدء</Label>
+                <Input value={riyadhPreview.time} disabled dir="ltr" className="bg-muted/40" />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">طريقة الجرد</Label>
+              <div className="flex gap-2">
+                <Button
+                  size="sm" variant={countUiMode === "auto" ? "default" : "outline"}
+                  onClick={() => setCountUiMode("auto")} className="gap-1"
+                >
+                  تحميل الأصناف مسبقاً
+                </Button>
+                <Button
+                  size="sm" variant={countUiMode === "manual" ? "default" : "outline"}
+                  onClick={() => { setCountUiMode("manual"); setCountScope("partial"); }} className="gap-1"
+                >
+                  <QrCode className="w-3.5 h-3.5" /> يدوي (باركود/رقم/اختيار)
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {countUiMode === "auto"
+                  ? "تُحمَّل كل أصناف النطاق دفعة واحدة، وتدخل الكمية المعدودة لكل صنف."
+                  : "يبدأ الجرد فاضياً، وتضيف الأصناف تباعاً بمسح الباركود أو كتابة الرقم أو الاختيار من القائمة."}
+              </p>
+            </div>
+
+            {countUiMode === "auto" && (
+              <div className="space-y-1.5">
+                <Label className="text-xs">النطاق</Label>
+                <Select value={countScope} onValueChange={(v: any) => setCountScope(v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="full">جرد شامل (كل الأصناف)</SelectItem>
+                    <SelectItem value="partial">جرد جزئي (اختيار أصناف)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {countUiMode === "auto" && countScope === "partial" && (
+              <div className="space-y-1.5">
+                <Label className="text-xs">اختر الأصناف ({selectedPartialIds.length} محدد)</Label>
+                <Input
+                  placeholder="ابحث باسم الصنف..."
+                  value={countItemSearch}
+                  onChange={e => setCountItemSearch(e.target.value)}
+                />
+                <div className="max-h-48 overflow-y-auto border rounded-md divide-y">
+                  {((inventoryList as any[]) || [])
+                    .filter(i => i.itemName.includes(countItemSearch))
+                    .slice(0, 30)
+                    .map(i => (
+                      <label key={i.id} className="flex items-center gap-2 p-2 text-sm cursor-pointer hover:bg-muted/50">
+                        <input
+                          type="checkbox"
+                          checked={selectedPartialIds.includes(i.id)}
+                          onChange={e => {
+                            setSelectedPartialIds(prev =>
+                              e.target.checked ? [...prev, i.id] : prev.filter(id => id !== i.id)
+                            );
+                          }}
+                        />
+                        {i.itemName} <span className="text-muted-foreground text-xs">({i.quantity} {i.unit})</span>
+                      </label>
+                    ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={() => createCountMut.mutate({
+                operationTitle: countTitle.trim() || undefined,
+                scope: countScope,
+                itemIds: countUiMode === "auto" && countScope === "partial" ? selectedPartialIds : undefined,
+                allowEmpty: countUiMode === "manual",
+              })}
+              disabled={
+                createCountMut.isPending ||
+                (countUiMode === "auto" && countScope === "partial" && selectedPartialIds.length === 0)
+              }
+            >
+              {createCountMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "بدء الجرد"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ══ نافذة عدّ صنف ══ */}
+      <Dialog open={!!editingItem} onOpenChange={(v) => !v && setEditingItem(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>عدّ الصنف</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            {/* بطاقة تفاصيل الصنف */}
+            <div className="flex items-center gap-3 p-3 rounded-lg border bg-muted/30">
+              <Package className="w-8 h-8 text-primary shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm truncate">{editingItem?.itemName}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  كمية النظام الحالية: <strong className="text-foreground">{editingItem?.systemQuantity} {editingItem?.unit}</strong>
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">الكمية الفعلية المعدودة *</Label>
+              <Input type="number" value={editCountedQty} onChange={e => setEditCountedQty(e.target.value)} autoFocus />
+              {editCountedQty !== "" && editingItem && (() => {
+                const d = parseFloat(editCountedQty || "0") - parseFloat(String(editingItem.systemQuantity || 0));
+                if (d === 0) return <p className="text-xs text-emerald-600">مطابق لكمية النظام — لا يوجد فرق</p>;
+                return (
+                  <p className={`text-xs flex items-center gap-1 ${d > 0 ? "text-blue-600" : "text-red-600"}`}>
+                    <AlertTriangle className="w-3 h-3" /> فرق {d > 0 ? `زيادة +${d}` : `نقص ${d}`}
+                  </p>
+                );
+              })()}
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">رقم الدفعة (اختياري)</Label>
+              <Input value={editLot} onChange={e => setEditLot(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">تاريخ الصلاحية (اختياري)</Label>
+              <Input type="date" value={editExpiry} onChange={e => setEditExpiry(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">ملاحظة (اختياري)</Label>
+              <Textarea value={editNotes} onChange={e => setEditNotes(e.target.value)} rows={2} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={() => recordItemMut.mutate({
+                countItemId: editingItem.countItemId,
+                countedQuantity: parseFloat(editCountedQty || "0"),
+                lotNumber: editLot || undefined,
+                expiryDate: editExpiry || undefined,
+                notes: editNotes || undefined,
+              })}
+              disabled={recordItemMut.isPending || editCountedQty === ""}
+            >
+              حفظ
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ══ نافذة تسوية المخزون ══ */}
+      <Dialog open={showSettlement} onOpenChange={setShowSettlement}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {settlementSourceCountId ? "تسوية من نتائج الجرد" : "تسوية مستقلة"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+            {settlementSourceCountId && discrepancies && (
+              <div className="border rounded-lg overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50">
+                    <tr>
+                      <th className="p-2 text-right">الصنف</th>
+                      <th className="p-2 text-right">قبل</th>
+                      <th className="p-2 text-right">بعد (قابل للتعديل)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(discrepancies as any[]).map((d) => {
+                      const current = settlementItems.find(s => s.inventoryId === d.inventoryId);
+                      const afterVal = current ? current.afterQuantity : d.countedQuantity;
+                      return (
+                        <tr key={d.inventoryId} className="border-t">
+                          <td className="p-2">{d.itemName}</td>
+                          <td className="p-2">{d.systemQuantity} {d.unit}</td>
+                          <td className="p-2">
+                            <Input
+                              type="number" className="w-28"
+                              value={afterVal}
+                              onChange={e => {
+                                const val = parseFloat(e.target.value || "0");
+                                setSettlementItems(prev => {
+                                  const others = prev.filter(s => s.inventoryId !== d.inventoryId);
+                                  return [...others, {
+                                    inventoryId: d.inventoryId,
+                                    afterQuantity: val,
+                                    lotNumber: d.lotNumber,
+                                    expiryDate: toDateInputValue(d.expiryDate) || undefined,
+                                  }];
+                                });
+                              }}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {!settlementSourceCountId && (
+              <div className="space-y-1.5">
+                <Label className="text-xs">ابحث عن صنف لإضافته للتسوية</Label>
+                <Input
+                  placeholder="اسم الصنف..."
+                  value={countItemSearch}
+                  onChange={e => setCountItemSearch(e.target.value)}
+                />
+                <div className="max-h-40 overflow-y-auto border rounded-md divide-y">
+                  {((inventoryList as any[]) || [])
+                    .filter(i => i.itemName.includes(countItemSearch) && !settlementItems.some(s => s.inventoryId === i.id))
+                    .slice(0, 20)
+                    .map(i => (
+                      <div
+                        key={i.id}
+                        className="p-2 text-sm cursor-pointer hover:bg-muted/50 flex justify-between"
+                        onClick={() => setSettlementItems(prev => [...prev, {
+                          inventoryId: i.id, afterQuantity: i.quantity, itemName: i.itemName,
+                        }])}
+                      >
+                        <span>{i.itemName}</span>
+                        <span className="text-muted-foreground text-xs">الحالي: {i.quantity} {i.unit}</span>
+                      </div>
+                    ))}
+                </div>
+                {settlementItems.length > 0 && (
+                  <div className="border rounded-lg overflow-x-auto mt-2">
+                    <table className="w-full text-sm">
+                      <tbody>
+                        {settlementItems.map((s, idx) => (
+                          <tr key={s.inventoryId} className="border-t">
+                            <td className="p-2">{s.itemName || s.inventoryId}</td>
+                            <td className="p-2">
+                              <Input
+                                type="number" className="w-28"
+                                value={s.afterQuantity}
+                                onChange={e => {
+                                  const val = parseFloat(e.target.value || "0");
+                                  setSettlementItems(prev => prev.map((x, i) => i === idx ? { ...x, afterQuantity: val } : x));
+                                }}
+                              />
+                            </td>
+                            <td className="p-2">
+                              <Button variant="ghost" size="icon" onClick={() =>
+                                setSettlementItems(prev => prev.filter((_, i) => i !== idx))
+                              }><X className="w-4 h-4" /></Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <Label className="text-xs text-red-600">سبب التسوية (إلزامي) *</Label>
+              <Textarea
+                value={settlementReason}
+                onChange={e => setSettlementReason(e.target.value)}
+                placeholder="مثال: فرق جرد دوري، تصحيح خطأ إدخال..."
+                rows={2}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={() => {
+                const items = settlementSourceCountId
+                  ? (discrepancies as any[])?.map(d => {
+                      const edited = settlementItems.find(s => s.inventoryId === d.inventoryId);
+                      return {
+                        inventoryId: d.inventoryId,
+                        afterQuantity: edited ? edited.afterQuantity : parseFloat(d.countedQuantity),
+                        lotNumber: d.lotNumber || undefined,
+                        expiryDate: toDateInputValue(d.expiryDate) || undefined,
+                      };
+                    }) || []
+                  : settlementItems.map(s => ({ inventoryId: s.inventoryId, afterQuantity: s.afterQuantity }));
+
+                applySettlementMut.mutate({
+                  sourceType: settlementSourceCountId ? "from_count" : "manual",
+                  sourceCountOperationId: settlementSourceCountId || undefined,
+                  reason: settlementReason,
+                  items,
+                });
+              }}
+              disabled={applySettlementMut.isPending || settlementReason.trim().length < 10}
+            >
+              {applySettlementMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "تطبيق التسوية"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={showNew} onOpenChange={(open) => {
         // المشكلة 2: منع إغلاق النافذة بالضغط خارجها — تُغلق فقط بزر "إلغاء"
         if (!open) return;

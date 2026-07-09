@@ -324,6 +324,18 @@ export const inventory = mysqlTable("inventory", {
   receiptId: int("receiptId"),
   averageCost: decimal("averageCost", { precision: 12, scale: 4 }).notNull().default("0"),
   totalCostValue: decimal("totalCostValue", { precision: 14, scale: 2 }).notNull().default("0"),
+  // ── أعمدة موجودة فعلياً بالقاعدة الحية، أُضيفت هنا لمطابقة الواقع (0042) ──
+  itemName_ar: varchar("itemName_ar", { length: 300 }),
+  itemName_en: varchar("itemName_en", { length: 300 }),
+  itemName_ur: varchar("itemName_ur", { length: 300 }),
+  itemType: varchar("itemType", { length: 50 }),
+  purchaseUnit: varchar("purchaseUnit", { length: 50 }),
+  issueUnit: varchar("issueUnit", { length: 50 }),
+  conversionFactor: decimal("conversionFactor", { precision: 10, scale: 4 }),
+  expiryDate: date("expiryDate"),
+  linkedItemId: int("linkedItemId"),
+  assetId: int("assetId"),
+  warehouseId: int("warehouseId"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -1708,3 +1720,77 @@ export interface OcrExtractedItem {
   matchedItemId?:   number;
   suggestedItemId?: number;
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// وحدة الجرد وتسوية المخزون
+// ══════════════════════════════════════════════════════════════════════════
+export const inventoryCountScopes = ["full", "partial"] as const;
+export const inventoryCountStatuses = ["in_progress", "completed"] as const;
+export const inventorySettlementSourceTypes = ["from_count", "manual"] as const;
+
+export const inventoryCountOperations = mysqlTable("inventory_count_operations", {
+  id:                 int("id").autoincrement().primaryKey(),
+  operationNumber:    varchar("operationNumber", { length: 30 }).notNull().unique(),
+  operationTitle:     varchar("operationTitle", { length: 200 }),   // عنوان الجرد (افتراضي: "جرد يوم <اليوم> بتاريخ <التاريخ>")
+  operationDate:      date("operationDate").notNull(),             // تاريخ اليوم بتوقيت الرياض وقت الإنشاء — غير قابل للتعديل
+  riyadhDayName:      varchar("riyadhDayName", { length: 20 }),     // اسم اليوم (الأربعاء...) بتوقيت الرياض — غير قابل للتعديل
+  riyadhStartTime:    varchar("riyadhStartTime", { length: 8 }),    // ساعة بدء الجرد HH:MM:SS بتوقيت الرياض — غير قابل للتعديل
+  scope:              mysqlEnum("scope", [...inventoryCountScopes]).notNull().default("full"),
+  warehouseId:        int("warehouseId"),
+  status:             mysqlEnum("status", [...inventoryCountStatuses]).notNull().default("in_progress"),
+  totalItemsCounted:  int("totalItemsCounted").notNull().default(0),
+  totalDiscrepancies: int("totalDiscrepancies").notNull().default(0),
+  createdById:        int("createdById").notNull(),
+  completedAt:        timestamp("completedAt"),
+  createdAt:          timestamp("createdAt").defaultNow().notNull(),
+  updatedAt:          timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const inventoryCountItems = mysqlTable("inventory_count_items", {
+  id:              int("id").autoincrement().primaryKey(),
+  operationId:     int("operationId").notNull(),
+  inventoryId:      int("inventoryId").notNull(),
+  systemQuantity:   decimal("systemQuantity", { precision: 12, scale: 3 }).notNull(),
+  countedQuantity:  decimal("countedQuantity", { precision: 12, scale: 3 }),
+  diffQuantity:     decimal("diffQuantity", { precision: 12, scale: 3 }),
+  lotNumber:        varchar("lotNumber", { length: 50 }),
+  expiryDate:       date("expiryDate"),
+  notes:            text("notes"),
+  countedById:      int("countedById"),
+  countedAt:        timestamp("countedAt"),
+  createdAt:        timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const inventorySettlements = mysqlTable("inventory_settlements", {
+  id:                     int("id").autoincrement().primaryKey(),
+  settlementNumber:       varchar("settlementNumber", { length: 30 }).notNull().unique(),
+  sourceType:             mysqlEnum("sourceType", [...inventorySettlementSourceTypes]).notNull().default("manual"),
+  sourceCountOperationId: int("sourceCountOperationId"),
+  status:                 mysqlEnum("status", ["applied"]).notNull().default("applied"),
+  reason:                 text("reason").notNull(),
+  appliedById:            int("appliedById").notNull(),
+  appliedAt:              timestamp("appliedAt").defaultNow().notNull(),
+  createdAt:              timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const inventorySettlementItems = mysqlTable("inventory_settlement_items", {
+  id:             int("id").autoincrement().primaryKey(),
+  settlementId:   int("settlementId").notNull(),
+  inventoryId:    int("inventoryId").notNull(),
+  beforeQuantity: decimal("beforeQuantity", { precision: 12, scale: 3 }).notNull(),
+  afterQuantity:  decimal("afterQuantity", { precision: 12, scale: 3 }).notNull(),
+  diffQuantity:   decimal("diffQuantity", { precision: 12, scale: 3 }).notNull(),
+  lotNumber:      varchar("lotNumber", { length: 50 }),
+  expiryDate:     date("expiryDate"),
+  createdAt:      timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const inventoryCountNumberCounter = mysqlTable("inventory_count_number_counter", {
+  id:   int("id").autoincrement().primaryKey(),
+  year: int("year").notNull(),
+});
+
+export const inventorySettlementNumberCounter = mysqlTable("inventory_settlement_number_counter", {
+  id:   int("id").autoincrement().primaryKey(),
+  year: int("year").notNull(),
+});
