@@ -51,14 +51,15 @@ async function launchBrowser(): Promise<Browser> {
   return puppeteer.launch({
     executablePath,
     headless: true,
+    protocolTimeout: 120000, // مهلة أطول لمنع "Target closed" على الحاويات البطيئة
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
       "--no-first-run",
-      "--no-zygote",
-      "--single-process",
+      // ملاحظة: أُزيلت --single-process و --no-zygote لأنهما أشهر سبب لانهيار
+      // Chromium فجأة بـ "Target closed" داخل حاويات Docker/Railway.
       // أعلام إضافية لتقليل استهلاك الرام والمعالجة على حاويات محدودة الموارد
       "--disable-extensions",
       "--disable-background-networking",
