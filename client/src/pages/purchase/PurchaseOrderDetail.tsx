@@ -106,6 +106,7 @@ export default function PurchaseOrderDetail() {
   const locale = language === "ar" ? "ar-SA" : language === "ur" ? "ur-PK" : "en-US";
   const currency = t.common.currency;
   const poId = parseInt(params?.id || "0");
+  const utils = trpc.useUtils();
 
   const { data: po, isLoading, refetch } = trpc.purchaseOrders.getById.useQuery({ id: poId }, { enabled: !!poId });
   const { data: users } = trpc.users.list.useQuery();
@@ -147,7 +148,15 @@ export default function PurchaseOrderDetail() {
 
   const estimateMut = trpc.purchaseOrders.estimateCost.useMutation({ onSuccess: () => { toast.success(t.common.save); refetch(); refetchBatches(); }, onError: (e) => toast.error(e.message) });
   const submitPricedBatchMut = trpc.purchaseOrders.submitPricedBatch.useMutation({
-    onSuccess: (res: any) => { toast.success(`تم إرسال ${res.itemCount} صنف للحسابات (دفعة رقم ${res.batchNumber})`); refetch(); refetchBatches(); },
+    onSuccess: (res: any) => {
+      toast.success(`تم إرسال ${res.itemCount} صنف للحسابات (دفعة رقم ${res.batchNumber})`);
+      if (res.pricingDocumentArchived === false) {
+        toast.warning("تم إرسال التسعير للحسابات، لكن تعذر حفظ وثيقة التسعير في مركز المستندات");
+      }
+      utils.attachments.listByType.invalidate({ entityType: "delegate_pricing_documents" });
+      refetch();
+      refetchBatches();
+    },
     onError: (e: any) => toast.error(e.message),
   });
   const { data: pricingBatches = [], refetch: refetchBatches } = trpc.purchaseOrders.listPricingBatches.useQuery(
@@ -155,8 +164,12 @@ export default function PurchaseOrderDetail() {
     { enabled: !!poId }
   );
   const approveAccountingBatchMut = trpc.purchaseOrders.approveAccountingBatch.useMutation({
-    onSuccess: (_data: any, variables: any) => {
+    onSuccess: (result: any, variables: any) => {
       toast.success("تم اعتماد الدفعة");
+      if (result?.financialDocumentArchived === false) {
+        toast.warning("تم اعتماد الدفعة، لكن تعذر حفظ الوثيقة المالية في مركز المستندات");
+      }
+      utils.attachments.listByType.invalidate({ entityType: "po_financial_batch" });
       refetch(); refetchBatches();
       printPurchasePdf(variables.batchId);
     },
@@ -262,6 +275,12 @@ const submitDraftMut = trpc.purchaseOrders.submitDraft.useMutation({
   });
   const role = user?.role || "";
   const userId = user?.id;
+  // عند فتح PR من «بانتظار إجرائي» لتنفيذ الشراء، نعرض للمندوب فقط
+  // الأصناف التي وصلت فعلًا لمرحلة الشراء؛ الأصناف غير المسعّرة تبقى ضمن PB.
+  const isDelegatePurchaseActionView =
+    role === "delegate" &&
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("action") === "purchase";
 
   const [estimates, setEstimates] = useState<Record<number, string>>({});
   const [rejectReason, setRejectReason] = useState("");
@@ -318,6 +337,7 @@ const submitDraftMut = trpc.purchaseOrders.submitDraft.useMutation({
   // (راجع docs/CHANGELOG_TECHNICAL.md وdocs/PENDING_TASKS.md).
 
   const [exportingBatchId, setExportingBatchId] = useState<number | null>(null);
+  const [exportingSubmissionId, setExportingSubmissionId] = useState<number | null>(null);
   const handleExportBatchPdf = async (batchId: number, batchNumber: number) => {
     if (!po?.id) return;
     setExportingBatchId(batchId);
@@ -337,6 +357,31 @@ const submitDraftMut = trpc.purchaseOrders.submitDraft.useMutation({
       toast.error(t.purchaseOrders.exportPdfFailed);
     } finally {
       setExportingBatchId(null);
+    }
+  };
+
+  // إذا كانت دفعة التسعير جزءًا من purchase_package_submission فالمندوب لا
+  // يحصل على PDF مستقل للـ PR. المستند الرسمي الوحيد لطلب العهدة هو مستند
+  // دفعة الإرسال كاملة، لذلك نوجهه مباشرةً لتنزيل هذا المستند.
+  const handleExportPackageSubmissionPdf = async (submissionId: number) => {
+    if (!po?.id) return;
+    setExportingSubmissionId(submissionId);
+    try {
+      const res = await fetch(`/api/export/po/${po.id}/pdf?submissionId=${submissionId}`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(t.purchaseOrders.fileLoadFailed);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `package-submission-${submissionId}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error("تعذر تنزيل مستند دفعة الإرسال الرسمي");
+    } finally {
+      setExportingSubmissionId(null);
     }
   };
 
@@ -454,7 +499,12 @@ const visibleItems = useMemo(() => {
 
   if (role === "delegate") {
     return po.items.filter(
-      (item: any) => item.delegateId === userId
+      (item: any) =>
+        item.delegateId === userId &&
+        (
+          !isDelegatePurchaseActionView ||
+          ["approved", "funded"].includes(item.status)
+        )
     );
   }
 
@@ -499,7 +549,7 @@ const visibleItems = useMemo(() => {
   }
 
   return po.items;
-}, [po?.items, po?.status, isAdminOrOwner, role, userId, pricingBatches]);
+}, [po?.items, po?.status, isAdminOrOwner, role, userId, pricingBatches, isDelegatePurchaseActionView]);
   const totalEstimated = useMemo(() => visibleItems.filter((item: any) => !["rejected", "cancelled", "purchase_cancelled"].includes(item.status)).reduce((sum: number, item: any) => sum + (parseFloat(item.estimatedTotalCost || "0")), 0), [visibleItems]);
   const totalActual = useMemo(() => visibleItems.filter((item: any) => !["rejected", "cancelled", "purchase_cancelled"].includes(item.status)).reduce((sum: number, item: any) => sum + (parseFloat(item.actualTotalCost || "0")), 0), [visibleItems]);
 
@@ -559,7 +609,7 @@ const visibleItems = useMemo(() => {
               <AlertCircle className="w-4 h-4 mr-1.5" /> {t.purchaseOrders.returnForRevision}
             </Button>
           )}
-          {isDelegate && readyToSubmitCount > 0 && (
+          {isDelegate && readyToSubmitCount > 0 && !po.packageId && (
             <Button
               className="bg-teal-600 hover:bg-teal-700 gap-1.5"
               onClick={() => submitPricedBatchMut.mutate({ purchaseOrderId: po.id })}
@@ -1690,20 +1740,50 @@ const visibleItems = useMemo(() => {
                   </Badge>
                 </div>
 
-                {(isDelegate || isAccountant) && ["pending_accounting", "pending_management", "approved"].includes(batch.status) && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="self-start gap-1.5"
-                    disabled={exportingBatchId === batch.id}
-                    onClick={() => handleExportBatchPdf(batch.id, batch.batchNumber)}
-                  >
-                    {exportingBatchId === batch.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
-                    تصدير PDF لهذه الدفعة (لطلب العهدة)
-                  </Button>
-                )}
+                {(isDelegate || isAccountant) && ["pending_accounting", "pending_management", "approved"].includes(batch.status) && (() => {
+                  const isPackageSubmissionBatch = batch.purchasePackageSubmissionId != null;
+                  // إذا كانت دفعة التسعير جزءًا من دفعة إرسال حزمة، فالمستند الرسمي
+                  // للمندوب والحسابات هو مستند purchase_package_submission فقط.
+                  // الطلب المنفرد لا يصدر مستند عهدة موازيًا لنفس الإرسال.
+                  const mustUsePackageDocument =
+                    isPackageSubmissionBatch && (role === "delegate" || isAccountant);
 
-                {isAccountant && batch.status === "pending_accounting" && (
+                  if (mustUsePackageDocument) {
+                    const submissionId = Number(batch.purchasePackageSubmissionId);
+                    return (
+                      <div className="self-start space-y-1">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="gap-1.5"
+                          disabled={exportingSubmissionId === submissionId}
+                          onClick={() => handleExportPackageSubmissionPdf(submissionId)}
+                        >
+                          {exportingSubmissionId === submissionId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
+                          تنزيل مستند دفعة الإرسال الرسمي
+                        </Button>
+                        <p className="text-[11px] text-muted-foreground">
+                          لا يتاح PDF مستقل لهذا الطلب لأنه تابع لدفعة إرسال حزمة؛ المستند الرسمي هو مستند دفعة الإرسال.
+                        </p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="self-start gap-1.5"
+                      disabled={exportingBatchId === batch.id}
+                      onClick={() => handleExportBatchPdf(batch.id, batch.batchNumber)}
+                    >
+                      {exportingBatchId === batch.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
+                      تصدير PDF لهذه الدفعة (لطلب العهدة)
+                    </Button>
+                  );
+                })()}
+
+                {isAccountant && batch.status === "pending_accounting" && batch.purchasePackageSubmissionId == null && (
                   <div className="flex gap-2 items-end flex-wrap">
                     <div className="space-y-1">
                       <Label className="text-[11px] text-orange-700">المندوب عليه عهدة بمبلغ (ر.س.) *</Label>
@@ -1730,6 +1810,25 @@ const visibleItems = useMemo(() => {
                       {approveAccountingBatchMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
                       اعتماد الدفعة (حسابات)
                     </Button>
+                  </div>
+                )}
+
+                {isAccountant && batch.status === "pending_accounting" && batch.purchasePackageSubmissionId != null && (
+                  <div className="rounded-lg border border-orange-200 bg-orange-50/60 p-3 flex items-center justify-between gap-3 flex-wrap">
+                    <p className="text-xs text-orange-900">
+                      العهدة واعتماد الحسابات لهذه الدفعة يتمان من دفعة الإرسال الرسمية فقط.
+                    </p>
+                    {po.packageId && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          setLocation(`/purchase-packages/${po.packageId}?submissionId=${batch.purchasePackageSubmissionId}`)
+                        }
+                      >
+                        فتح دفعة الإرسال
+                      </Button>
+                    )}
                   </div>
                 )}
 

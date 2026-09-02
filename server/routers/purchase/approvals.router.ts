@@ -29,7 +29,7 @@ async function archiveApprovedFinancialBatchPdf(args: {
   batchId: number;
   batchNumber: number;
   userId: number;
-}): Promise<void> {
+}): Promise<boolean> {
   try {
     const buffer = await generatePurchaseRequestPDF(args.poId, args.userId, args.batchId);
     const fileName = `${args.poNumber}-دفعة${args.batchNumber}-معتمدة-حسابات.pdf`;
@@ -52,9 +52,11 @@ async function archiveApprovedFinancialBatchPdf(args: {
       fileSize: buffer.length,
       uploadedById: args.userId,
     });
+    return true;
   } catch (e: any) {
     console.error("[ArchiveApprovedFinancialBatchPdf] Failed:", e?.message || e);
     // عمدًا: لا رمي خطأ هنا — راجع التعليق أعلى الدالة.
+    return false;
   }
 }
 
@@ -195,6 +197,17 @@ export const approvalsRouter = router({
   })).mutation(async ({ input, ctx }) => {
     const batch = await db.getPOPricingBatchById(input.batchId);
     if (!batch) throw new TRPCError({ code: "NOT_FOUND", message: "دفعة التسعير غير موجودة" });
+
+    // [PB-ACC-GUARD 2026-09-02] دفعة التسعير المرتبطة بحزمة لا تُعتمد
+    // منفردة؛ العهدة والاعتماد المالي موحّدان على purchase_package_submission.
+    // هذا الحارس لا يغيّر مسار PR المستقل غير المرتبط بحزمة.
+    if (batch.purchasePackageSubmissionId != null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "هذه الدفعة تابعة لدفعة إرسال حزمة؛ اعتماد الحسابات وإجمالي رصيد العهد يتمان من دفعة الإرسال فقط",
+      });
+    }
+
     if (batch.status !== "pending_accounting") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "هذه الدفعة ليست بانتظار اعتماد الحسابات" });
     }
@@ -231,6 +244,7 @@ export const approvalsRouter = router({
 
     const refreshedAccountingBatchItems = (await db.getPOItems(batch.purchaseOrderId)).filter(i => i.batchId === batch.id);
     const allBatchRejected = getActivePricingBatchItems(refreshedAccountingBatchItems).length === 0;
+    let financialDocumentArchived: boolean | null = null;
 
     if (allBatchRejected) {
       await db.updatePOPricingBatch(batch.id, {
@@ -257,7 +271,7 @@ export const approvalsRouter = router({
 
       // أرشفة نسخة معتمدة من مستند الدفعة — "الوثائق المالية المعتمدة" بمركز
       // المستندات (2026-08-10). راجع تعليق الدالة لسبب عدم رمي خطأ عند الفشل.
-      await archiveApprovedFinancialBatchPdf({
+      financialDocumentArchived = await archiveApprovedFinancialBatchPdf({
         poId: po.id,
         poNumber: po.poNumber,
         batchId: batch.id,
@@ -295,7 +309,7 @@ export const approvalsRouter = router({
       userId: ctx.user.id, action: "approve_accounting_batch",
       entityType: "po_pricing_batch", entityId: batch.id,
     });
-    return { success: true };
+    return { success: true, financialDocumentArchived };
   }),
 
   /**

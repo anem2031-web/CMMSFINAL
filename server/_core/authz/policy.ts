@@ -198,7 +198,11 @@ export type ActionName =
   | "reject"
   | "confirmPurchase"
   | "confirmDeliveryToWarehouse"
-  | "confirmDeliveryToRequester";
+  | "confirmDeliveryToRequester"
+  // [PB] إجراءا حزمة الشراء — إضافة صرفة (2026-08-29). الحزمة حاوية
+  // تجميعية للعرض والتعيين والمتابعة فقط، لا تغيّر حالة أي طلب أو صنف.
+  | "createPurchasePackage"
+  | "viewPurchasePackage";
 
 export type Ownership = "none" | "creator";
 
@@ -269,6 +273,32 @@ export const ACTION_POLICY: Record<ActionName, ActionClause[]> = {
   // الشراء الجزئي) — معرَّفتان بـITEM_STATUS_ACTION_POLICY أدناه بدلًا من هذا الجدول.
   confirmDeliveryToWarehouse: [],
   confirmDeliveryToRequester: [],
+
+  // ────────────────────────────────────────────────────────────────────
+  // [PB] حزمة الشراء (2026-08-29) — إضافة صرفة، صفر تعديل على أي بند أعلاه.
+  //
+  // التجميع فعل يقوم به دور المراجع (مدير الصيانة)، فيقع حيث يقع دوره
+  // بالضبط: نفس أدوار reviewItems ونفس حالة PENDING_REVIEW. هذا ليس
+  // اختيارًا تصميميًا جديدًا بل اشتقاق مباشر من قاعدة "الحزمة مرآة لطلب
+  // الشراء": ما يستطيعه المراجع على الطلب يستطيعه على حزمته.
+  //
+  // ملاحظة: هذان الإجراءان لا يغيّران حالة أي طلب أو صنف إطلاقًا — يكتبان
+  // على purchase_orders.packageId فقط (عمود تجميعي اختياري).
+  // ────────────────────────────────────────────────────────────────────
+  createPurchasePackage: [
+    { roles: [
+      ROLE.MAINTENANCE_MANAGER,
+      ROLE.GENERAL_MAINTENANCE_MANAGER,
+      ROLE.CONSTRUCTION_PROCUREMENT_MANAGER,
+      ROLE.PURCHASE_MANAGER,
+    ], statuses: [PO_STATUS.PENDING_REVIEW] },
+    { roles: [ROLE.FOOD_WAREHOUSE_MANAGER], statuses: [PO_STATUS.PENDING_REVIEW] }, // مقيّد إضافيًا بنطاق الملكية بـengine.ts
+  ],
+
+  // العرض متاح لكل من يرى الطلب أصلًا بأي مرحلة — الحزمة لا تضيف صلاحية
+  // رؤية جديدة، بل تعرض ما يراه المستخدم اليوم مجمّعًا. الفلترة الفعلية
+  // لما يراه كل دور تبقى في طبقة الراوتر كما هي اليوم بلا تغيير.
+  viewPurchasePackage: [{ roles: Object.values(ROLE), statuses: "any" }],
 };
 
 // ──────────────────────────────────────────────────────────────────────────

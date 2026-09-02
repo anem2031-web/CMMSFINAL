@@ -15,6 +15,7 @@ import { deliveryDocumentsRouter } from "./purchase/delivery-documents.router";
 import { returnDocumentsRouter } from "./inventory/return-documents.router";
 import { approvalsRouter } from "./purchase/approvals.router";
 import { vendorsRouter } from "./purchase/vendors.router";
+import { purchasePackagesRouter } from "./purchase/purchase-packages.router";
 
 import { inventoryRouter } from "./inventory/inventory.router";
 // ⚠️ receiptsRouter (v1) لا يزال مسجَّلاً لأن الإجراء scanBarcode بداخله لا يزال
@@ -87,6 +88,11 @@ purchaseOrders: router({
   ...purchaseOrdersRouter._def.procedures,
   ...approvalsRouter._def.procedures,
 }),
+
+  // [PB] حزمة الشراء — مساحة اسم مستقلة تمامًا (2026-08-29). لم تُدمج داخل
+  // purchaseOrders عمدًا: الحزمة مستوى أعلى من الطلب، ودمجها كان سيوحي
+  // بأنها إجراء على طلب واحد. صفر تأثير على التسجيل القائم أعلاه.
+  purchasePackages: purchasePackagesRouter,
 
   deliveryDocuments: deliveryDocumentsRouter,
   returnDocuments: returnDocumentsRouter,

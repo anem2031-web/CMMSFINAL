@@ -17,7 +17,7 @@ import {
   ShoppingCart, Package, Truck, CheckCircle2, Camera, Loader2,
   Clock, ArrowLeft, ArrowRight, Image as ImageIcon, FileText,
   AlertCircle, User, Hash, Calendar, Ban, Archive, Sparkles,
-  Search, QrCode, X, Send
+  Search, QrCode, X, Send, Boxes,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
@@ -446,6 +446,7 @@ export default function PurchaseCycle() {
 
   const { t, language } = useTranslation();
   const { user } = useAuth();
+  const utils = trpc.useUtils();
   const isRTL = language === "ar" || language === "ur";
   const role = user?.role || "";
   const isAdminOrOwner = role === "admin" || role === "owner";
@@ -483,7 +484,34 @@ export default function PurchaseCycle() {
 
   // Mutations
   const estimateCostMut = trpc.purchaseOrders.estimateCost.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.pricingSaved); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
-  const submitPricedBatchMut = trpc.purchaseOrders.submitPricedBatch.useMutation({ onSuccess: () => { toast.success("تم إرسال التسعير إلى الحسابات"); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
+  const submitPricedBatchMut = trpc.purchaseOrders.submitPricedBatch.useMutation({
+    onSuccess: (res: any) => {
+      toast.success("تم إرسال التسعير إلى الحسابات");
+      if (res?.pricingDocumentArchived === false) {
+        toast.warning("تم إرسال التسعير للحسابات، لكن تعذر حفظ وثيقة التسعير في مركز المستندات");
+      }
+      utils.attachments.listByType.invalidate({ entityType: "delegate_pricing_documents" });
+      refetchAll();
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  // [PB 2026-08-29] إرسال دفعة فرعية من حزمة — تنشأ دفعة تسعير مستقلة لكل
+  // طلب داخل الحزمة، مرتبطة كلها برقم إرسال واحد (PB01-1، PB01-2...).
+  // الفشل الجزئي طبيعي: طلب بلا أصناف جاهزة يُتجاوَز ويُبلَّغ عنه.
+  const submitPackageBatchMut = trpc.purchasePackages.submitPackageBatch.useMutation({
+    onSuccess: (res: any) => {
+      toast.success(`تم إرسال الدفعة ${res.submissionNumber} — ${res.sent.length} طلب`);
+      if (res.skipped?.length > 0) {
+        toast.info(`تم تجاوز ${res.skipped.length} طلب بلا أصناف مسعّرة جاهزة`);
+      }
+      if (res.pricingDocumentArchived === false) {
+        toast.warning("تم إرسال دفعة الحزمة للحسابات، لكن تعذر حفظ وثيقة التسعير في مركز المستندات");
+      }
+      utils.attachments.listByType.invalidate({ entityType: "delegate_pricing_documents" });
+      refetchAll();
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
   const confirmPurchaseMut = trpc.purchaseOrders.confirmItemPurchase.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.purchased); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
   const cancelPurchaseMut = trpc.purchaseOrders.cancelItemPurchase.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.cancelPurchaseSuccess); refetchAll(); setCancelDialog(null); setCancelNote(""); }, onError: (e: any) => toast.error(e.message) });
   const confirmWarehouseMut = trpc.purchaseOrders.confirmDeliveryToWarehouse.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.deliveredToWarehouse); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
@@ -790,7 +818,30 @@ export default function PurchaseCycle() {
             </CardContent></Card>
           ) : (
             <><div className="space-y-3">
-              {filterItems(sortPurchaseCycleItemsNewestFirst(pendingEstimate), searchEstimate, dateFrom, dateTo).slice((pageEstimate-1)*PAGE_SIZE, pageEstimate*PAGE_SIZE).map((item: any) => (
+              {(() => {
+                // [PB 2026-08-29] تجميع بصري: الأصناف التابعة لطلبات داخل حزمة
+                // تُعرض تحت رأس حزمتها مع زر إرسال موحّد، وغيرها تبقى بطاقات
+                // مفردة بشكلها وسلوكها الحاليين حرفيًا. الترتيب والفلترة
+                // والترقيم لم تتغيّر — التجميع يقع على الصفحة المعروضة فقط.
+                const pageItems = filterItems(sortPurchaseCycleItemsNewestFirst(pendingEstimate), searchEstimate, dateFrom, dateTo).slice((pageEstimate-1)*PAGE_SIZE, pageEstimate*PAGE_SIZE);
+                const groups: { key: string; packageId?: number; packageNumber?: string; items: any[] }[] = [];
+                const byPackage = new Map<number, any>();
+
+                for (const it of pageItems as any[]) {
+                  if (!it.packageId) {
+                    groups.push({ key: `item:${it.id}`, items: [it] });
+                    continue;
+                  }
+                  let g = byPackage.get(it.packageId);
+                  if (!g) {
+                    g = { key: `pkg:${it.packageId}`, packageId: it.packageId, packageNumber: it.packageNumber, items: [] };
+                    byPackage.set(it.packageId, g);
+                    groups.push(g);
+                  }
+                  g.items.push(it);
+                }
+
+                const renderItemCard = (item: any) => (
                 <Card key={item.id} className="border-amber-200 bg-amber-50">
                   <CardContent className="p-4 space-y-3">
                     <div className="flex items-start justify-between gap-2">
@@ -815,15 +866,19 @@ export default function PurchaseCycle() {
                           <div className="text-xs text-emerald-700">تم حفظ السعر</div>
                           <div className="font-semibold text-emerald-900">{Number(item.estimatedTotalCost || item.estimatedUnitCost || 0).toLocaleString("ar-SA")} ر.س</div>
                         </div>
-                        <Button
-                          size="sm"
-                          disabled={submitPricedBatchMut.isPending}
-                          onClick={() => submitPricedBatchMut.mutate({ purchaseOrderId: item.purchaseOrderId })}
-                          className="gap-2 bg-emerald-600 hover:bg-emerald-700"
-                        >
-                          {submitPricedBatchMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
-                          إرسال للحسابات
-                        </Button>
+                        {/* داخل حزمة: الإرسال يتم من زر الحزمة الموحّد أعلاه،
+                            فلا يُعرض زر مستقل لكل صنف تفاديًا لإرسالين متوازيين. */}
+                        {!item.packageId && (
+                          <Button
+                            size="sm"
+                            disabled={submitPricedBatchMut.isPending}
+                            onClick={() => submitPricedBatchMut.mutate({ purchaseOrderId: item.purchaseOrderId })}
+                            className="gap-2 bg-emerald-600 hover:bg-emerald-700"
+                          >
+                            {submitPricedBatchMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                            إرسال للحسابات
+                          </Button>
+                        )}
                       </div>
                     ) : (
                       <div className="flex gap-2 items-end">
@@ -863,7 +918,41 @@ export default function PurchaseCycle() {
                     )}
                   </CardContent>
                 </Card>
-              ))}
+                );
+
+                return groups.map(g => {
+                  if (!g.packageId) return renderItemCard(g.items[0]);
+                  const pricedCount = g.items.filter((i: any) => i.status === "estimated").length;
+                  return (
+                    <Card key={g.key} className="border-primary/40">
+                      <CardContent className="p-4 space-y-3">
+                        <div className="flex items-center justify-between gap-3 flex-wrap pb-2 border-b">
+                          <div className="flex items-center gap-2">
+                            <Boxes className="w-4 h-4 text-primary" />
+                            <span className="font-semibold font-mono text-sm">{g.packageNumber}</span>
+                            <Badge variant="secondary" className="text-[10px]">{g.items.length} صنف</Badge>
+                            {pricedCount > 0 && (
+                              <Badge className="text-[10px] bg-emerald-100 text-emerald-700">{pricedCount} مسعّر</Badge>
+                            )}
+                          </div>
+                          <Button
+                            size="sm"
+                            disabled={pricedCount === 0 || submitPackageBatchMut.isPending}
+                            onClick={() => submitPackageBatchMut.mutate({ packageId: g.packageId! })}
+                            className="gap-2 bg-emerald-600 hover:bg-emerald-700"
+                          >
+                            {submitPackageBatchMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                            إرسال المسعّر للحسابات
+                          </Button>
+                        </div>
+                        <div className="space-y-3">
+                          {g.items.map((it: any) => renderItemCard(it))}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                });
+              })()}
             </div>
             <Pagination total={filterItems(pendingEstimate, searchEstimate, dateFrom, dateTo).length} page={pageEstimate} setPage={setPageEstimate} /></>)}
         </TabsContent>

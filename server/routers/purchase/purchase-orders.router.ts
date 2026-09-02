@@ -6,6 +6,8 @@ import { notifyOwner } from "../../_core/notification";
 import { detectLanguage } from "../../services/translation/translation";
 import { queueTranslation } from "../../services/translation/translationEngine";
 import { notifyItemRejection } from "../_shared/router-helpers";
+import { generatePurchaseRequestPDF } from "../../services/export/exportService";
+import { storagePut } from "../../_core/storage";
 import { findKnownInactiveCatalogUnitNames } from "../../_core/catalog-unit-governance";
 import { assertCanViewPurchaseOrder, filterVisiblePurchaseOrders, assertCanPerformPOAction, assertCanPerformItemPOAction, assertPOItemAssignedToDelegate, isItemAssignedToPODelegate, assertCanPerformItemStatusPOAction, assertCanResolveReturnedPOItem, assertCanRequestDelegateChange, assertCanResolveDelegateChange } from "../../_core/authz/guard";
 import { OWN_REQUESTS_ONLY_ROLES } from "../../_core/authz/policy";
@@ -21,6 +23,7 @@ import {
   isPendingTicketMaterialLink,
   shouldExposeTicketMaterialLink,
 } from "@shared/ticketMaterialDelivery";
+import { resolveInventoryLotForIssue } from "../../_core/inventory-lots";
 
 // ── دالة مشتركة: ترجمة أصناف طلب الشراء في الخلفية ──────────────────────────
 async function queuePOItemsTranslation(items: any[], userId: number): Promise<void> {
@@ -175,39 +178,61 @@ interface InventoryTicketDeliveryContext {
 
 async function getInventoryTicketDeliveryContext(
   inventoryId: number,
+  purchaseOrderItemId?: number | null,
 ): Promise<InventoryTicketDeliveryContext | null> {
   const database = await db.getDb();
   if (!database) return null;
 
-  // inventoryId رقم مُتحقق منه عبر z.number، لذلك إدخاله كعدد لا يفتح باب حقن SQL.
+  // عند مسح Lot نستخدم purchaseOrderItemId المحفوظ على نفس الدفعة كمصدر الحقيقة.
+  // fallback القديم يبقى فقط للمخزون الذي لا يمرر Lot/PO item حتى لا نغيّر سلوكه.
+  const safePurchaseOrderItemId = purchaseOrderItemId ? Number(purchaseOrderItemId) : null;
   const safeInventoryId = Number(inventoryId);
-  const rows = await database.execute(`
-    SELECT
-      wri.purchaseOrderItemId,
-      poi.purchaseOrderId,
-      poi.status AS purchaseOrderItemStatus,
-      po.ticketId,
-      t.ticketNumber,
-      t.status AS ticketStatus,
-      t.maintenancePath,
-      t.assignedToId AS assignedTechnicianId,
-      assigned.name AS assignedTechnicianName
-    FROM inventory inv
-    LEFT JOIN warehouse_receipt_items wri
-      ON wri.inventoryId = inv.id
-     AND wri.receiptId = inv.receiptId
-    LEFT JOIN purchase_order_items poi
-      ON poi.id = wri.purchaseOrderItemId
-    LEFT JOIN purchase_orders po
-      ON po.id = poi.purchaseOrderId
-    LEFT JOIN tickets t
-      ON t.id = po.ticketId
-    LEFT JOIN users assigned
-      ON assigned.id = t.assignedToId
-    WHERE inv.id = ${safeInventoryId}
-    ORDER BY wri.id DESC
-    LIMIT 1
-  `);
+  const rows = safePurchaseOrderItemId
+    ? await database.execute(`
+      SELECT
+        poi.id AS purchaseOrderItemId,
+        poi.purchaseOrderId,
+        poi.status AS purchaseOrderItemStatus,
+        po.ticketId,
+        t.ticketNumber,
+        t.status AS ticketStatus,
+        t.maintenancePath,
+        t.assignedToId AS assignedTechnicianId,
+        assigned.name AS assignedTechnicianName
+      FROM purchase_order_items poi
+      LEFT JOIN purchase_orders po ON po.id = poi.purchaseOrderId
+      LEFT JOIN tickets t ON t.id = po.ticketId
+      LEFT JOIN users assigned ON assigned.id = t.assignedToId
+      WHERE poi.id = ${safePurchaseOrderItemId}
+      LIMIT 1
+    `)
+    : await database.execute(`
+      SELECT
+        wri.purchaseOrderItemId,
+        poi.purchaseOrderId,
+        poi.status AS purchaseOrderItemStatus,
+        po.ticketId,
+        t.ticketNumber,
+        t.status AS ticketStatus,
+        t.maintenancePath,
+        t.assignedToId AS assignedTechnicianId,
+        assigned.name AS assignedTechnicianName
+      FROM inventory inv
+      LEFT JOIN warehouse_receipt_items wri
+        ON wri.inventoryId = inv.id
+       AND wri.receiptId = inv.receiptId
+      LEFT JOIN purchase_order_items poi
+        ON poi.id = wri.purchaseOrderItemId
+      LEFT JOIN purchase_orders po
+        ON po.id = poi.purchaseOrderId
+      LEFT JOIN tickets t
+        ON t.id = po.ticketId
+      LEFT JOIN users assigned
+        ON assigned.id = t.assignedToId
+      WHERE inv.id = ${safeInventoryId}
+      ORDER BY wri.id DESC
+      LIMIT 1
+    `);
 
   const row = ((rows as any)?.[0] || [])[0] as any;
   if (!row) return null;
@@ -296,6 +321,155 @@ async function syncAndNotifyTicketMaterialDelivery(params: {
   return after.status;
 }
 
+
+/**
+ * [DELEGATE-PRICING-DOC 2026-08-31] أرشفة نسخة التسعير الصادرة من المندوب
+ * لحظة إرسال دفعة تسعير طلب مفرد إلى الحسابات. الارتباط هنا بـ Pricing Batch
+ * نفسه، ولا يغيّر أي حالة أو انتقال Workflow. فشل الأرشفة لا يلغي الإرسال
+ * الناجح؛ تُعاد النتيجة للواجهة كي تُظهر تنبيهًا واضحًا للمستخدم.
+ */
+async function archiveDelegatePricingBatchPdf(args: {
+  poId: number;
+  poNumber: string;
+  batchId: number;
+  batchNumber: number;
+  delegateId: number;
+}): Promise<boolean> {
+  try {
+    const buffer = await generatePurchaseRequestPDF(args.poId, args.delegateId, args.batchId);
+    const fileName = `${args.poNumber}-دفعة${args.batchNumber}-تسعير-مندوب.pdf`;
+    const key = `cmms/delegate-pricing-documents/po-${args.poId}/batch-${args.batchId}-${Date.now()}.pdf`;
+    const { key: fileKey } = await storagePut(key, buffer, "application/pdf");
+    const proxyUrl = `/api/media?key=${encodeURIComponent(fileKey)}`;
+
+    await db.createAttachment({
+      entityType: "delegate_pricing_batch",
+      entityId: args.batchId,
+      fileName,
+      fileUrl: proxyUrl,
+      fileKey,
+      mimeType: "application/pdf",
+      fileSize: buffer.length,
+      uploadedById: args.delegateId,
+    });
+    return true;
+  } catch (e: any) {
+    console.error("[ArchiveDelegatePricingBatchPdf] Failed:", e?.message || e);
+    return false;
+  }
+}
+
+/**
+ * [PB 2026-08-29] منطق إرسال دفعة تسعير طلب واحد للحسابات.
+ *
+ * مستخرَج حرفيًا من إجراء submitPricedBatch (بلا أي تغيير في المنطق أو
+ * الترتيب أو الرسائل) ليشاركه مسار إرسال الحزمة، فلا يوجد موضعان لنفس
+ * المنطق يمكن أن ينحرف أحدهما عن الآخر.
+ *
+ * opts اختيارية بالكامل: استدعاؤها بدونها ينتج **نفس** السلوك السابق
+ * حرفيًا (scope يبقى 'single' بالقيمة الافتراضية، و
+ * purchasePackageSubmissionId يبقى NULL). تُمرَّر فقط من مسار الحزمة.
+ */
+export async function submitPricedBatchForPO(
+  purchaseOrderId: number,
+  user: { id: number; role: string; [key: string]: any },
+  opts?: { purchasePackageSubmissionId?: number },
+) {
+  const po = await db.getPurchaseOrderById(purchaseOrderId);
+  if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
+
+  const allItems = await db.getPOItems(purchaseOrderId);
+  const blockedEstimatedItems = allItems.filter(
+    (i: any) => i.status === "estimated" && !i.batchId && i.delegateChangeRequestedAt && isItemAssignedToPODelegate(user as any, i)
+  );
+  if (blockedEstimatedItems.length > 0) {
+    throw new TRPCError({ code: "CONFLICT", message: "لا يمكن إرسال صنف للحسابات أثناء وجود طلب تغيير مندوب معلّق" });
+  }
+  // الأصناف الجاهزة للإرسال: مسعّرة، غير مرسلة، ولا يوجد عليها طلب تغيير مندوب
+  const readyItems = allItems.filter(
+    (i: any) => i.status === "estimated" && !i.batchId && !i.delegateChangeRequestedAt && isItemAssignedToPODelegate(user as any, i)
+  );
+
+  if (readyItems.length === 0) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا توجد أصناف مسعّرة جاهزة للإرسال للحسابات" });
+  }
+
+  const batchNumber = await db.getNextBatchNumber(purchaseOrderId);
+  const totalBatchCost = readyItems.reduce((sum: number, i: any) => sum + parseFloat(i.estimatedTotalCost || "0"), 0);
+
+  const batchId = await db.createPOPricingBatch({
+    purchaseOrderId,
+    batchNumber,
+    submittedById: user.id,
+    itemCount: readyItems.length,
+    totalEstimatedCost: String(totalBatchCost),
+    status: "pending_accounting",
+    // [PB] يُضبطان معًا فقط عند الإرسال ضمن حزمة. بدونهما يبقى السلوك
+    // مطابقًا للإرسال العادي حرفيًا.
+    ...(opts?.purchasePackageSubmissionId != null && {
+      purchasePackageSubmissionId: opts.purchasePackageSubmissionId,
+      scope: "multi" as const,
+    }),
+  } as any);
+
+  for (const item of readyItems) {
+    await db.updatePOItem(item.id, { batchId });
+  }
+
+  // أي دفعة تسعير جديدة (أولى أو لاحقة) تُعيد الطلب لحالة "بانتظار اعتماد الحسابات"
+  // بغض النظر عن المرحلة التي وصلها الطلب سابقاً (approved / partial_purchase / purchased...)،
+  // حتى يظهر بشكل صحيح عند الفلترة من شاشة الحسابات/الإدارة العليا، ولا يُشترط تسعير الطلب بالكامل.
+  // الاستثناء الوحيد: طلب مغلق أو مرفوض نهائياً لا يجب أن تتغير حالته.
+  if (!["closed", "rejected"].includes(po.status)) {
+    await db.updatePurchaseOrder(purchaseOrderId, { status: "pending_accounting" });
+  }
+
+  // أخطر المحاسبين بالدفعة الجديدة
+  const accountants = await db.getUsersByRole("accountant");
+  for (const acc of accountants) {
+    await db.createNotification({
+      userId: acc.id,
+      title: "طلب شراء بانتظار الاعتماد",
+      message: `طلب شراء رقم ${po.poNumber} — دفعة جديدة رقم ${batchNumber} (${readyItems.length} صنف) بانتظار اعتماد الحسابات.`,
+      type: "warning",
+      relatedPoId: purchaseOrderId,
+    });
+  }
+
+  await syncPathBTicketFromPurchaseOrder(
+    purchaseOrderId,
+    user.id,
+    "تم إرسال دفعة التسعير إلى الحسابات",
+  );
+
+  await db.createAuditLog({
+    userId: user.id,
+    action: "submit_pricing_batch",
+    entityType: "purchase_order",
+    entityId: purchaseOrderId,
+    newValues: { batchId, batchNumber, itemCount: readyItems.length },
+  });
+
+  // داخل الحزمة نؤرشف مستندًا واحدًا للإرسال كله بعد اكتمال جميع طلباته،
+  // لذلك لا ننشئ هنا مستندًا منفصلًا لكل PR تابع للحزمة.
+  const pricingDocumentArchived = opts?.purchasePackageSubmissionId == null
+    ? await archiveDelegatePricingBatchPdf({
+        poId: purchaseOrderId,
+        poNumber: po.poNumber,
+        batchId: Number(batchId),
+        batchNumber: Number(batchNumber),
+        delegateId: user.id,
+      })
+    : null;
+
+  return {
+    success: true,
+    batchId,
+    batchNumber,
+    itemCount: readyItems.length,
+    pricingDocumentArchived,
+  };
+}
 
 export const purchaseOrdersRouter = router({
   cancelItem: protectedProcedure.input(z.object({
@@ -1572,76 +1746,23 @@ export const purchaseOrdersRouter = router({
   submitPricedBatch: delegateProcedure.input(z.object({
     purchaseOrderId: z.number(),
   })).mutation(async ({ input, ctx }) => {
+    // [PB-DELEGATE-SEND-GUARD 2026-09-02]
+    // الطلب الذي انضم إلى حزمة لا يجوز أن ينشئ إرسالًا منفردًا يتجاوز
+    // purchase_package_submission. مسار الحزمة نفسه يستدعي helper مباشرة
+    // مع purchasePackageSubmissionId، لذلك لا يتأثر بهذا الحارس.
     const po = await db.getPurchaseOrderById(input.purchaseOrderId);
-    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
-
-    const allItems = await db.getPOItems(input.purchaseOrderId);
-    const blockedEstimatedItems = allItems.filter(
-      i => i.status === "estimated" && !i.batchId && i.delegateChangeRequestedAt && isItemAssignedToPODelegate(ctx.user, i)
-    );
-    if (blockedEstimatedItems.length > 0) {
-      throw new TRPCError({ code: "CONFLICT", message: "لا يمكن إرسال صنف للحسابات أثناء وجود طلب تغيير مندوب معلّق" });
+    if (!po) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
     }
-    // الأصناف الجاهزة للإرسال: مسعّرة، غير مرسلة، ولا يوجد عليها طلب تغيير مندوب
-    const readyItems = allItems.filter(
-      i => i.status === "estimated" && !i.batchId && !i.delegateChangeRequestedAt && isItemAssignedToPODelegate(ctx.user, i)
-    );
-
-    if (readyItems.length === 0) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا توجد أصناف مسعّرة جاهزة للإرسال للحسابات" });
-    }
-
-    const batchNumber = await db.getNextBatchNumber(input.purchaseOrderId);
-    const totalBatchCost = readyItems.reduce((sum, i) => sum + parseFloat(i.estimatedTotalCost || "0"), 0);
-
-    const batchId = await db.createPOPricingBatch({
-      purchaseOrderId: input.purchaseOrderId,
-      batchNumber,
-      submittedById: ctx.user.id,
-      itemCount: readyItems.length,
-      totalEstimatedCost: String(totalBatchCost),
-      status: "pending_accounting",
-    });
-
-    for (const item of readyItems) {
-      await db.updatePOItem(item.id, { batchId });
-    }
-
-    // أي دفعة تسعير جديدة (أولى أو لاحقة) تُعيد الطلب لحالة "بانتظار اعتماد الحسابات"
-    // بغض النظر عن المرحلة التي وصلها الطلب سابقاً (approved / partial_purchase / purchased...)،
-    // حتى يظهر بشكل صحيح عند الفلترة من شاشة الحسابات/الإدارة العليا، ولا يُشترط تسعير الطلب بالكامل.
-    // الاستثناء الوحيد: طلب مغلق أو مرفوض نهائياً لا يجب أن تتغير حالته.
-    if (!["closed", "rejected"].includes(po.status)) {
-      await db.updatePurchaseOrder(input.purchaseOrderId, { status: "pending_accounting" });
-    }
-
-    // أخطر المحاسبين بالدفعة الجديدة
-    const accountants = await db.getUsersByRole("accountant");
-    for (const acc of accountants) {
-      await db.createNotification({
-        userId: acc.id,
-        title: "طلب شراء بانتظار الاعتماد",
-        message: `طلب شراء رقم ${po.poNumber} — دفعة جديدة رقم ${batchNumber} (${readyItems.length} صنف) بانتظار اعتماد الحسابات.`,
-        type: "warning",
-        relatedPoId: input.purchaseOrderId,
+    if (po.packageId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "هذا الطلب تابع لحزمة شراء؛ إرسال التسعير للحسابات يتم من خلال الحزمة فقط",
       });
     }
 
-    await syncPathBTicketFromPurchaseOrder(
-      input.purchaseOrderId,
-      ctx.user.id,
-      "تم إرسال دفعة التسعير إلى الحسابات",
-    );
-
-    await db.createAuditLog({
-      userId: ctx.user.id,
-      action: "submit_pricing_batch",
-      entityType: "purchase_order",
-      entityId: input.purchaseOrderId,
-      newValues: { batchId, batchNumber, itemCount: readyItems.length },
-    });
-
-    return { success: true, batchId, batchNumber, itemCount: readyItems.length };
+    // [PB 2026-08-29] المنطق المستخرج يبقى كما هو للطلبات المنفردة.
+    return submitPricedBatchForPO(input.purchaseOrderId, ctx.user);
   }),
 
   // ── جلب كل دفعات التسعير الخاصة بطلب معيّن (لعرضها للمندوب والمحاسب) ──
@@ -1762,7 +1883,18 @@ list: protectedProcedure.input(z.object({
       });
       const enriched = await enrichPurchaseCycleItemsBatch(eligible);
       const excludedPoStatuses = new Set(["draft", "pending_review", "closed", "rejected"]);
-      return enriched.filter(item => item.purchaseOrderStatus && !excludedPoStatuses.has(item.purchaseOrderStatus));
+      const visible = enriched.filter(item => item.purchaseOrderStatus && !excludedPoStatuses.has(item.purchaseOrderStatus));
+
+      // [PB 2026-08-29] إثراء بحقلي الحزمة — عرض فقط، لا يؤثر على الأهلية
+      // أو الفلترة أعلاه إطلاقًا. الأصناف التابعة لطلبات غير مجمّعة تبقى
+      // بلا هذين الحقلين فتُعرض كما اليوم حرفيًا.
+      const packageMap = await db.getPackageInfoForPOs(
+        Array.from(new Set(visible.map((i: any) => i.purchaseOrderId)))
+      );
+      return visible.map((item: any) => {
+        const pkg = packageMap.get(item.purchaseOrderId);
+        return pkg ? { ...item, packageId: pkg.packageId, packageNumber: pkg.packageNumber } : item;
+      });
     };
 
     if (isAdminOrOwner) {
@@ -1925,7 +2057,24 @@ list: protectedProcedure.input(z.object({
     }
 
     const actualRecipient = await assertActualDeliveryRecipient(input.deliveredToId);
-    const context = await getInventoryTicketDeliveryContext(input.inventoryId);
+
+    // QR/Lot هو هوية الوارد الفعلية. نحلّه قبل تقرير ربط البلاغ حتى لا نعتمد
+    // على Inventory مجمّع قد يحتوي Lots قادمة من طلبات شراء مختلفة.
+    const database = await db.getDb();
+    if (!database) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذر الاتصال بقاعدة البيانات" });
+    const scannedLot = input.lotTrackingToken
+      ? await resolveInventoryLotForIssue({
+          tx: database,
+          trackingToken: input.lotTrackingToken,
+          inventoryId: input.inventoryId,
+          inventoryCatalogItemId: (invItem as any).linkedItemId ?? null,
+        })
+      : null;
+    const context = scannedLot
+      ? (scannedLot.purchaseOrderItemId
+          ? await getInventoryTicketDeliveryContext(input.inventoryId, scannedLot.purchaseOrderItemId)
+          : null)
+      : await getInventoryTicketDeliveryContext(input.inventoryId);
     const contextSnapshot = context ? {
       ticketId: context.ticketId,
       ticketStatus: context.ticketStatus,

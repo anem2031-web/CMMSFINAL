@@ -134,7 +134,7 @@ const NAV_SECTIONS: NavSection[] = [
         roles: ["warehouse","owner","admin"] },
       // مركز المستندات — عرض وإعادة طباعة فقط لكل مستندات المشتريات/المخزون
       { icon: FileStack,    labelKey: "nav.documentsCenter", path: "/documents",
-        roles: ["warehouse","accountant","senior_management","executive_director","maintenance_manager","purchase_requester","food_warehouse_manager","food_warehouse_assistant","owner","admin"] },
+        roles: ["delegate","warehouse","accountant","senior_management","executive_director","maintenance_manager","purchase_requester","food_warehouse_manager","food_warehouse_assistant","owner","admin"] },
       { icon: Search,       labelKey: "nav.itemTracker",    path: "/item-tracker",
         roles: ["warehouse","owner","admin","maintenance_manager"] },
     ],

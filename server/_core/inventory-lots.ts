@@ -24,6 +24,9 @@ export interface InventoryLotIssueResolution extends InventoryLotIdentity {
   sourceType: InventoryLotSourceType;
   catalogItemId: number | null;
   receiptId: number | null;
+  purchaseOrderId: number | null;
+  purchaseOrderItemId: number | null;
+  supplierItemName?: string | null;
   balanceId: number;
   balanceQuantity: number;
   remainingQuantity: number;
@@ -274,6 +277,9 @@ export async function resolveInventoryLotForIssue(params: {
       sourceType: inventoryLots.sourceType,
       catalogItemId: inventoryLots.catalogItemId,
       receiptId: inventoryLots.receiptId,
+      purchaseOrderId: inventoryLots.purchaseOrderId,
+      purchaseOrderItemId: inventoryLots.purchaseOrderItemId,
+      supplierItemName: inventoryLots.supplierItemName,
       remainingQuantity: inventoryLots.remainingQuantity,
       balanceId: inventoryLotBalances.id,
       balanceQuantity: inventoryLotBalances.quantity,
@@ -320,6 +326,9 @@ export async function resolveInventoryLotForIssue(params: {
     sourceType: row.sourceType as InventoryLotSourceType,
     catalogItemId: lotCatalogItemId,
     receiptId: row.receiptId == null ? null : Number(row.receiptId),
+    purchaseOrderId: row.purchaseOrderId == null ? null : Number(row.purchaseOrderId),
+    purchaseOrderItemId: row.purchaseOrderItemId == null ? null : Number(row.purchaseOrderItemId),
+    supplierItemName: row.supplierItemName == null ? null : String(row.supplierItemName),
     balanceId: Number(row.balanceId),
     balanceQuantity,
     remainingQuantity,

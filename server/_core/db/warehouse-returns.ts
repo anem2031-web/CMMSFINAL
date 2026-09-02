@@ -1320,7 +1320,7 @@ export async function issueDelivery(params: {
       assignedTechnicianId: params.assignedTechnicianId,
       assignedTechnicianName: params.assignedTechnicianName,
       deliveredToId: params.deliveredToId,
-      itemName: item.itemName,
+      itemName: consumedLot?.supplierItemName || item.itemName,
       deliveredByName: (performer as any)?.name || "مستخدم المستودع",
       deliveredToName: (receiver as any)?.name || "غير محدد",
       quantity: deliveryQuantity,
@@ -1334,7 +1334,7 @@ export async function issueDelivery(params: {
 
     return {
       deliveryNumber,
-      itemName: item.itemName,
+      itemName: consumedLot?.supplierItemName || item.itemName,
       quantity: deliveryQuantity,
       unit: params.unit || item.unit || "",
       inventoryTransactionId,

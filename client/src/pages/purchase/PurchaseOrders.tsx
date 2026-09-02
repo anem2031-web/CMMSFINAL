@@ -23,6 +23,9 @@ import { useStaticLabels } from "@/hooks/useContentTranslation";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { toast } from "sonner";
 import { ExportButton } from "@/components/common/ExportButton";
+import { PurchaseCardList } from "@/components/purchase/PurchaseCardList";
+import { PurchaseBatchCard } from "@/components/purchase/PurchaseBatchCard";
+import { Boxes } from "lucide-react";
 
 const PO_STATUS_COLORS: Record<string, string> = {
   draft: "bg-gray-100 text-gray-700",
@@ -88,6 +91,160 @@ export default function PurchaseOrders() {
   const { data: actionable, isLoading: actionableLoading } =
     trpc.purchaseOrders.actionableForMe.useQuery();
   const actionableItems = actionable?.items ?? [];
+
+  // [PB-ACTIONABLE 2026-08-31] الحسابات والإدارة العليا تعملان على مستوى
+  // دفعة الإرسال داخل الحزمة. نجلب تمثيل الدفعات مرة واحدة لتبويب
+  // «بانتظار إجرائي» فقط، مع إبقاء الطلبات المفردة القديمة كما هي.
+  const isPackageSubmissionActionRole =
+    user?.role === "accountant" || user?.role === "senior_management";
+  const { data: actionableSubmissions, isLoading: actionableSubmissionsLoading } =
+    trpc.purchasePackages.actionableSubmissionsForMe.useQuery(undefined, {
+      enabled: isPackageSubmissionActionRole,
+    });
+  const actionableSubmissionItems = actionableSubmissions?.items ?? [];
+
+  const actionableSubmissionOrderIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const sub of actionableSubmissionItems as any[]) {
+      for (const id of sub.orderIds ?? []) ids.add(Number(id));
+    }
+    return ids;
+  }, [actionableSubmissionItems]);
+
+  // [PB-DELEGATE-PARTIAL-PRICING 2026-09-02]
+  // للمندوب، حقيقة «ما بقي للتسعير» هي حالة الصنف لا حالة PR العامة.
+  // pendingEstimateItems تعيد الأصناف pending أو estimated غير المرسلة حتى لو
+  // أصبح PR نفسه pending_accounting/approved بسبب دفعة سابقة؛ لذلك تبقى PB
+  // ظاهرة في «بانتظار إجرائي» حتى ينتهي عمل المندوب على كل أصنافها.
+  const isDelegatePricingActionRole = user?.role === "delegate";
+  const { data: delegatePendingEstimateItems = [], isLoading: delegatePendingEstimateItemsLoading } =
+    trpc.purchaseOrders.pendingEstimateItems.useQuery(undefined, {
+      enabled: isDelegatePricingActionRole,
+    });
+
+  // [PB-REVIEWER-ACTIONABLE 2026-08-31] بعد أن يجمع المراجع طلبات pending_review
+  // داخل حزمة، تصبح الحزمة هي وحدة العرض في «بانتظار إجرائي». لا نغيّر
+  // actionableForMe ولا صلاحية reviewItems؛ كل PR يبقى مستقلاً عند فتحه.
+  const isReviewerGroupingActionRole = !!user && [
+    "owner",
+    "admin",
+    "maintenance_manager",
+    "general_maintenance_manager",
+    "construction_procurement_manager",
+    "purchase_manager",
+    "food_warehouse_manager",
+  ].includes(user.role);
+  const needsActionablePackageCards = isReviewerGroupingActionRole;
+  const { data: actionablePackageCards = [], isLoading: actionablePackageCardsLoading } =
+    trpc.purchasePackages.cards.useQuery(undefined, {
+      enabled: needsActionablePackageCards,
+    });
+
+  const delegatePricingPackages = useMemo(() => {
+    if (!isDelegatePricingActionRole) return [];
+
+    const packages = new Map<number, any>();
+    for (const item of delegatePendingEstimateItems as any[]) {
+      const packageId = Number(item.packageId || 0);
+      if (!packageId) continue;
+
+      let pkg = packages.get(packageId);
+      if (!pkg) {
+        pkg = {
+          id: packageId,
+          packageNumber: item.packageNumber || `#${packageId}`,
+          actionableOrders: [],
+          _orders: new Map<number, any>(),
+        };
+        packages.set(packageId, pkg);
+      }
+
+      const orderId = Number(item.purchaseOrderId);
+      let order = pkg._orders.get(orderId);
+      if (!order) {
+        order = {
+          id: orderId,
+          poNumber: item.purchaseOrderNumber || `#${orderId}`,
+          items: [],
+        };
+        pkg._orders.set(orderId, order);
+        pkg.actionableOrders.push(order);
+      }
+      order.items.push(item);
+    }
+
+    return Array.from(packages.values()).map(({ _orders, ...pkg }) => pkg);
+  }, [delegatePendingEstimateItems, isDelegatePricingActionRole]);
+
+  const delegatePricingPackagedOrderIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const pkg of delegatePricingPackages as any[]) {
+      for (const po of pkg.actionableOrders ?? []) ids.add(Number(po.id));
+    }
+    return ids;
+  }, [delegatePricingPackages]);
+
+  const reviewerActionableOrderIds = useMemo(() =>
+    new Set(
+      actionableItems
+        .filter((it: any) => it.status === "pending_review")
+        .map((it: any) => Number(it.id))
+    ),
+  [actionableItems]);
+
+  const reviewerActionablePackages = useMemo(() => {
+    if (!isReviewerGroupingActionRole || reviewerActionableOrderIds.size === 0) return [];
+
+    return (actionablePackageCards as any[]).flatMap((card: any) => {
+      if (card.cardType !== "package") return [];
+      const actionableOrders = (card.orders ?? []).filter((po: any) =>
+        reviewerActionableOrderIds.has(Number(po.id)) && po.status === "pending_review"
+      );
+      return actionableOrders.length > 0 ? [{ ...card, actionableOrders }] : [];
+    });
+  }, [actionablePackageCards, isReviewerGroupingActionRole, reviewerActionableOrderIds]);
+
+  const reviewerPackagedOrderIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const pkg of reviewerActionablePackages as any[]) {
+      for (const po of pkg.actionableOrders ?? []) ids.add(Number(po.id));
+    }
+    return ids;
+  }, [reviewerActionablePackages]);
+
+  // نخفي PR فقط عندما أصبح له تمثيل موحّد في نفس تبويب «بانتظار إجرائي»:
+  // - المراجع أثناء pending_review: بطاقة حزمة التجميع PB.
+  // - الحسابات/الإدارة: دفعة الإرسال.
+  // - المندوب أثناء التسعير: بطاقة الحزمة PB.
+  // بعد اعتماد الإدارة يبقى شراء المندوب PR منفردًا كما اتفقنا.
+  const standaloneActionableItems = useMemo(() =>
+    actionableItems.filter((it: any) => {
+      const id = Number(it.id);
+      if (isPackageSubmissionActionRole && actionableSubmissionOrderIds.has(id)) return false;
+      if (isDelegatePricingActionRole && it.status === "pending_estimate" && delegatePricingPackagedOrderIds.has(id)) return false;
+      if (isReviewerGroupingActionRole && it.status === "pending_review" && reviewerPackagedOrderIds.has(id)) return false;
+      return true;
+    }),
+  [
+    actionableItems,
+    actionableSubmissionOrderIds,
+    delegatePricingPackagedOrderIds,
+    reviewerPackagedOrderIds,
+    isPackageSubmissionActionRole,
+    isDelegatePricingActionRole,
+    isReviewerGroupingActionRole,
+  ]);
+
+  const actionableDisplayCount =
+    standaloneActionableItems.length +
+    (isPackageSubmissionActionRole ? actionableSubmissionItems.length : 0) +
+    (isDelegatePricingActionRole ? delegatePricingPackages.length : 0) +
+    (isReviewerGroupingActionRole ? reviewerActionablePackages.length : 0);
+  const actionableViewLoading =
+    actionableLoading ||
+    (isPackageSubmissionActionRole && actionableSubmissionsLoading) ||
+    (isDelegatePricingActionRole && delegatePendingEstimateItemsLoading) ||
+    (needsActionablePackageCards && actionablePackageCardsLoading);
 
   const canDelete = user && ["owner", "admin"].includes(user.role);
   const canFilterByUser = user && FULL_ACCESS_ROLES.includes(user.role);
@@ -176,9 +333,88 @@ export default function PurchaseOrders() {
     });
   }, [statusFilter, dateFrom, dateTo, requestedById, searchQuery, currentPage, view]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredPos.length / PAGE_SIZE));
+  // ── [PB] بناء البطاقات الموحّدة (2026-08-29) ──
+  // القائمة تعرض نوعين من البطاقات: حزمة تضم عدة طلبات، أو طلب مفرد غير
+  // مجمّع. التجميع يقع **بعد** الفلترة والبحث مباشرة، فتبقى دلالتهما كما
+  // هي حرفيًا: الحزمة تظهر لو طابق أي طلب من طلباتها معايير البحث.
+  // الترقيم ينتقل من مستوى الطلب لمستوى البطاقة — وهذا مقصود: البطاقة هي
+  // الوحدة المعروضة للمستخدم. الطلب غير المجمّع (packageId = null، وهو حال
+  // كل الطلبات القائمة) يبقى بطاقة مفردة بشكلها وسلوكها الحاليين تمامًا.
+  const purchaseCards = useMemo(() => {
+    const packagesMap = new Map<number, any>();
+    const cards: any[] = [];
+    const delegateIndividualStatuses = new Set([
+      "approved",
+      "partial_purchase",
+      "purchased",
+      "received",
+      "closed",
+    ]);
+
+    for (const po of filteredPos as any[]) {
+      // [PB-DELEGATE 2026-08-31] بعد اعتماد الإدارة تنتهي حاجة المندوب
+      // لبطاقة الحزمة كوحدة عمل، ويعود التعامل إلى مستوى طلب الشراء ثم الصنف.
+      // لذلك في "جميع الطلبات" نعرض PR منفردًا للمندوب في مراحل الشراء وما
+      // بعدها، مطابقًا لسلوك "بانتظار إجرائي". أما أثناء التسعير/الحسابات/
+      // الإدارة فتبقى PB مجمّعة حتى يظل الإرسال المتكرر للحسابات على مستوى
+      // الحزمة كما هو، دون أي تغيير في الـWorkflow أو البيانات.
+      const showAsIndividualDelegateOrder =
+        user?.role === "delegate" && delegateIndividualStatuses.has(po.status);
+
+      if (!po.packageId || showAsIndividualDelegateOrder) {
+        cards.push({ cardType: "order", key: `po:${po.id}`, id: po.id, order: po });
+        continue;
+      }
+      let pkg = packagesMap.get(po.packageId);
+      if (!pkg) {
+        pkg = {
+          cardType: "package",
+          key: `package:${po.packageId}`,
+          id: po.packageId,
+          packageNumber: po.packageNumber ?? `#${po.packageId}`,
+          createdAt: po.createdAt,
+          orders: [],
+        };
+        packagesMap.set(po.packageId, pkg);
+        cards.push(pkg);
+      }
+      pkg.orders.push(po);
+      // تاريخ الحزمة = أحدث طلب فيها، حتى لا تهبط لأسفل القائمة
+      if (new Date(po.createdAt) > new Date(pkg.createdAt)) pkg.createdAt = po.createdAt;
+    }
+
+    return cards;
+  }, [filteredPos, user?.role]);
+
+  // ── [PB] تحديد الطلبات للتجميع ──
+  // متاح فقط لأدوار المراجعة، وفقط على الطلبات بحالة pending_review غير
+  // المنتمية لحزمة — نفس شرط الخادم بالضبط (purchase-packages.router.ts).
+  const canGroup = user && ["owner", "admin", "maintenance_manager", "general_maintenance_manager", "construction_procurement_manager", "purchase_manager", "food_warehouse_manager"].includes(user.role);
+  const [selectedForPackage, setSelectedForPackage] = useState<number[]>([]);
+
+  const isGroupable = (po: any) => po.status === "pending_review" && !po.packageId;
+
+  const toggleSelect = (poId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedForPackage(prev =>
+      prev.includes(poId) ? prev.filter(id => id !== poId) : [...prev, poId]
+    );
+  };
+
+  const createPackageMutation = trpc.purchasePackages.create.useMutation({
+    onSuccess: (res) => {
+      toast.success(`تم إنشاء حزمة الشراء ${res.packageNumber}`);
+      setSelectedForPackage([]);
+      utils.purchaseOrders.list.invalidate();
+      // تحديث تمثيل «بانتظار إجرائي» فورًا بعد التجميع بدون Refresh يدوي.
+      utils.purchasePackages.cards.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const totalPages = Math.max(1, Math.ceil(purchaseCards.length / PAGE_SIZE));
   const safePage = Math.min(currentPage, totalPages);
-  const paginatedPos = filteredPos.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+  const paginatedCards = purchaseCards.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   useEffect(() => {
     if (currentPage > totalPages) setCurrentPage(totalPages);
@@ -200,12 +436,14 @@ export default function PurchaseOrders() {
       </div>
 
       {/* ── ملخص + تبويبا العرض ─────────────────────────────────── */}
-      {actionableLoading ? (
+      {actionableViewLoading ? (
         <Skeleton className="h-6 w-64" />
       ) : (
         <p className="text-base font-medium">
-          {actionableItems.length > 0
-            ? `لديك ${actionableItems.length} ${actionableItems.length === 1 ? "طلب بانتظار" : "طلبات بانتظار"} إجرائك`
+          {actionableDisplayCount > 0
+            ? (isPackageSubmissionActionRole || isReviewerGroupingActionRole)
+              ? `لديك ${actionableDisplayCount} إجراء بانتظارك`
+              : `لديك ${actionableDisplayCount} ${actionableDisplayCount === 1 ? "طلب بانتظار" : "طلبات بانتظار"} إجرائك`
             : "لا توجد طلبات بانتظار إجرائك حالياً"}
         </p>
       )}
@@ -216,7 +454,7 @@ export default function PurchaseOrders() {
           size="sm"
           onClick={() => setView("actionable")}
         >
-          بانتظار إجرائي {actionableItems.length > 0 && `(${actionableItems.length})`}
+          بانتظار إجرائي {actionableDisplayCount > 0 && `(${actionableDisplayCount})`}
         </Button>
         <Button
           variant={view === "all" ? "default" : "outline"}
@@ -230,12 +468,12 @@ export default function PurchaseOrders() {
       {/* ── قائمة "بانتظار إجرائي" ────────────────────────────────── */}
       {view === "actionable" && (
         <div className="space-y-2">
-          {actionableLoading ? (
+          {actionableViewLoading ? (
             <>
               <Skeleton className="h-20 w-full" />
               <Skeleton className="h-20 w-full" />
             </>
-          ) : actionableItems.length === 0 ? (
+          ) : actionableDisplayCount === 0 ? (
             <Card>
               <CardContent className="py-10 text-center text-muted-foreground">
                 <Package className="w-10 h-10 mx-auto mb-3 opacity-40" />
@@ -243,25 +481,123 @@ export default function PurchaseOrders() {
               </CardContent>
             </Card>
           ) : (
-            actionableItems.map((it: any) => (
-              <Card key={it.id} className="hover:shadow-sm transition-shadow">
-                <CardContent className="py-4 flex items-center justify-between gap-4 flex-wrap">
-                  <div className="min-w-0">
-                    <div className="font-semibold">{it.poNumber}</div>
-                    <div className="text-sm text-muted-foreground mt-0.5">{it.reason}</div>
-                    {it.itemsSummary && (
-                      <div className="text-xs text-muted-foreground mt-1">{it.itemsSummary}</div>
-                    )}
-                  </div>
-                  <Button
-                    size="sm"
-                    onClick={() => setLocation(`/purchase-orders/${it.id}`)}
-                  >
-                    {it.actionLabel}
-                  </Button>
-                </CardContent>
-              </Card>
-            ))
+            <>
+              {isReviewerGroupingActionRole && reviewerActionablePackages.map((pkg: any) => (
+                <PurchaseBatchCard
+                  key={`review-package:${pkg.id}`}
+                  packageNumber={pkg.packageNumber}
+                  createdAt={pkg.createdAt}
+                  orders={pkg.actionableOrders ?? []}
+                  defaultExpanded
+                  locale={locale}
+                  onOpenOrder={(orderId) => setLocation(`/purchase-orders/${orderId}`)}
+                  actions={<Badge variant="outline">بانتظار المراجعة</Badge>}
+                />
+              ))}
+
+              {isDelegatePricingActionRole && delegatePricingPackages.map((pkg: any) => {
+                const remainingPricingCount = (pkg.actionableOrders ?? []).reduce(
+                  (sum: number, po: any) =>
+                    sum + (po.items ?? []).filter((item: any) => item.status === "pending").length,
+                  0
+                );
+                const readyToSendCount = (pkg.actionableOrders ?? []).reduce(
+                  (sum: number, po: any) =>
+                    sum + (po.items ?? []).filter((item: any) => item.status === "estimated").length,
+                  0
+                );
+
+                return (
+                  <Card key={`delegate-package:${pkg.id}`} className="hover:shadow-sm transition-shadow border-amber-200">
+                    <CardContent className="py-4 flex items-center justify-between gap-4 flex-wrap">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Boxes className="w-4 h-4 text-amber-700" />
+                          <div className="font-semibold font-mono">{pkg.packageNumber}</div>
+                          <Badge variant="outline">دفعة شراء</Badge>
+                        </div>
+                        <div className="text-sm text-muted-foreground mt-1">دفعة شراء بانتظار إجرائك في التسعير</div>
+                        <div className="text-xs text-muted-foreground mt-1 flex gap-3 flex-wrap">
+                          <span>{pkg.actionableOrders.length} {pkg.actionableOrders.length === 1 ? "طلب" : "طلبات"}</span>
+                          {remainingPricingCount > 0 && (
+                            <span className="font-semibold text-amber-800">متبقي للتسعير: {remainingPricingCount} صنف</span>
+                          )}
+                          {readyToSendCount > 0 && (
+                            <span className="font-semibold text-emerald-700">جاهز للإرسال: {readyToSendCount} صنف</span>
+                          )}
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={() => setLocation(`/purchase-packages/${pkg.id}?action=pricing`)}
+                      >
+                        فتح للتسعير
+                      </Button>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+
+              {isPackageSubmissionActionRole && actionableSubmissionItems.map((sub: any) => (
+                <Card key={`submission:${sub.submissionId}`} className="hover:shadow-sm transition-shadow border-primary/20">
+                  <CardContent className="py-4 flex items-center justify-between gap-4 flex-wrap">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Boxes className="w-4 h-4 text-primary" />
+                        <div className="font-semibold font-mono">{sub.submissionNumber}</div>
+                        <Badge variant="outline">دفعة إرسال</Badge>
+                      </div>
+                      <div className="text-sm text-muted-foreground mt-1">{sub.reason}</div>
+                      <div className="text-xs text-muted-foreground mt-1 flex gap-3 flex-wrap">
+                        <span>{sub.orderCount} {sub.orderCount === 1 ? "طلب" : "طلبات"}</span>
+                        {sub.poNumbers?.length > 0 && (
+                          <span>{sub.poNumbers.join("، ")}</span>
+                        )}
+                        {Number(sub.totalEstimatedCost || 0) > 0 && (
+                          <span>الإجمالي التقديري: {Number(sub.totalEstimatedCost).toLocaleString(locale)} {currency}</span>
+                        )}
+                        {sub.custodyBalance != null && (
+                          <span>إجمالي رصيد العهد التي على المندوب: {Number(sub.custodyBalance).toLocaleString(locale)} {currency}</span>
+                        )}
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() => setLocation(`/purchase-packages/${sub.packageId}?submissionId=${sub.submissionId}`)}
+                    >
+                      {sub.actionLabel}
+                    </Button>
+                  </CardContent>
+                </Card>
+              ))}
+
+              {standaloneActionableItems.map((it: any) => (
+                <Card key={`po:${it.id}`} className="hover:shadow-sm transition-shadow">
+                  <CardContent className="py-4 flex items-center justify-between gap-4 flex-wrap">
+                    <div className="min-w-0">
+                      <div className="font-semibold">{it.poNumber}</div>
+                      <div className="text-sm text-muted-foreground mt-0.5">{it.reason}</div>
+                      {it.itemsSummary && (
+                        <div className="text-xs text-muted-foreground mt-1">{it.itemsSummary}</div>
+                      )}
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        const isDelegatePurchaseAction =
+                          user?.role === "delegate" &&
+                          ["approved", "partial_purchase"].includes(it.status);
+                        setLocation(
+                          `/purchase-orders/${it.id}${isDelegatePurchaseAction ? "?action=purchase" : ""}`
+                        );
+                      }}
+                    >
+                      {it.actionLabel}
+                    </Button>
+                  </CardContent>
+                </Card>
+              ))}
+            </>
           )}
         </div>
       )}
@@ -357,6 +693,36 @@ export default function PurchaseOrders() {
         )}
       </div>
 
+      {/* [PB] شريط التجميع — يظهر فقط عند تحديد طلبين أو أكثر. التجميع فعل
+          عرضي بحت: يربط الطلبات بحزمة واحدة دون تغيير حالة أي طلب أو صنف. */}
+      {canGroup && selectedForPackage.length > 0 && (
+        <Card className="border-primary/40 bg-primary/5">
+          <CardContent className="p-3 flex items-center justify-between gap-3 flex-wrap">
+            <span className="text-sm flex items-center gap-2">
+              <Boxes className="w-4 h-4 text-primary" />
+              تم تحديد {selectedForPackage.length} طلب
+              {selectedForPackage.length < 2 && (
+                <span className="text-xs text-muted-foreground">(الحزمة تحتاج طلبين على الأقل)</span>
+              )}
+            </span>
+            <div className="flex gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setSelectedForPackage([])}>
+                إلغاء التحديد
+              </Button>
+              <Button
+                size="sm"
+                className="gap-2"
+                disabled={selectedForPackage.length < 2 || createPackageMutation.isPending}
+                onClick={() => createPackageMutation.mutate({ orderIds: selectedForPackage })}
+              >
+                <Boxes className="w-4 h-4" />
+                تجميع في حزمة
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {isLoading ? (
         <div className="space-y-3">{Array.from({ length: 4 }).map((_, i) => <Card key={i}><CardContent className="p-4"><Skeleton className="h-16 w-full" /></CardContent></Card>)}</div>
       ) : !filteredPos?.length ? (
@@ -366,13 +732,30 @@ export default function PurchaseOrders() {
           <p className="text-sm text-muted-foreground">{t.common.noData}</p>
         </CardContent></Card>
       ) : (
-        <div className="space-y-2">
-          {paginatedPos.map(po => (
+        <PurchaseCardList
+          cards={paginatedCards}
+          locale={locale}
+          onOpenPackage={(id) => setLocation(`/purchase-packages/${id}`)}
+          onOpenOrder={(id) => setLocation(`/purchase-orders/${id}`)}
+          renderOrderCard={(po: any) => (
             <Card key={po.id} className="hover:shadow-lg hover:border-primary/20 transition-all duration-200 cursor-pointer" onClick={() => setLocation(`/purchase-orders/${po.id}`)}>
               <CardContent className="p-4">
                 <div className="flex items-center justify-between gap-4">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
+                      {/* [PB] مربع التحديد للتجميع — يظهر فقط لأدوار المراجعة
+                          وفقط على الطلبات القابلة للتجميع. لا يغيّر شكل
+                          البطاقة لبقية الأدوار أو الحالات إطلاقًا. */}
+                      {canGroup && isGroupable(po) && (
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 rounded border-input accent-primary cursor-pointer shrink-0"
+                          checked={selectedForPackage.includes(po.id)}
+                          onClick={(e) => toggleSelect(po.id, e)}
+                          onChange={() => {}}
+                          aria-label={`تحديد ${po.poNumber} للتجميع`}
+                        />
+                      )}
                       <span className="text-xs font-mono text-muted-foreground">{po.poNumber}</span>
                     </div>
                     <div className="flex items-center gap-4 text-xs text-muted-foreground mt-1 flex-wrap">
@@ -442,15 +825,15 @@ export default function PurchaseOrders() {
                 </div>
               </CardContent>
             </Card>
-          ))}
-        </div>
+          )}
+        />
       )}
 
       {/* شريط التنقل بين الصفحات */}
-      {!isLoading && filteredPos.length > PAGE_SIZE && (
+      {!isLoading && purchaseCards.length > PAGE_SIZE && (
         <div className="flex items-center justify-between flex-wrap gap-2">
           <p className="text-xs text-muted-foreground">
-            {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, filteredPos.length)} {t.common.of || "من"} {filteredPos.length} {t.common.results || "نتيجة"}
+            {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, purchaseCards.length)} {t.common.of || "من"} {purchaseCards.length} {t.common.results || "نتيجة"}
           </p>
           <Pagination className="mx-0 w-auto justify-end">
             <PaginationContent>

@@ -371,10 +371,27 @@ async function startServer() {
       const { stream, contentType } = await storageGetStream(normalizedKey);
       res.setHeader("Content-Type", contentType || "application/octet-stream");
       res.setHeader("Cache-Control", "public, max-age=86400");
-      // إذا طُلب التنزيل، أضف Content-Disposition
+      // إذا طُلب التنزيل، أضف Content-Disposition آمنًا للأسماء العربية.
+      // Node.js يرفض الأحرف غير ASCII عندما توضع مباشرة داخل filename=، لذلك
+      // نرسل اسمًا احتياطيًا ASCII مع filename*=UTF-8'' للاسم الحقيقي المشفّر.
       if (req.query.download === "1") {
-        const filename = req.query.filename as string || normalizedKey.split("/").pop() || "file";
-        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        const requestedFilename =
+          (typeof req.query.filename === "string" && req.query.filename.trim())
+            ? req.query.filename.trim()
+            : normalizedKey.split("/").pop() || "file";
+        const filename = requestedFilename
+          .replace(/[\r\n]/g, "")
+          .replace(/[\/\\]/g, "_");
+        const asciiFilename =
+          filename
+            .replace(/[^\x20-\x7E]/g, "_")
+            .replace(/["\\;]/g, "_")
+            .trim() || "file";
+        const encodedFilename = encodeURIComponent(filename);
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="${asciiFilename}"; filename*=UTF-8''${encodedFilename}`
+        );
       }
       (stream as any).pipe(res);
     } catch (error: any) {
@@ -1021,15 +1038,62 @@ async function startServer() {
       if (isNaN(poId)) return res.status(400).json({ error: "Invalid purchase request ID" });
       const batchIdRaw = req.query.batchId;
       const batchId = batchIdRaw ? parseInt(batchIdRaw as string) : undefined;
+      // [PB 2026-08-29] وضع الدفعة الفرعية — مستند واحد لإرسال واحد قد يضم
+      // أصنافًا من عدة طلبات، بنفس القالب مع عمود "رقم الطلب". بدون هذا
+      // المعامل يعمل المسار تمامًا كما كان.
+      const submissionIdRaw = req.query.submissionId;
+      const submissionId = submissionIdRaw ? parseInt(submissionIdRaw as string) : undefined;
       const user = req.authenticatedUser;
-      const buffer = await generatePurchaseRequestPDF(poId, user.id, batchId);
-      const { getPurchaseOrderById } = await import("./db");
+
+      // إذا أُرسل التسعير ضمن دفعة حزمة، فالمستند الرسمي للمندوب والحسابات
+      // هو مستند purchase_package_submission. نمنع PDF مستقل للـ PR لهذين
+      // الدورين حتى لا توجد وثيقتا عهدة لنفس الإرسال. الإدارة/المالك يحتفظون
+      // بصلاحيات الاستعراض الحالية لأغراض التدقيق.
+      const { getPurchaseOrderById, getPOPricingBatchById, getPOPricingBatches } = await import("./db");
+      const mustUsePackageOfficialDocument = ["delegate", "accountant"].includes(user?.role || "");
+      if (mustUsePackageOfficialDocument && !submissionId) {
+        if (batchId) {
+          const requestedBatch = await getPOPricingBatchById(batchId);
+          if (
+            requestedBatch?.purchaseOrderId === poId &&
+            requestedBatch?.purchasePackageSubmissionId != null
+          ) {
+            return res.status(403).json({
+              error: "هذا الطلب أُرسل ضمن دفعة حزمة. استخدم مستند دفعة الإرسال الرسمي لطلب العهدة.",
+              purchasePackageSubmissionId: requestedBatch.purchasePackageSubmissionId,
+            });
+          }
+        } else {
+          const poBatches = await getPOPricingBatches(poId);
+          const packageBatch = (poBatches as any[]).find(
+            (b: any) => b.purchasePackageSubmissionId != null
+          );
+          if (packageBatch) {
+            return res.status(403).json({
+              error: "هذا الطلب يحتوي تسعيرًا أُرسل ضمن دفعة حزمة. استخدم مستند دفعة الإرسال الرسمي لطلب العهدة.",
+              purchasePackageSubmissionId: packageBatch.purchasePackageSubmissionId,
+            });
+          }
+        }
+      }
+
+      const buffer = await generatePurchaseRequestPDF(poId, user.id, batchId, submissionId);
       const po = await getPurchaseOrderById(poId);
       const filename = po?.poNumber
-        ? (batchId ? `${po.poNumber}-batch${batchId}.pdf` : `${po.poNumber}.pdf`)
+        ? (submissionId ? `دفعة-${submissionId}.pdf` : batchId ? `${po.poNumber}-batch${batchId}.pdf` : `${po.poNumber}.pdf`)
         : `po-${poId}.pdf`;
+      // أسماء الملفات العربية لا يجوز وضعها مباشرة داخل ترويسة HTTP في Node.js.
+      // نرسل اسمًا احتياطيًا ASCII مع filename*=UTF-8 للحفاظ على الاسم العربي
+      // في المتصفحات الداعمة، بدون تغيير ملف PDF أو منطق التصدير نفسه.
+      const asciiFilename = submissionId
+        ? `batch-${submissionId}.pdf`
+        : filename.replace(/[^\x20-\x7E]/g, "-");
+      const encodedFilename = encodeURIComponent(filename);
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${asciiFilename}"; filename*=UTF-8''${encodedFilename}`
+      );
       res.send(buffer);
 } catch (e: any) { console.error("[PDF Export Error]", e.message); res.status(500).json({ error: e.message }); }
   });

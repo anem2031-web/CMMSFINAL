@@ -617,7 +617,7 @@ export default function Inventory() {
               <QrCode className="w-3 h-3" /> بالرقم
             </Button>
             <Button size="sm" variant={searchMode === "qr" ? "default" : "outline"} onClick={() => { setSearchMode("qr"); setSearchQuery(""); setQrSearchInventoryIds([]); }} className="gap-1 h-7 text-xs">
-              <QrCode className="w-3 h-3" /> QR Code
+              <QrCode className="w-3 h-3" /> برقم اللوت / QR
             </Button>
             {searchQuery && (
               <Button size="sm" variant="ghost" className="h-7 text-xs text-muted-foreground" onClick={() => { setSearchQuery(""); setSearchMode("name"); setQrSearchInventoryIds([]); }}>
@@ -634,7 +634,7 @@ export default function Inventory() {
                 setQrSearchInventoryIds([]);
                 resolveLotSearchMut.mutate({ code });
               }}
-              placeholder="امسح QR الدفعة أو أدخل Lot Code..."
+              placeholder="اكتب رقم اللوت (مثال: LOT-2026-00123) أو امسح QR الدفعة..."
             />
           ) : (
             <div className="relative">

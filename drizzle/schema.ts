@@ -1749,9 +1749,23 @@ export const poPricingBatches = mysqlTable("po_pricing_batches", {
 	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
 	updatedAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
 	delegateSignatureSnapshot: varchar({ length: 500 }),
+	// [PB] موجود فعليًا بالقاعدة منذ 2026-08-26 (تنفيذ سابق للميزة، حُذف
+	// كوده وبقيت القاعدة)، صفر استخدام حتى 2026-08-29 (275 صف كلها
+	// 'single'). يُضبط 'multi' فقط عند إنشاء دفعة تسعير ضمن إرسال فرعي
+	// عابر لعدة طلبات. الاستدعاء العادي (طلب واحد) يبقى 'single' كاليوم.
+	scope: mysqlEnum(['single','multi']).default('single').notNull(),
+	// [PB] موجود فعليًا بالقاعدة منذ 2026-08-26 — صفر استخدام. غير مستخدَم
+	// في التصميم الحالي (الربط الفعلي عبر purchasePackageSubmissionId).
+	packageId: int(),
+	// [PB] ربط اختياري بالدفعة الفرعية (PB01-1...) عند إرسال المندوب
+	// لأصناف من عدة طلبات بضغطة واحدة. NULL = دفعة تسعير عادية لطلب واحد
+	// كاليوم تمامًا. عرضي بحت — لا يُستخدم كمفتاح في أي منطق اعتماد.
+	purchasePackageSubmissionId: int(),
 },
 (table) => [
 	index("po_pricing_batches_po_idx").on(table.purchaseOrderId),
+	index("idx_po_pricing_batches_packageId").on(table.packageId),
+	index("po_pricing_batches_submission_idx").on(table.purchasePackageSubmissionId),
 ]);
 
 export const preventivePlans = mysqlTable("preventive_plans", {
@@ -1798,6 +1812,74 @@ export const procurementComments = mysqlTable("procurement_comments", {
 	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
 	purchaseOrderItemId: int(),
 });
+
+// ============================================================
+// [PB] PURCHASE PACKAGES — حاوية عليا فوق طلبات الشراء.
+//
+// purchase_packages وعمودا purchase_orders.packageId /
+// po_pricing_batches.packageId + scope موجودون فعليًا بالقاعدة منذ
+// 2026-08-26 (تنفيذ سابق للميزة، أُزيل كوده من المستودع وبقيت القاعدة).
+// بتاريخ 2026-08-29 أُعيد تفريغهم (تصفير الربط على 7 طلبات + حذف 3 حزم
+// تجريبية) ثم استُؤنف العمل عليهم. الجدولان الآخران أُنشئا 2026-08-29.
+//
+// تمييز مهم — لا تخلط بين المستويين:
+//   po_pricing_batches  → دفعة تسعير داخل طلب شراء واحد (موجود سابقًا)
+//   purchase_packages   → حزمة تضم عدة طلبات شراء كاملة (هذه الميزة)
+//
+// راجع drizzle/2026_08_29_purchase_packages_submissions.sql.
+// ============================================================
+export const purchasePackages = mysqlTable("purchase_packages", {
+	id: int().autoincrement().notNull(),
+	packageNumber: varchar({ length: 20 }).notNull(),
+	createdById: int().notNull(),
+	notes: text(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+	updatedAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	uniqueIndex("purchase_packages_number_idx").on(table.packageNumber),
+]);
+
+// [PR] عدّاد ترقيم مستقل لطلبات الشراء (2026-09-02). تمت إضافته فعليًا
+// لقاعدة البيانات بنفس نمط عدّادات المشروع المعتمدة. ربطه بمولّد رقم PR
+// سيتم في خطوة مستقلة حتى لا يتغير السلوك التشغيلي الحالي قبل اعتماد الإصلاح.
+export const purchaseOrderNumberCounter = mysqlTable("purchase_order_number_counter", {
+	id: int().autoincrement().notNull(),
+	year: int().notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+});
+
+// [PB] عدّاد ترقيم مستقل للحزمة (2026-08-29). AUTO_INCREMENT بقاعدة
+// البيانات هو ضامن التفرّد — لا SELECT MAX الذي يعيد استخدام الرقم بعد
+// الحذف. مربوط فعليًا بالكود من أول استخدام.
+export const purchasePackageNumberCounter = mysqlTable("purchase_package_number_counter", {
+	id: int().autoincrement().notNull(),
+	year: int().notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+});
+
+// [PB] دفعة فرعية — تتبّع إرسال واحد من المندوب قد يضم أصنافًا من عدة
+// طلبات داخل نفس الحزمة (PB01-1, PB01-2...). حقول المرحلة الأولى أدناه
+// مضافة للقاعدة كحقول اختيارية ومتوافقة للخلف فقط، ولا يتم استخدامها حتى
+// الآن لتغيير أي اعتماد أو حالة أو Workflow قائم.
+export const purchasePackageSubmissions = mysqlTable("purchase_package_submissions", {
+	id: int().autoincrement().notNull(),
+	purchasePackageId: int().notNull(),
+	subNumber: int().notNull(),
+	createdById: int().notNull(),
+	totalEstimatedCost: decimal({ precision: 12, scale: 2 }),
+	custodyBalance: decimal({ precision: 12, scale: 2 }),
+	status: mysqlEnum(['pending_accounting','pending_management','approved','rejected']),
+	accountingApprovedById: int(),
+	accountingApprovedAt: timestamp({ mode: 'string' }),
+	managementApprovedById: int(),
+	managementApprovedAt: timestamp({ mode: 'string' }),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	uniqueIndex("purchase_package_submissions_uq").on(table.purchasePackageId, table.subNumber),
+	index("purchase_package_submissions_pkg_idx").on(table.purchasePackageId),
+]);
 
 export const purchaseOrderItems = mysqlTable("purchase_order_items", {
 	id: int().autoincrement().notNull(),
@@ -1908,7 +1990,16 @@ export const purchaseOrders = mysqlTable("purchase_orders", {
 	reviewedById: int(),
 	requesterSignatureSnapshot: varchar({ length: 500 }),
 	reviewerSignatureSnapshot: varchar({ length: 500 }),
-});
+	// [PB] ربط اختياري بحزمة الشراء — حاوية عليا تجميعية للعرض والتعيين
+	// والإرسال والمتابعة فقط. NULL = طلب غير مجمّع، يسلك سلوك اليوم
+	// حرفيًا (وهذا حال كل الطلبات القائمة). بلا مفتاح خارجي فعلي، بنفس
+	// اتفاقية ticketId أعلاه. موجود فعليًا بالقاعدة منذ 2026-08-26،
+	// أُعيد تصفيره على 7 طلبات متأثرة في 2026-08-29.
+	packageId: int(),
+},
+(table) => [
+	index("idx_purchase_orders_packageId").on(table.packageId),
+]);
 
 export const purchaseOrdersLegacyOrphans = mysqlTable("purchase_orders_legacy_orphans", {
 	id: int().autoincrement().notNull(),

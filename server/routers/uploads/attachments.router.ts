@@ -13,17 +13,28 @@ export const attachmentsRouter = router({
    * واحد يمكن فحص ملكيته — القيد هنا على مستوى الدور مباشرة).
    */
   listByType: protectedProcedure.input(z.object({
-    entityType: z.enum(["po_financial_batch"]),
+    entityType: z.enum(["po_financial_batch", "delegate_pricing_documents"]),
   })).query(async ({ input, ctx }) => {
-    // نفس الأدوار التي تملك أصلًا أزرار اعتماد الدفعة (حسابات/إدارة عليا) —
-    // لا فرق أوسع، لا فرق أضيق.
-    const allowedRoles = [APP_ROLE.ACCOUNTANT, APP_ROLE.SENIOR_MANAGEMENT, APP_ROLE.OWNER, APP_ROLE.ADMIN];
-    if (!allowedRoles.includes(ctx.user.role as any)) {
+    if (input.entityType === "delegate_pricing_documents") {
+      // وثائق التسعير الصادرة من المندوبين: المندوب يرى مستنداته فقط،
+      // والمالك/مدير النظام يريان جميع المستندات. لا تُمنح لبقية الأدوار.
+      const allowedRoles = [APP_ROLE.DELEGATE, APP_ROLE.OWNER, APP_ROLE.ADMIN];
+      if (!allowedRoles.includes(ctx.user.role as any)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "ليس لديك صلاحية للاطلاع على وثائق تسعير المندوبين" });
+      }
+
+      const rows = await db.getDelegatePricingAttachmentsWithDelegate();
+      if (ctx.user.role === APP_ROLE.DELEGATE) {
+        return rows.filter((row: any) => Number(row.delegateId) === Number(ctx.user.id));
+      }
+      return rows;
+    }
+
+    // الوثائق المالية المعتمدة تبقى بصلاحياتها الحالية دون تغيير.
+    const financialRoles = [APP_ROLE.ACCOUNTANT, APP_ROLE.SENIOR_MANAGEMENT, APP_ROLE.OWNER, APP_ROLE.ADMIN];
+    if (!financialRoles.includes(ctx.user.role as any)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "ليس لديك صلاحية للاطلاع على الوثائق المالية" });
     }
-    // الجزء 2 من إصلاحات 2026-08-10: نستخدم الاستعلام المُثرى باسم المندوب —
-    // القيمة الوحيدة المسموحة بالمخطط أعلاه هي "po_financial_batch" أصلًا،
-    // فلا حاجة لفرع عام يخدم أنواعًا أخرى هنا.
     return db.getFinancialBatchAttachmentsWithDelegate();
   }),
 

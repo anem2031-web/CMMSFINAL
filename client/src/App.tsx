@@ -17,6 +17,7 @@ import TicketsInbox from "@/pages/tickets/TicketsInbox";
 import CreateTicket from "@/pages/tickets/CreateTicket";
 import PurchaseOrders from "@/pages/purchase/PurchaseOrders";
 import PurchaseOrderDetail from "@/pages/purchase/PurchaseOrderDetail";
+import PurchaseBatchDetail from "@/pages/purchase/PurchaseBatchDetail";
 import CreatePurchaseOrder from "@/pages/purchase/CreatePurchaseOrder";
 import Inventory from "@/pages/inventory/Inventory";
 import InventoryOperations from "@/pages/inventory/InventoryOperations";
@@ -93,6 +94,9 @@ function Router() {
             <Route path="/purchase-orders" component={PurchaseOrders} />
             <Route path="/purchase-orders/new" component={CreatePurchaseOrder} />
             <Route path="/purchase-orders/edit-draft/:id" component={CreatePurchaseOrder} />
+            {/* [PB] صفحة تفاصيل حزمة الشراء — مسار مستقل، لا يتقاطع مع
+                مسارات الطلبات لأن البادئة مختلفة (purchase-packages) */}
+            <Route path="/purchase-packages/:id" component={PurchaseBatchDetail} />
             <Route path="/purchase-orders/:id" component={PurchaseOrderDetail} />
             <Route path="/purchase-cycle" component={PurchaseCycle} />
             <Route path="/external-maintenance" component={ExternalMaintenance} />

@@ -44,6 +44,9 @@ import {
   inventorySettlementNumberCounter,
   externalMaintenanceJobs,
   catalogItems,
+  purchasePackages,
+  purchasePackageNumberCounter,
+  purchasePackageSubmissions,
 } from "../../../drizzle/schema";
 import { ENV } from '../env';
 
@@ -133,16 +136,18 @@ export async function getNextPONumber() {
   if (!db) return "PR-2026-0001";
   const year = new Date().getFullYear();
   const prefix = `PR-${year}-`;
-  // جلب آخر رقم طلب في هذه السنة بدلاً من عد الكل — يمنع التكرار عند الحذف أو التزامن
-  const result = await db
-    .select({ poNumber: purchaseOrders.poNumber })
-    .from(purchaseOrders)
-    .where(like(purchaseOrders.poNumber, `${prefix}%`))
-    .orderBy(desc(purchaseOrders.id))
-    .limit(1);
-  if (!result[0]?.poNumber) return `${prefix}0001`;
-  const lastNum = parseInt(result[0].poNumber.replace(prefix, "")) || 0;
-  return `${prefix}${String(lastNum + 1).padStart(4, "0")}`;
+
+  // PR number reservation is DB-backed and atomic.
+  // The counter table is intentionally independent from purchase_orders so concurrent
+  // requests cannot read the same "last" PR number and generate a duplicate.
+  const [result] = await (db as any).execute(sql`
+    INSERT INTO purchase_order_number_counter (year)
+    VALUES (${year})
+  `);
+  const seq = Number((result as any)?.insertId ?? 0);
+  if (!seq) throw new Error("Failed to reserve purchase request number");
+
+  return `${prefix}${String(seq).padStart(4, "0")}`;
 }
 
 /**
@@ -241,9 +246,15 @@ export async function getPurchaseOrders(filters?: {
       managementApprovedById: purchaseOrders.managementApprovedById,
       managementApprovedAt: purchaseOrders.managementApprovedAt,
       custodyAmount: purchaseOrders.custodyAmount,
+      // [PB] حقلا عرض فقط — يمكّنان الواجهة من تجميع الطلبات تحت بطاقة
+      // حزمتها. NULL لكل طلب غير مجمّع (وهو حال كل الطلبات القائمة)،
+      // فلا يتغيّر شيء في سلوك أو شكل الطلب المفرد.
+      packageId: purchaseOrders.packageId,
+      packageNumber: purchasePackages.packageNumber,
     })
     .from(purchaseOrders)
     .leftJoin(users, eq(purchaseOrders.requestedById, users.id))
+    .leftJoin(purchasePackages, eq(purchaseOrders.packageId, purchasePackages.id))
     .where(where)
     // ✅ الترتيب بتاريخ الإرسال الرسمي لا تاريخ إنشاء المسودة (2026-07-28) —
     // يمنع ضياع الطلب المُرسَل حديثًا بين الطلبات القديمة إذا بقيت مسودته مدة.
@@ -943,3 +954,700 @@ export async function getPOItemsForPOs(poIds: number[]) {
     .from(purchaseOrderItems)
     .where(inArray(purchaseOrderItems.purchaseOrderId, poIds));
 }
+
+// ============================================================
+// PURCHASE PACKAGES (PB) — حاوية عليا فوق طلبات الشراء (2026-08-29)
+//
+// المبدأ: "الحزمة مرآة لطلب الشراء، لا آلية جديدة". كل دالة هنا تكتب فقط
+// على purchase_packages / purchase_orders.packageId / الجداول الجديدة —
+// صفر استدعاء لأي دالة تغيّر حالة طلب أو صنف، وصفر استدعاء لمزامنة
+// البلاغ (syncPathBTicketFromPurchaseOrder). راجع الخطة المتفق عليها:
+// معايير القبول 1-16.
+// ============================================================
+
+/**
+ * توليد رقم الحزمة التالي عبر عدّاد مستقل (INSERT فيُرجِع insertId) —
+ * لا يعتمد على SELECT MAX الذي يعيد استخدام الرقم بعد الحذف (نفس السبب
+ * الذي وثّقناه سابقًا في مشكلة ترقيم البلاغات الحقيقية بالإنتاج).
+ * بخلاف ticket_number_counter (أُنشئ جدوله ولم يُربط فعليًا بالكود قط)،
+ * هذه الدالة تكتب فعليًا في purchase_package_number_counter من أول استخدام.
+ */
+export async function getNextPurchasePackageNumber(tx?: any): Promise<string> {
+  const db = tx || await getDb();
+  const year = new Date().getFullYear();
+  if (!db) return `PB-${year}-00001`;
+  const result: any = await db
+    .insert(purchasePackageNumberCounter)
+    .values({ year });
+  const seq = Number(result[0]?.insertId ?? 0);
+  return `PB-${year}-${String(seq).padStart(5, "0")}`;
+}
+
+/**
+ * إنشاء حزمة شراء جديدة تضم عدة طلبات شراء قائمة. لا تغيّر حالة أي طلب
+ * أو صنف، ولا تستدعي أي مزامنة بلاغ — تكتب فقط رأس الحزمة وعمود الربط.
+ * الشرط (طلبات pending_review وغير منتمية لحزمة أخرى) يُتحقَّق منه في
+ * طبقة الراوتر (المرحلة 3)، لا هنا، إبقاءً لهذه الدالة كتابة صرفة.
+ */
+export async function createPurchasePackage(
+  orderIds: number[],
+  createdById: number,
+  notes?: string
+): Promise<{ id: number; packageNumber: string } | null> {
+  const db = await getDb();
+  if (!db || orderIds.length === 0) return null;
+
+  const packageNumber = await getNextPurchasePackageNumber();
+  const result: any = await db.insert(purchasePackages).values({
+    packageNumber,
+    createdById,
+    notes: notes || null,
+  });
+  const packageId = Number(result[0]?.insertId);
+
+  await db
+    .update(purchaseOrders)
+    .set({ packageId })
+    .where(inArray(purchaseOrders.id, orderIds));
+
+  return { id: packageId, packageNumber };
+}
+
+export async function getPurchasePackageById(id: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select().from(purchasePackages).where(eq(purchasePackages.id, id)).limit(1);
+  return rows[0] || null;
+}
+
+/** كل طلبات الشراء المنتمية لحزمة معيّنة — بلا تعديل على شكلها الحالي. */
+export async function getPurchaseOrdersByPackage(packageId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(purchaseOrders).where(eq(purchaseOrders.packageId, packageId)).orderBy(purchaseOrders.id);
+}
+
+export async function getPurchasePackagesList() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(purchasePackages).orderBy(desc(purchasePackages.createdAt));
+}
+
+/**
+ * إضافة طلب شراء قائم إلى حزمة موجودة. التحقق من أن الطلب pending_review
+ * وغير منتمٍ لحزمة أخرى يقع في طبقة الراوتر.
+ */
+export async function addOrderToPackage(packageId: number, orderId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(purchaseOrders).set({ packageId }).where(eq(purchaseOrders.id, orderId));
+}
+
+/** إخراج طلب من حزمته — تصفير العمود فقط، الطلب نفسه بلا أي تغيير آخر. */
+export async function removeOrderFromPackage(orderId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(purchaseOrders).set({ packageId: null }).where(eq(purchaseOrders.id, orderId));
+}
+
+/**
+ * حذف حزمة: تصفير packageId على كل طلباتها ثم حذف رأس الحزمة. الطلبات
+ * والأصناف تعود لسلوكها الحالي حرفيًا — هذا هو اختبار التراجع (معيار 11).
+ */
+export async function deletePurchasePackage(packageId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(purchaseOrders).set({ packageId: null }).where(eq(purchaseOrders.packageId, packageId));
+  await db.delete(purchasePackages).where(eq(purchasePackages.id, packageId));
+}
+
+/**
+ * إنشاء دفعة فرعية جديدة (PB01-1, PB01-2...) لتتبّع إرسال واحد من
+ * المندوب قد يضم أصنافًا من عدة طلبات داخل نفس الحزمة. subNumber يُحسب
+ * تسلسليًا داخل نفس الحزمة فقط (عدّاد محلي بالحزمة، لا عالمي).
+ */
+export async function createPurchasePackageSubmission(
+  purchasePackageId: number,
+  createdById: number
+): Promise<{ id: number; subNumber: number } | null> {
+  const db = await getDb();
+  if (!db) return null;
+
+  const lastSub = await db
+    .select({ subNumber: purchasePackageSubmissions.subNumber })
+    .from(purchasePackageSubmissions)
+    .where(eq(purchasePackageSubmissions.purchasePackageId, purchasePackageId))
+    .orderBy(desc(purchasePackageSubmissions.subNumber))
+    .limit(1);
+  const subNumber = (lastSub[0]?.subNumber ?? 0) + 1;
+
+  const result: any = await db.insert(purchasePackageSubmissions).values({
+    purchasePackageId,
+    subNumber,
+    createdById,
+  });
+  return { id: Number(result[0]?.insertId), subNumber };
+}
+
+/**
+ * [PB] كل دفعات التسعير المنتمية لدفعة فرعية واحدة (إرسال واحد من المندوب).
+ * هذه هي الرابطة التي تجعل عدة دفعات تسعير — واحدة لكل طلب — تُعرض وتُعتمد
+ * وتُوثَّق كوحدة واحدة، دون أن تتحول لدفعة تسعير عابرة للطلبات.
+ */
+export async function getPricingBatchesBySubmission(submissionId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(poPricingBatches)
+    .where(eq(poPricingBatches.purchasePackageSubmissionId, submissionId))
+    .orderBy(asc(poPricingBatches.id));
+}
+
+/**
+ * [PB] كل الدفعات الفرعية لحزمة، مع دفعات التسعير التابعة لكل منها.
+ * تُستخدم في عرض الحسابات المجمّع.
+ */
+export async function getPackageSubmissionsWithBatches(purchasePackageId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const subs = await db
+    .select()
+    .from(purchasePackageSubmissions)
+    .where(eq(purchasePackageSubmissions.purchasePackageId, purchasePackageId))
+    .orderBy(asc(purchasePackageSubmissions.subNumber));
+
+  const result = [];
+  for (const s of subs as any[]) {
+    const batches = await getPricingBatchesBySubmission(s.id);
+    result.push({ ...s, batches });
+  }
+  return result;
+}
+
+export async function getPurchasePackageSubmissionById(id: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select().from(purchasePackageSubmissions).where(eq(purchasePackageSubmissions.id, id)).limit(1);
+  return rows[0] || null;
+}
+
+/**
+ * [PB-ACC 2026-08-31] اعتماد الحالة المحاسبية لدفعة إرسال كاملة داخل
+ * معاملة قاعدة بيانات واحدة. هذه الدالة لا تستبدل اعتماد دفعة التسعير
+ * القديمة؛ هي مسار إضافي خاص بـ purchase_package_submissions فقط.
+ *
+ * التحديث الذري يشمل:
+ * - كل Pricing Batches التابعة للإرسال -> pending_management
+ * - حالة طلب الشراء العامة فقط إذا لم تبق له دفعة pending_accounting أخرى
+ * - سجل دفعة الإرسال نفسه + إجمالي رصيد العهد
+ *
+ * لا تغيّر حالات الأصناف ولا الشراء ولا الاستلام.
+ */
+export async function approvePackageSubmissionAccountingAtomic(args: {
+  submissionId: number;
+  actorId: number;
+  custodyBalance: string;
+}) {
+  const database = await getDb();
+  if (!database) throw new Error("DATABASE_UNAVAILABLE");
+
+  return database.transaction(async (tx: any) => {
+    const submissionRows = await tx
+      .select()
+      .from(purchasePackageSubmissions)
+      .where(eq(purchasePackageSubmissions.id, args.submissionId))
+      .limit(1);
+    const submission = submissionRows[0];
+    if (!submission) throw new Error("PACKAGE_SUBMISSION_NOT_FOUND");
+    if (submission.status && submission.status !== "pending_accounting") {
+      throw new Error("PACKAGE_SUBMISSION_STATUS_CONFLICT");
+    }
+
+    // نحجز سجل دفعة الإرسال أولاً بشرط حالته الحالية لمنع ضغط اعتماد مزدوج
+    // متزامن. إذا سبق طلب آخر واعتمدها، affectedRows=0 ونلغي المعاملة.
+    const approvedAt = new Date();
+    const claimResult: any = await tx
+      .update(purchasePackageSubmissions)
+      .set({
+        custodyBalance: args.custodyBalance,
+        status: "pending_management",
+        accountingApprovedById: args.actorId,
+        accountingApprovedAt: approvedAt as any,
+      })
+      .where(and(
+        eq(purchasePackageSubmissions.id, args.submissionId),
+        or(
+          isNull(purchasePackageSubmissions.status),
+          eq(purchasePackageSubmissions.status, "pending_accounting"),
+        ),
+      ));
+    if (Number(claimResult?.[0]?.affectedRows ?? 0) !== 1) {
+      throw new Error("PACKAGE_SUBMISSION_STATUS_CONFLICT");
+    }
+
+    const batches = await tx
+      .select()
+      .from(poPricingBatches)
+      .where(eq(poPricingBatches.purchasePackageSubmissionId, args.submissionId))
+      .orderBy(asc(poPricingBatches.id));
+
+    if (batches.length === 0) throw new Error("PACKAGE_SUBMISSION_HAS_NO_BATCHES");
+    if (batches.some((batch: any) => !["pending_accounting", "rejected"].includes(batch.status))) {
+      throw new Error("PACKAGE_SUBMISSION_BATCH_STATUS_CONFLICT");
+    }
+
+    const approvableBatches = (batches as any[]).filter((batch: any) => batch.status === "pending_accounting");
+    if (approvableBatches.length === 0) throw new Error("PACKAGE_SUBMISSION_HAS_NO_APPROVABLE_BATCHES");
+
+    // دفاع أخير داخل المعاملة: لا نعتمد دفعة تسعير بلا أصناف فعالة.
+    let activeEstimatedTotal = 0;
+    for (const batch of approvableBatches) {
+      const batchItems = await tx
+        .select({
+          id: purchaseOrderItems.id,
+          status: purchaseOrderItems.status,
+          estimatedTotalCost: purchaseOrderItems.estimatedTotalCost,
+        })
+        .from(purchaseOrderItems)
+        .where(eq(purchaseOrderItems.batchId, batch.id));
+      const activeItems = batchItems.filter((item: any) => !["cancelled", "rejected"].includes(item.status));
+      if (activeItems.length === 0) {
+        throw new Error(`PACKAGE_SUBMISSION_EMPTY_BATCH:${batch.id}`);
+      }
+      activeEstimatedTotal += activeItems.reduce(
+        (sum: number, item: any) => sum + Number(item.estimatedTotalCost || 0),
+        0,
+      );
+    }
+
+    await tx
+      .update(poPricingBatches)
+      .set({
+        status: "pending_management",
+        accountingApprovedById: args.actorId,
+        accountingApprovedAt: approvedAt as any,
+      })
+      .where(and(
+        eq(poPricingBatches.purchasePackageSubmissionId, args.submissionId),
+        eq(poPricingBatches.status, "pending_accounting"),
+      ));
+
+    const poIds = Array.from(new Set(approvableBatches.map((batch: any) => Number(batch.purchaseOrderId))));
+    for (const poId of poIds) {
+      const poRows = await tx
+        .select({ id: purchaseOrders.id, status: purchaseOrders.status })
+        .from(purchaseOrders)
+        .where(eq(purchaseOrders.id, poId))
+        .limit(1);
+      const po = poRows[0];
+      if (!po || po.status !== "pending_accounting") continue;
+
+      const stillPending = await tx
+        .select({ id: poPricingBatches.id })
+        .from(poPricingBatches)
+        .where(and(
+          eq(poPricingBatches.purchaseOrderId, poId),
+          eq(poPricingBatches.status, "pending_accounting"),
+        ))
+        .limit(1);
+
+      if (stillPending.length === 0) {
+        await tx
+          .update(purchaseOrders)
+          .set({ status: "pending_management" })
+          .where(eq(purchaseOrders.id, poId));
+      }
+    }
+
+    const totalEstimatedCost = activeEstimatedTotal.toFixed(2);
+
+    await tx
+      .update(purchasePackageSubmissions)
+      .set({ totalEstimatedCost })
+      .where(eq(purchasePackageSubmissions.id, args.submissionId));
+
+    return {
+      submissionId: args.submissionId,
+      purchasePackageId: Number(submission.purchasePackageId),
+      subNumber: Number(submission.subNumber),
+      totalEstimatedCost,
+      batchIds: approvableBatches.map((batch: any) => Number(batch.id)),
+      poIds,
+      batches: approvableBatches,
+    };
+  });
+}
+
+/**
+ * [PB-MGMT 2026-08-31] اعتماد الإدارة العليا لدفعة إرسال كاملة داخل
+ * معاملة قاعدة بيانات واحدة. هذا مسار إضافي للحزم فقط ولا يستبدل
+ * approveManagementBatch للطلب المفرد.
+ *
+ * داخل المعاملة:
+ * - يمكن رفض أصناف محددة من نفس دفعة الإرسال قبل الاعتماد النهائي.
+ * - دفعة التسعير التي لا يبقى فيها صنف فعّال تصبح rejected.
+ * - بقية دفعات التسعير تصبح approved وأصنافها الفعالة تصبح approved.
+ * - حالة طلب الشراء تُحسم بنفس قاعدة المسار الحالي بعد انتهاء دفعاته.
+ * - سجل purchase_package_submissions يصبح approved أو rejected.
+ *
+ * لا شراء ولا استلام ولا تغيير لأي ارتباط batchId/packageId.
+ */
+export async function approvePackageSubmissionManagementAtomic(args: {
+  submissionId: number;
+  actorId: number;
+  rejections?: Array<{ itemId: number; reason: string }>;
+}) {
+  const database = await getDb();
+  if (!database) throw new Error("DATABASE_UNAVAILABLE");
+
+  return database.transaction(async (tx: any) => {
+    const submissionRows = await tx
+      .select()
+      .from(purchasePackageSubmissions)
+      .where(eq(purchasePackageSubmissions.id, args.submissionId))
+      .limit(1);
+    const submission = submissionRows[0];
+    if (!submission) throw new Error("PACKAGE_SUBMISSION_NOT_FOUND");
+    if (submission.status !== "pending_management") {
+      throw new Error("PACKAGE_SUBMISSION_STATUS_CONFLICT");
+    }
+
+    // نحجز الاعتماد بدون تغيير الحالة النهائية بعد، حتى نستطيع تحديد ما إذا
+    // كانت النتيجة approved أو rejected بعد معالجة رفض الأصناف. أي خطأ لاحق
+    // يلغي كامل المعاملة بما فيها هذا الحجز.
+    const approvedAt = new Date();
+    const claimResult: any = await tx
+      .update(purchasePackageSubmissions)
+      .set({
+        managementApprovedById: args.actorId,
+        managementApprovedAt: approvedAt as any,
+      })
+      .where(and(
+        eq(purchasePackageSubmissions.id, args.submissionId),
+        eq(purchasePackageSubmissions.status, "pending_management"),
+        isNull(purchasePackageSubmissions.managementApprovedAt),
+      ));
+    if (Number(claimResult?.[0]?.affectedRows ?? 0) !== 1) {
+      throw new Error("PACKAGE_SUBMISSION_STATUS_CONFLICT");
+    }
+
+    const batches = await tx
+      .select()
+      .from(poPricingBatches)
+      .where(eq(poPricingBatches.purchasePackageSubmissionId, args.submissionId))
+      .orderBy(asc(poPricingBatches.id));
+
+    if (batches.length === 0) throw new Error("PACKAGE_SUBMISSION_HAS_NO_BATCHES");
+    if (batches.some((batch: any) => !["pending_management", "rejected"].includes(batch.status))) {
+      throw new Error("PACKAGE_SUBMISSION_BATCH_STATUS_CONFLICT");
+    }
+
+    const approvableBatches = (batches as any[]).filter((batch: any) => batch.status === "pending_management");
+    if (approvableBatches.length === 0) throw new Error("PACKAGE_SUBMISSION_HAS_NO_APPROVABLE_BATCHES");
+
+    const batchIds = approvableBatches.map((batch: any) => Number(batch.id));
+    const poIds = Array.from(new Set(approvableBatches.map((batch: any) => Number(batch.purchaseOrderId))));
+
+    // صورة حالية لكل أصناف دفعات هذه الإرسال قبل تنفيذ أي رفض، للتحقق أن
+    // كل itemId مرسل من الواجهة يخص هذه الدفعة فعلًا ولم يتغير لحالة نهائية.
+    const itemsByBatch = new Map<number, any[]>();
+    const itemById = new Map<number, any>();
+    for (const batch of approvableBatches) {
+      const batchItems = await tx
+        .select()
+        .from(purchaseOrderItems)
+        .where(eq(purchaseOrderItems.batchId, batch.id));
+      itemsByBatch.set(Number(batch.id), batchItems as any[]);
+      for (const item of batchItems as any[]) itemById.set(Number(item.id), item);
+    }
+
+    const requestedRejections = args.rejections ?? [];
+    const seenRejectionIds = new Set<number>();
+    const rejectedItems: Array<{
+      itemId: number;
+      itemName: string;
+      poId: number;
+      reason: string;
+    }> = [];
+
+    for (const rejection of requestedRejections) {
+      if (seenRejectionIds.has(rejection.itemId)) throw new Error("PACKAGE_SUBMISSION_DUPLICATE_REJECTION");
+      seenRejectionIds.add(rejection.itemId);
+
+      const item = itemById.get(Number(rejection.itemId));
+      if (!item) throw new Error("PACKAGE_SUBMISSION_REJECTION_ITEM_NOT_FOUND");
+      if (["rejected", "cancelled"].includes(item.status)) {
+        throw new Error("PACKAGE_SUBMISSION_REJECTION_ITEM_STATUS_CONFLICT");
+      }
+
+      const reason = String(rejection.reason || "").trim();
+      if (reason.length < 10) throw new Error("PACKAGE_SUBMISSION_REJECTION_REASON_INVALID");
+
+      const updateResult: any = await tx
+        .update(purchaseOrderItems)
+        .set({ status: "rejected", managementRejectionReason: reason })
+        .where(and(
+          eq(purchaseOrderItems.id, Number(item.id)),
+          notInArray(purchaseOrderItems.status, ["rejected", "cancelled"]),
+        ));
+      if (Number(updateResult?.[0]?.affectedRows ?? 0) !== 1) {
+        throw new Error("PACKAGE_SUBMISSION_REJECTION_ITEM_STATUS_CONFLICT");
+      }
+
+      rejectedItems.push({
+        itemId: Number(item.id),
+        itemName: String(item.itemName || `صنف #${item.id}`),
+        poId: Number(item.purchaseOrderId),
+        reason,
+      });
+    }
+
+    const approvedBatchIds: number[] = [];
+    const rejectedBatchIds: number[] = [];
+
+    // نحسم كل دفعة تسعير وفق الأصناف المتبقية بعد الرفض. هذه نفس دلالة
+    // approveManagementBatch الحالية: صفر أصناف فعالة = رفض الدفعة، وإلا
+    // اعتماد الدفعة واعتماد أصنافها الفعالة.
+    for (const batch of approvableBatches) {
+      const refreshedItems = await tx
+        .select()
+        .from(purchaseOrderItems)
+        .where(eq(purchaseOrderItems.batchId, batch.id));
+      const activeItems = (refreshedItems as any[]).filter(
+        (item: any) => !["rejected", "cancelled"].includes(item.status),
+      );
+
+      if (activeItems.length === 0) {
+        await tx
+          .update(poPricingBatches)
+          .set({
+            status: "rejected",
+            rejectedById: args.actorId,
+            rejectedAt: approvedAt as any,
+            rejectionReason: "تم رفض جميع أصناف دفعة التسعير من الإدارة العليا ضمن دفعة الإرسال",
+          })
+          .where(and(
+            eq(poPricingBatches.id, Number(batch.id)),
+            eq(poPricingBatches.status, "pending_management"),
+          ));
+        rejectedBatchIds.push(Number(batch.id));
+        continue;
+      }
+
+      await tx
+        .update(poPricingBatches)
+        .set({
+          status: "approved",
+          managementApprovedById: args.actorId,
+          managementApprovedAt: approvedAt as any,
+        })
+        .where(and(
+          eq(poPricingBatches.id, Number(batch.id)),
+          eq(poPricingBatches.status, "pending_management"),
+        ));
+
+      await tx
+        .update(purchaseOrderItems)
+        .set({ status: "approved" })
+        .where(and(
+          eq(purchaseOrderItems.batchId, Number(batch.id)),
+          notInArray(purchaseOrderItems.status, ["rejected", "cancelled"]),
+        ));
+
+      approvedBatchIds.push(Number(batch.id));
+    }
+
+    const approvedPoIds: number[] = [];
+    const rejectedPoIds: number[] = [];
+
+    // نفس قاعدة الطلب الحالية: لا يتحول الطلب إلى approved إلا إذا لم تبق
+    // له أي دفعة حسابات/إدارة معلقة. وإذا انتهت كل أصنافه رفض/إلغاء يُغلق rejected.
+    for (const poId of poIds) {
+      const poRows = await tx
+        .select()
+        .from(purchaseOrders)
+        .where(eq(purchaseOrders.id, poId))
+        .limit(1);
+      const po = poRows[0];
+      if (!po) throw new Error("PACKAGE_SUBMISSION_PURCHASE_ORDER_NOT_FOUND");
+
+      const pendingRows = await tx
+        .select({ id: poPricingBatches.id })
+        .from(poPricingBatches)
+        .where(and(
+          eq(poPricingBatches.purchaseOrderId, poId),
+          inArray(poPricingBatches.status, ["pending_accounting", "pending_management"]),
+        ))
+        .limit(1);
+      if (pendingRows.length > 0) continue;
+
+      const allPoItems = await tx
+        .select({ id: purchaseOrderItems.id, status: purchaseOrderItems.status })
+        .from(purchaseOrderItems)
+        .where(eq(purchaseOrderItems.purchaseOrderId, poId));
+      const allTerminal = allPoItems.length > 0 && (allPoItems as any[]).every(
+        (item: any) => ["rejected", "cancelled"].includes(item.status),
+      );
+
+      if (allTerminal) {
+        if (po.status !== "rejected") {
+          await tx
+            .update(purchaseOrders)
+            .set({
+              status: "rejected",
+              rejectedById: args.actorId,
+              rejectedAt: approvedAt as any,
+              rejectionReason: "تم إغلاق جميع أصناف الطلب أثناء اعتماد الإدارة لدفعة الإرسال",
+            })
+            .where(eq(purchaseOrders.id, poId));
+        }
+        rejectedPoIds.push(poId);
+      } else {
+        if (po.status !== "approved") {
+          await tx
+            .update(purchaseOrders)
+            .set({
+              status: "approved",
+              managementApprovedById: args.actorId,
+              managementApprovedAt: approvedAt as any,
+            })
+            .where(eq(purchaseOrders.id, poId));
+        }
+        approvedPoIds.push(poId);
+      }
+    }
+
+    // إذا لم يبق أي Batch معتمد في هذه الإرسال فحالتها rejected؛ خلاف ذلك
+    // approved تعني أن مراجعة الإدارة اكتملت وقد تحتوي أصنافًا مرفوضة جزئيًا.
+    const submissionStatus = approvedBatchIds.length > 0 ? "approved" : "rejected";
+    await tx
+      .update(purchasePackageSubmissions)
+      .set({ status: submissionStatus })
+      .where(eq(purchasePackageSubmissions.id, args.submissionId));
+
+    return {
+      submissionId: args.submissionId,
+      purchasePackageId: Number(submission.purchasePackageId),
+      subNumber: Number(submission.subNumber),
+      custodyBalance: submission.custodyBalance == null ? null : String(submission.custodyBalance),
+      totalEstimatedCost: submission.totalEstimatedCost == null ? null : String(submission.totalEstimatedCost),
+      submissionStatus,
+      batchIds,
+      approvedBatchIds,
+      rejectedBatchIds,
+      poIds,
+      approvedPoIds,
+      rejectedPoIds,
+      rejectedItems,
+      delegateId: Number(submission.createdById),
+    };
+  });
+}
+
+/**
+ * [PB] معلومات حزمة كل طلب من قائمة طلبات — استعلام واحد مجمّع لتفادي N+1.
+ * تُرجِع Map من purchaseOrderId إلى { packageId, packageNumber }. الطلبات
+ * غير المجمّعة لا تظهر بالـMap إطلاقًا.
+ */
+export async function getPackageInfoForPOs(poIds: number[]) {
+  const map = new Map<number, { packageId: number; packageNumber: string }>();
+  const db = await getDb();
+  if (!db || poIds.length === 0) return map;
+
+  const rows = await db
+    .select({
+      purchaseOrderId: purchaseOrders.id,
+      packageId: purchaseOrders.packageId,
+      packageNumber: purchasePackages.packageNumber,
+    })
+    .from(purchaseOrders)
+    .innerJoin(purchasePackages, eq(purchaseOrders.packageId, purchasePackages.id))
+    .where(inArray(purchaseOrders.id, poIds));
+
+  for (const r of rows as any[]) {
+    if (r.packageId) {
+      map.set(r.purchaseOrderId, {
+        packageId: r.packageId,
+        packageNumber: r.packageNumber,
+      });
+    }
+  }
+  return map;
+}
+
+/**
+ * القراءة الموحّدة للقوائم: تُرجِع مصفوفة بطاقات بمفتاح مركّب
+ * `package:<id>` أو `po:<id>` — نفس نمط getWarehouseTransferBatchCards
+ * (رؤوس مجمَّعة + سجلات مستقلة قديمة بلا معرّف تجميع). دالة قراءة فقط،
+ * لا تكتب شيئًا ولا تشتق أي حالة جديدة. لو مُرِّر delegateId، تُفلتَر
+ * الطلبات لتشمل فقط ما لدى ذلك المندوب من أصناف — بنفس فلترة
+ * getPOItemsByDelegate الحالية (معيار القرار 3 من الخطة).
+ */
+export async function getPurchaseCards(filters?: { delegateId?: number }) {
+  const db = await getDb();
+  if (!db) return [];
+
+  // 1) الطلبات ذات الصلة: كل الطلبات، أو (لو دُعم لاحقًا) طلبات مفلترة
+  //    بحسب صلاحية المستدعي — الفلترة بحسب الدور تبقى في طبقة الراوتر
+  //    كما هي اليوم؛ هذه الدالة تجمع فقط ما يُمرَّر إليها.
+  const allOrders = await db.select().from(purchaseOrders).orderBy(desc(purchaseOrders.id));
+
+  const orderIds = allOrders.map((o: any) => o.id);
+  const allItems = orderIds.length ? await getPOItemsForPOs(orderIds) : [];
+
+  const itemsByOrder = new Map<number, any[]>();
+  for (const item of allItems) {
+    if (filters?.delegateId && item.delegateId !== filters.delegateId) continue;
+    const list = itemsByOrder.get(item.purchaseOrderId) || [];
+    list.push(item);
+    itemsByOrder.set(item.purchaseOrderId, list);
+  }
+
+  // لو فُلتر بمندوب، نُبقي فقط الطلبات التي لديه صنف واحد فيها على الأقل
+  const relevantOrders = filters?.delegateId
+    ? allOrders.filter((o: any) => (itemsByOrder.get(o.id) || []).length > 0)
+    : allOrders;
+
+  // 2) تجميع الطلبات حسب packageId
+  const packagedOrderIds = relevantOrders.filter((o: any) => o.packageId).map((o: any) => o.id);
+  const standaloneOrders = relevantOrders.filter((o: any) => !o.packageId);
+
+  const packageIds = Array.from(new Set(relevantOrders.filter((o: any) => o.packageId).map((o: any) => o.packageId)));
+  const packages = packageIds.length
+    ? await db.select().from(purchasePackages).where(inArray(purchasePackages.id, packageIds as number[]))
+    : [];
+
+  const ordersByPackage = new Map<number, any[]>();
+  for (const o of relevantOrders) {
+    if (!o.packageId) continue;
+    const list = ordersByPackage.get(o.packageId) || [];
+    list.push({ ...o, items: itemsByOrder.get(o.id) || [] });
+    ordersByPackage.set(o.packageId, list);
+  }
+
+  const packageCards = packages.map((pkg: any) => ({
+    cardType: "package" as const,
+    key: `package:${pkg.id}`,
+    id: pkg.id,
+    packageNumber: pkg.packageNumber,
+    createdById: pkg.createdById,
+    createdAt: pkg.createdAt,
+    orders: ordersByPackage.get(pkg.id) || [],
+  }));
+
+  const standaloneCards = standaloneOrders.map((o: any) => ({
+    cardType: "order" as const,
+    key: `po:${o.id}`,
+    id: o.id,
+    order: { ...o, items: itemsByOrder.get(o.id) || [] },
+  }));
+
+  // ترتيب موحّد: الأحدث أولًا، بغض النظر عن كون البطاقة حزمة أو طلبًا مفردًا
+  return [...packageCards, ...standaloneCards].sort((a: any, b: any) => {
+    const aDate = a.cardType === "package" ? a.createdAt : a.order.createdAt;
+    const bDate = b.cardType === "package" ? b.createdAt : b.order.createdAt;
+    return new Date(bDate).getTime() - new Date(aDate).getTime();
+  });
+}
+

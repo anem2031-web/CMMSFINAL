@@ -593,7 +593,13 @@ function fmtSAR(n: number): string {
 export async function generatePurchaseRequestPDF(
   purchaseOrderId: number,
   delegateId: number,
-  batchId?: number
+  batchId?: number,
+  // [PB 2026-08-29] وضع الدفعة الفرعية: عند تمريره، يُبنى المستند على مستوى
+  // الإرسال الواحد (PB01-1) الذي قد يضم أصنافًا من عدة طلبات، بدل طلب واحد.
+  // القالب والتوقيعات والأقسام كلها تبقى **نفسها حرفيًا** — الفارق الوحيد أن
+  // مصدر الأصناف يصبح عدة دفعات تسعير، ويظهر عمود "رقم الطلب" أمام كل صنف.
+  // بدونه تعمل الدالة تمامًا كما كانت (وهو حال كل الطلبات غير المجمّعة).
+  packageSubmissionId?: number
 ): Promise<Buffer> {
   // Fetch PO and items
   const po = await db.getPurchaseOrderById(purchaseOrderId);
@@ -606,7 +612,39 @@ export async function generatePurchaseRequestPDF(
   // ولو لم تُحدَّد دفعة، يشمل المستند كل أصناف الطلب (حالة تسعير الطلب كاملاً دفعة واحدة)
   let batch: any = null;
   let allItems = allItemsRaw as any[];
-  if (batchId) {
+
+  // [PB] وضع الدفعة الفرعية له الأولوية: يتجاوز تصفية الطلب الواحد ويجمع
+  // أصناف كل دفعات التسعير المنتمية لنفس الإرسال، عبر كل طلبات الحزمة.
+  const submissionBatches = packageSubmissionId
+    ? await db.getPricingBatchesBySubmission(packageSubmissionId)
+    : [];
+  const packageSubmission = packageSubmissionId
+    ? await db.getPurchasePackageSubmissionById(packageSubmissionId)
+    : null;
+  const packageForSubmission = packageSubmission
+    ? await db.getPurchasePackageById(packageSubmission.purchasePackageId)
+    : null;
+  const packageSubmissionNumber = packageSubmission && packageForSubmission
+    ? `${(packageForSubmission as any).packageNumber}-${packageSubmission.subNumber}`
+    : null;
+
+  if (packageSubmissionId) {
+    if (submissionBatches.length === 0) throw new Error("No pricing batches found for this submission");
+    const collected: any[] = [];
+    for (const b of submissionBatches as any[]) {
+      const poOfBatch = await db.getPurchaseOrderById(b.purchaseOrderId);
+      const itemsOfPO = await db.getPOItems(b.purchaseOrderId);
+      for (const it of itemsOfPO as any[]) {
+        if (it.batchId === b.id) {
+          collected.push({ ...it, __poNumber: poOfBatch?.poNumber ?? "-" });
+        }
+      }
+    }
+    if (collected.length === 0) throw new Error("No items found for this submission");
+    allItems = collected;
+    // العهدة والتاريخ يُؤخذان من أول دفعة بالإرسال (كلها بنفس اللحظة والمندوب)
+    batch = submissionBatches[0];
+  } else if (batchId) {
     batch = await db.getPOPricingBatchById(batchId);
     if (!batch || batch.purchaseOrderId !== purchaseOrderId) throw new Error("Pricing batch not found for this request");
     allItems = (allItemsRaw as any[]).filter((item: any) => item.batchId === batchId);
@@ -658,7 +696,7 @@ export async function generatePurchaseRequestPDF(
   const requester = po.requestedById ? await db.getUserById(po.requestedById) : null;
   const reviewer = po.reviewedById ? await db.getUserById(po.reviewedById) : null;
   // اسم موظف الحسابات اللي اعتمد فعلياً — من الدفعة لو محددة، وإلا من الطلب كامل
-  const accountingApproverId = batch?.accountingApprovedById || po.accountingApprovedById;
+  const accountingApproverId = packageSubmission?.accountingApprovedById || batch?.accountingApprovedById || po.accountingApprovedById;
   const accountingApprover = accountingApproverId ? await db.getUserById(accountingApproverId) : null;
 
   const requesterName = requester?.name || "-";
@@ -742,13 +780,19 @@ export async function generatePurchaseRequestPDF(
       unit: item.unit || "-",
       unitCost,
       rowTotal,
+      // [PB] رقم الطلب الأصلي — يظهر كعمود إضافي في وضع الدفعة الفرعية فقط
+      poNumber: item.__poNumber ?? po.poNumber,
     };
   });
 
   // مبلغ العهدة المعتمد للدفعة (لو موجود) — وإلا الإجمالي الكلي المحسوب من الأصناف
   // مبلغ العهدة اللي الحسابات كتبته فعلياً وقت الاعتماد — بدون أي قيمة افتراضية بديلة
   // (يبقى null لو الدفعة لسه ما اعتمدتهاش الحسابات، فيفضل الحقل فاضياً للتعبئة اليدوية)
-  const accountingCustodyAmount = batch?.custodyAmount ? parseFloat(batch.custodyAmount) : null;
+  const accountingCustodyAmount = packageSubmission?.custodyBalance
+    ? parseFloat(packageSubmission.custodyBalance)
+    : batch?.custodyAmount
+      ? parseFloat(batch.custodyAmount)
+      : null;
 
   // كتابة مبلغ العهدة بالحروف (تفقيط) + حجم خط ديناميكي لضمان بقاء السطر كاملاً بلا نزول
   // لسطر ثانٍ، بغض النظر عن طول المبلغ كتابةً (مبالغ كبيرة = كتابة أطول = خط أصغر تلقائياً)
@@ -762,9 +806,14 @@ export async function generatePurchaseRequestPDF(
   const docDate = batch?.submittedAt ? new Date(batch.submittedAt) : new Date();
   const dateStr = `${docDate.getFullYear()}-${String(docDate.getMonth() + 1).padStart(2, "0")}-${String(docDate.getDate()).padStart(2, "0")} م`;
 
+  // [PB] عمود رقم الطلب يظهر فقط في وضع الدفعة الفرعية (أصناف من عدة طلبات).
+  // في الوضع العادي لا يُضاف إطلاقًا، فيبقى المستند مطابقًا لما هو عليه اليوم.
+  const isMultiOrderDoc = !!packageSubmissionId;
+
   const rowsHtml = rows.map(r => `
       <tr>
         <td>${r.serial}</td>
+        ${isMultiOrderDoc ? `<td style="font-size: 0.85em;">${escapeHtml(r.poNumber)}</td>` : ""}
         <td style="text-align: right;">${escapeHtml(r.itemName)}</td>
         <td>${r.qty}</td>
         <td>${escapeHtml(r.unit)}</td>
@@ -853,6 +902,10 @@ export async function generatePurchaseRequestPDF(
                     <div class="info-label">التاريخ:</div>
                     <div class="info-value">${dateStr}</div>
                 </div>
+                ${isMultiOrderDoc && packageSubmissionNumber ? `<div class="info-row" style="margin-top: 4px;">
+                    <div class="info-label">رقم دفعة الإرسال:</div>
+                    <div class="info-value" style="font-weight: bold;">${escapeHtml(packageSubmissionNumber)}</div>
+                </div>` : ""}
             </div>
         </div>
         <div class="meta-col">
@@ -873,7 +926,8 @@ export async function generatePurchaseRequestPDF(
         <thead>
             <tr>
                 <th style="width: 5%;">م</th>
-                <th style="width: 45%;">المادة المطلوبة</th>
+                ${isMultiOrderDoc ? `<th style="width: 12%;">رقم الطلب</th>` : ""}
+                <th style="width: ${isMultiOrderDoc ? "33%" : "45%"};">المادة المطلوبة</th>
                 <th style="width: 8%;">الكمية</th>
                 <th style="width: 10%;">الوحدة</th>
                 <th style="width: 15%;">السعر التقديري</th>
@@ -883,7 +937,7 @@ export async function generatePurchaseRequestPDF(
         <tbody>
             ${rowsHtml}
             <tr class="total-row">
-                <td colspan="5" style="text-align: left; padding-left: 15px;">الإجمالي الكلي</td>
+                <td colspan="${isMultiOrderDoc ? 6 : 5}" style="text-align: left; padding-left: 15px;">الإجمالي الكلي</td>
                 <td>${fmtSAR(grandTotal)} ر.س</td>
             </tr>
         </tbody>
@@ -931,7 +985,7 @@ export async function generatePurchaseRequestPDF(
     <div class="section-title">الشؤون المالية والإجراءات المحاسبية</div>
     <div class="finance-section">
         <div class="line-input" style="white-space: nowrap; overflow: hidden; font-size: ${custodyFS}pt;">
-            المذكور عليه عهدة بمبلغ ${accountingCustodyAmount !== null ? `<strong>${fmtSAR(accountingCustodyAmount)}</strong>` : `<span class="dotted-line"></span>`} ريال${custodyWordsText ? ` <strong>${escapeHtml(custodyWordsText)}</strong>` : ""}.
+            إجمالي رصيد العهد التي على المندوب: ${accountingCustodyAmount !== null ? `<strong>${fmtSAR(accountingCustodyAmount)}</strong>` : `<span class="dotted-line"></span>`} ريال${custodyWordsText ? ` <strong>${escapeHtml(custodyWordsText)}</strong>` : ""}.
         </div>
         <div class="line-input">
             ملاحظات مراجع الحسابات: <span class="dotted-line" style="min-width: 320px;"></span>
