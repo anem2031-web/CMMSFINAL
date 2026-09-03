@@ -115,6 +115,40 @@
 
 ## ⏳ مهام معلَّقة (لم تُنفَّذ بعد)
 
+
+### 2026-09-02 — Annual Reset لترقيم PR ومراجعة PB قبل 2027
+**من طلبها:** صاحب المشروع — بعد إغلاق مشكلة تكرار PR واعتماد العداد الذري الحالي.
+
+**الوضع الحالي:**
+- PR numbering أصبح ذريًا عبر `purchase_order_number_counter` + `UNIQUE` على `purchase_orders.poNumber`.
+- Live verification نجح على `PR-2026-0471` ثم `PR-2026-0472` بعد Railway deployment.
+- العداد الحالي Global `AUTO_INCREMENT`، لذلك Prefix السنة يتغير لكن التسلسل الرقمي لا يعود تلقائيًا إلى `0001`.
+- `purchase_package_number_counter` يستخدم النمط العالمي نفسه ويجب مراجعته ضمن نفس المهمة إذا كان المطلوب `PB-2027-00001`.
+
+**المطلوب مستقبلًا:** تصميم Year-Aware atomic counter أو حل مكافئ قبل 2027، مع الحفاظ على UNIQUE وعدم Renumbering للسجلات التاريخية.
+
+**الحدود:** لا تنفيذ الآن؛ لا حذف counter rows؛ لا `ALTER AUTO_INCREMENT` عشوائي؛ لا تغيير Workflow. أي SQL على Live DB يكون أمرًا واحدًا فقط بعد فحص الواقع.
+
+**الحالة:** ⏸️ **DEFERRED / REVIEW BEFORE 2027 / DO NOT AUTO-IMPLEMENT.**
+
+**المرجع:** `docs/CMMS_PURCHASE_NUMBERING_ANNUAL_RESET_DEFERRED_2026-09-02.md`.
+
+---
+
+### 2026-09-02 — Purchase Package Grouping Hardening Review (غير حاجب)
+**السياق:** مراجعة المصدر بعد نجاح Runtime UAT للحزم. لا يوجد عطل Runtime مثبت، ولم يوافق صاحب المشروع على تغيير جديد.
+
+**ملاحظات للمراجعة المستقبلية فقط:**
+1. جعل إنشاء رأس `purchase_packages` وربط `purchase_orders.packageId` داخل Transaction واحدة إذا تقرر hardening concurrency.
+2. فرض Distinct `orderIds` في API، رغم أن الواجهة الحالية لا تنتج تكرارًا طبيعيًا.
+3. `purchase_package_submissions.subNumber` يُحسب `last + 1`; يوجد `UNIQUE(purchasePackageId, subNumber)` يمنع duplicate فعليًا، لكن يمكن لاحقًا تحسين retry/atomic reservation لإرسالين متزامنين جدًا.
+
+**الحالة:** ⏸️ **NON-BLOCKING / DEFERRED / DO NOT AUTO-IMPLEMENT.**
+
+**المرجع:** `docs/CMMS_PURCHASE_PACKAGES_CURRENT_WORKFLOW_REVIEW_AND_RUNTIME_CLOSURE_2026-09-02.md`.
+
+---
+
 ### 2026-08-24 — Main Phase 7 مؤجلة؛ التنفيذ المستقبلي = Option B Shared Posting Core
 **من طلبها:** صاحب المشروع — بعد مناقشة الحاجة الفعلية إلى Main Phase 7 عقب الإغلاق الرسمي لـMain Phase 6.
 
@@ -161,7 +195,7 @@
 
 **البنود:**
 - `2B-10-2C — Integrity Rules, UAT & Closure` → مؤجل إلى **Final Project Hardening / Closure**.
-- حوكمة/إصلاح تكرار أرقام Purchase Order → مؤجل.
+- ~~حوكمة/إصلاح تكرار أرقام Purchase Order~~ → ✅ **CLOSED 2026-09-02:** تم تنظيف التكرارات، تشغيل عداد ذري مستقل، وإضافة `UNIQUE` على `purchase_orders.poNumber`. بقيت فقط مهمة **Annual Reset** مستقلة أدناه.
 - `PR-2026-0378` suspected approval race-condition → مؤجل (وله بند تفصيلي مستقل أدناه).
 - Broad FK rollout → مؤجل، ولا يُنفَّذ تلقائيًا.
 - Broad legacy Inventory cleanup / merge / backfill → مؤجل.

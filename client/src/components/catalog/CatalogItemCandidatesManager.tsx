@@ -310,7 +310,7 @@ export default function CatalogItemCandidatesManager() {
   const confirmLink = (catalogItemId: number, catalogName: string) => {
     if (!linkCandidate) return;
     const ok = window.confirm(
-      `ربط «${linkCandidate.itemName}» بصنف الكتالوج «${catalogName}»؟\n\nلن تتغير الكميات أو التكلفة أو الاستلام التاريخي في هذه الخطوة.`,
+      `ربط «${linkCandidate.itemName}» بصنف الكتالوج «${catalogName}»؟\n\nإذا كان للصنف رصيد موجود في نفس المستودع فسيتم توحيد سجل المخزون معه، مع بقاء أرقام الدفعات والسندات والحركات وتاريخها كما هي.`,
     );
     if (!ok) return;
     linkMut.mutate({ candidateId: linkCandidate.id, catalogItemId });

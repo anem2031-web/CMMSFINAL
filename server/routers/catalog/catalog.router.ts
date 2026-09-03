@@ -5,6 +5,7 @@ import { applyAiSemanticDiscovery, extractNormalizedMeasurements, normalizeCatal
 import { candidateReviewDisplayName, decidedPeerIds, findExactCatalogDuplicate, findExactPendingCandidateDuplicate, normalizeCandidatePair, sameItemGroupIds, sameItemPrimaryForCandidate } from "../../_core/catalog-item-candidate-review";
 import { isCatalogItemCodeForNode, nextCatalogItemCode } from "../../_core/catalog-item-code";
 import { publishResolvedCatalogIdentity } from "../../_core/catalog-item-identity-publication";
+import { consolidateResolvedCatalogInventory } from "../../_core/catalog-item-inventory-consolidation";
 import { catalogAuditJson, pickAuditValues } from "../../_core/catalog-audit";
 import { findCatalogUnitByName, getActiveCatalogUnitCanonicalName } from "../../_core/catalog-unit-governance";
 import { router, catalogAdminProcedure, catalogProcedure, catalogItemLifecycleProcedure, catalogReadProcedure } from "../_shared/procedures";
@@ -1387,6 +1388,11 @@ create: catalogProcedure
 
         let resolvedCandidateIds: number[] = [];
         await (db as any).transaction(async (tx: any) => {
+          // Serialize "link to existing" decisions for the same Catalog Item.
+          // This closes the no-existing-stock race where two candidates could otherwise
+          // both become separate Inventory rows for the same Catalog Item + warehouse.
+          await tx.execute(sql`SELECT id FROM catalog_items WHERE id = ${catalogItem.id} FOR UPDATE`);
+
           const groupCandidates = await loadResolutionGroup(tx, candidate.id);
           resolvedCandidateIds = groupCandidates.map((row: any) => row.id);
           const resolved = await tx.update(catalogItemCandidates).set({
@@ -1412,16 +1418,21 @@ create: catalogProcedure
             });
           }
 
-          // 2B-7: نشر الهوية فقط داخل نفس Transaction. أي تعارض موجود
-          // في Inventory/Receipt/PO يلغي الحسم بالكامل ولا يكتب فوقه.
+          // 2B-7: نشر الهوية أولاً داخل نفس Transaction، ثم توحيد Inventory في
+          // نفس المستودع إن كان للصنف سجل مخزون موجود. أي تعارض يلغي الحسم بالكامل.
           await publishResolvedCatalogIdentity(tx, groupCandidates as any[], catalogItem.id);
+          const inventoryMerges = await consolidateResolvedCatalogInventory(
+            tx,
+            groupCandidates as any[],
+            catalogItem.id,
+          );
 
           await tx.insert(catalogAuditLogs).values({
             userId: ctx.user.id,
             action: "link_item_candidate",
             entityType: "catalog_item_candidate",
             entityId: candidate.id,
-            newValues: catalogAuditJson({ catalogItemId: catalogItem.id, resolvedCandidateIds }),
+            newValues: catalogAuditJson({ catalogItemId: catalogItem.id, resolvedCandidateIds, inventoryMerges }),
           } as any);
         });
 

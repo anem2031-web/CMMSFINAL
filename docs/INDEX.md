@@ -1,7 +1,7 @@
 # فهرس المشروع — نظام إدارة الصيانة (CMMS)
 
 > تم تنظيم المشروع حسب **المجال الوظيفي (Domain)**: كل جزء يخدم نفس الهدف التجاري/الوظيفي مجمّع في مكان واحد، في الواجهة والخادم معاً.
-> آخر تحديث للبنية: 2026-07-12
+> آخر تحديث للتوثيق: 2026-09-02
 
 ---
 
@@ -699,3 +699,18 @@ client/src/
 - Main Phase 8 تبقى DEFERRED / OPTIONAL / NOT STARTED وليست Gate إلزامية.
 - Final Project Hardening / Closure وIndependent Inventory Cutover يبقيان خطوتين منفصلتين لاحقتين وغير منفذتين ضمن هذا الإغلاق.
 - Documentation-only؛ لا Code/Schema/SQL/Live DB/Workflow/Accounting/Historical-data change.
+
+
+## توثيق 2026-08-29 → 2026-09-02 — Purchase Packages / Lot Delivery / PR Numbering
+
+- `docs/CMMS_PURCHASE_ORDER_BATCHES_FOUR_PHASE_IMPLEMENTATION_PLAN_2026-08-30.md` — الخطة الأصلية لأربع مراحل، وتم تحديث حالتها في 2026-09-02 لتعكس التنفيذ الفعلي للمراحل 1–4 بدل checkpoint القديم.
+- `docs/PURCHASE_ORDER_BATCHES_PHASE1_IMPLEMENTATION_REPORT_2026-08-30.md` — صلاحيات الحزم ونموذج البيانات الأساسي.
+- `docs/PURCHASE_ORDER_BATCHES_PHASE2_DELEGATE_UI_IMPLEMENTATION_2026-08-30.md` — شاشة المندوب وإجراءات الصنف والإرسال من الحزمة.
+- `docs/PURCHASE_ORDER_BATCHES_PHASE2_ACCOUNTING_IMPLEMENTATION_2026-08-31.md` — اعتماد الحسابات على مستوى Submission وعهدة واحدة للدفعة.
+- `docs/CMMS_PURCHASE_PACKAGES_CURRENT_WORKFLOW_REVIEW_AND_RUNTIME_CLOSURE_2026-09-02.md` — المرجع الحالي النهائي لمسار جمع الطلبات في الحزم، اعتماد الحسابات/الإدارة، Runtime UAT، وملاحظات Hardening غير المنفذة.
+- `docs/CMMS_LOT_QR_TICKET_DELIVERY_LINK_FIX_2026-09-02.md` — إصلاح استخدام Lot الممسوح كمصدر الحقيقة لربط PO Item/Ticket عند التسليم، مع Live verification.
+- `docs/CMMS_PR_NUMBERING_ATOMIC_COUNTER_AND_DUPLICATE_CLEANUP_2026-09-02.md` — Root cause لتكرار PR، تنظيف 11 سجلًا، عداد ذري، UNIQUE guard، واختبار 0471/0472.
+- `docs/CMMS_PURCHASE_NUMBERING_ANNUAL_RESET_DEFERRED_2026-09-02.md` — مهمة مؤجلة قبل 2027 لتقرير/تنفيذ Year-aware reset للـPR ومراجعة PB counter، بدون تغيير الإنتاج الآن.
+- `docs/CMMS_PURCHASE_PACKAGES_HANDOFF_2026-09-02.md` — Handoff الحالي ونقطة التوقف بعد Railway deployment.
+
+**الحالة الحالية:** Purchase Packages تعمل على Live ضمن Workflow المعتمد؛ PR numbering duplicate issue مغلقة تشغيليًا؛ Annual reset قبل 2027 يبقى DEFERRED.

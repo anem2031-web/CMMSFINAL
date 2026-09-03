@@ -4907,3 +4907,39 @@ owner/admin، توافق رجعي بلا `reviewedById`) وحُدِّث اختب
 - **Main Phase 6 = COMPLETE / RUNTIME UAT PASSED / OFFICIALLY CLOSED.**
 - **Next stop: before Main Phase 7 — Inventory Posting Engine; Main Phase 7 remains NOT STARTED.**
 - Closure doc: `docs/CMMS_MAIN_PHASE6_FINAL_RUNTIME_UAT_AND_OFFICIAL_CLOSURE_2026-08-24.md`.
+
+
+## 2026-08-29 → 2026-09-02 — Purchase Packages implementation reached Live Runtime closure
+
+- Purchase Packages established as a grouping container over existing PRs without replacing PR/item workflows.
+- Grouping eligibility remains `pending_review` + no existing `packageId` + current PO permission scope.
+- Delegate package submission creates one `purchase_package_submissions` row per send and keeps one Pricing Batch per PR.
+- Accounting approval and management approval implemented at package-submission level, with one custody balance per submission and transaction-backed critical writes.
+- Purchase, receipt and delivery remain item-level after management approval.
+- Live multi-PR validation passed on `PB-2026-00006-1` (submission 13), containing PR-2026-0457 and PR-2026-0458, with total estimated cost 11.00 and custody balance 1.35; accounting and management approvals completed successfully.
+- Source review documented non-blocking future hardening candidates only: atomic package-create membership, distinct API order IDs, and submission-number concurrency retry. No additional workflow change executed.
+- Reference: `docs/CMMS_PURCHASE_PACKAGES_CURRENT_WORKFLOW_REVIEW_AND_RUNTIME_CLOSURE_2026-09-02.md`.
+
+## 2026-09-02 — Lot/QR delivery now preserves exact PO Item / Ticket identity
+
+- Diagnosed ticket-linked delivery failure caused by deriving PO/ticket context from aggregate Inventory before resolving the scanned Lot.
+- Changed only `server/_core/inventory-lots.ts`, `server/routers/purchase/purchase-orders.router.ts`, and `server/_core/db/warehouse-returns.ts`.
+- Scanned Lot now provides the exact PO/PO Item identity when present; fallback behavior remains for non-exact contexts.
+- Delivery document item name prefers the Lot supplier item name when available.
+- Live validation passed on PR-2026-0459 / PO 3600185 / item 3570473 / Lot 294 / `DLV-2026-300343`; movement 450996 contained ticketId 1860304 and purchaseOrderItemId 3570473.
+- No workflow, SQL, migration, or historical backfill change.
+- Reference: `docs/CMMS_LOT_QR_TICKET_DELIVERY_LINK_FIX_2026-09-02.md`.
+
+## 2026-09-02 — PR duplicate numbering permanently guarded for 2026 runtime
+
+- Root cause confirmed: old `getNextPONumber()` was non-atomic read-last+1 and `purchase_orders.poNumber` had no UNIQUE constraint.
+- Found 10 duplicated PR numbers covering 21 rows; 11 rows were safely renumbered to PR-2026-0460 through PR-2026-0470.
+- Post-cleanup duplicate query returned empty set.
+- Added live table `purchase_order_number_counter`; reserved first runtime generated ID as 471.
+- `getNextPONumber()` now reserves a number via DB INSERT and uses `insertId`.
+- Added `UNIQUE INDEX uq_purchase_orders_po_number (poNumber)`; SHOW INDEX confirmed `Non_unique=0`.
+- Initial old Railway build attempted PR-2026-0460 and was safely blocked by the UNIQUE guard; investigation showed the deployment did not contain the new generator.
+- Deployment source was moved to `https://github.com/anem2031-web/CMMSFINAL`; Railway rebuilt from the new source.
+- Live validation: PR-2026-0471 mapped to counter id 471; PR-2026-0472 was created after Railway deployment and counter id 472 confirmed sequential operation.
+- Annual sequence reset to 0001 is intentionally deferred before 2027; current global AUTO_INCREMENT remains safe for uniqueness but is not year-reset aware.
+- Reference: `docs/CMMS_PR_NUMBERING_ATOMIC_COUNTER_AND_DUPLICATE_CLEANUP_2026-09-02.md` + `docs/CMMS_PURCHASE_NUMBERING_ANNUAL_RESET_DEFERRED_2026-09-02.md`.
