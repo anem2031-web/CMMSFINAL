@@ -189,6 +189,7 @@ export default function ItemsManager() {
 
   const [selectedImage, setSelectedImage] =
     useState<File | null>(null);
+  const [isSavingItem, setIsSavingItem] = useState(false);
 
   const codePreviewQuery = trpc.catalog.items.previewNextCode.useQuery(
     { nodeId: selectedNode?.id || 0 },
@@ -280,26 +281,11 @@ export default function ItemsManager() {
 
   const attachmentMut = trpc.attachments.add.useMutation();
 
-  const createMut = trpc.catalog.items.create.useMutation({
-    onSuccess: () => {
-      reloadFromStart();
-      resetForm();
-      setIsDialogOpen(false);
-      toast.success("تم إضافة الصنف");
-    },
-    onError: (e) => toast.error(e.message),
-  });
-
-  const updateMut = trpc.catalog.items.update.useMutation({
-    onSuccess: () => {
-      reloadFromStart();
-      resetForm();
-      setEditingItem(null);
-      setIsDialogOpen(false);
-      toast.success("تم تحديث الصنف");
-    },
-    onError: (e) => toast.error(e.message),
-  });
+  // نجاح إنشاء/تعديل الصنف لا يُعلن للمستخدم قبل اكتمال ربط الصورة الاختيارية.
+  // كان onSuccess هنا يغلق النموذج ويعيد تحميل القائمة قبل attachments.add،
+  // فيظهر نجاح مضلل أو لا تظهر الصورة إلا بعد Refresh يدوي.
+  const createMut = trpc.catalog.items.create.useMutation();
+  const updateMut = trpc.catalog.items.update.useMutation();
 
   const deleteMut = trpc.catalog.items.delete.useMutation({
     onSuccess: () => {
@@ -331,6 +317,34 @@ export default function ItemsManager() {
     setCodeEdited(false);
     setSelectedImage(null);
     setEditingItem(null);
+  };
+
+  const uploadCatalogItemImage = async (itemId: number, image: File) => {
+    const formDataUpload = new FormData();
+    formDataUpload.append("file", image);
+
+    const result = await fetch("/api/upload", {
+      method: "POST",
+      body: formDataUpload,
+    });
+    if (!result.ok) {
+      throw new Error("فشل رفع ملف الصورة");
+    }
+
+    const data = await result.json();
+    if (!data?.url || !data?.fileKey) {
+      throw new Error("استجابة رفع الصورة غير مكتملة");
+    }
+
+    await attachmentMut.mutateAsync({
+      entityType: "catalog_item",
+      entityId: itemId,
+      fileName: image.name,
+      fileUrl: data.url,
+      fileKey: data.fileKey,
+      mimeType: image.type || undefined,
+      fileSize: image.size,
+    });
   };
 
   const handleCreate = async () => {
@@ -366,67 +380,61 @@ export default function ItemsManager() {
       }
     }
 
-    if (editingItem) {
-      await updateMut.mutateAsync({
-        id: editingItem.id,
-        nodeId: selectedNode.id,
-        nameAr: formData.nameAr,
-        nameEn: formData.nameEn,
-        nameUr: formData.nameUr || undefined,
-        code: trimmedCode || undefined,
-        unit: formData.unit || undefined,
-        manufacturer: formData.manufacturer || undefined,
-      });
+    let itemSaved = false;
+    const operationLabel = editingItem ? "تحديث" : "إضافة";
 
-      if (selectedImage) {
-        const formDataUpload = new FormData();
-        formDataUpload.append("file", selectedImage);
-        const result = await fetch("/api/upload", {
-          method: "POST",
-          body: formDataUpload,
+    setIsSavingItem(true);
+    try {
+      if (editingItem) {
+        await updateMut.mutateAsync({
+          id: editingItem.id,
+          nodeId: selectedNode.id,
+          nameAr: formData.nameAr,
+          nameEn: formData.nameEn,
+          nameUr: formData.nameUr || undefined,
+          code: trimmedCode || undefined,
+          unit: formData.unit || undefined,
+          manufacturer: formData.manufacturer || undefined,
         });
-        if (!result.ok) throw new Error("فشل رفع الصورة");
-        const data = await result.json();
-        await attachmentMut.mutateAsync({
-          entityType: "catalog_item",
-          entityId: editingItem.id,
-          fileName: selectedImage.name,
-          fileUrl: data.url,
-          fileKey: data.fileKey,
-          mimeType: selectedImage.type,
-          fileSize: selectedImage.size,
+        itemSaved = true;
+
+        if (selectedImage) {
+          await uploadCatalogItemImage(editingItem.id, selectedImage);
+        }
+      } else {
+        const createdItemId = await createMut.mutateAsync({
+          nameAr: formData.nameAr,
+          nameEn: formData.nameEn,
+          nameUr: formData.nameUr || undefined,
+          code: codeEdited ? (trimmedCode || undefined) : undefined,
+          nodeId: selectedNode.id,
+          unit: formData.unit || undefined,
         });
+        itemSaved = true;
+
+        if (selectedImage) {
+          await uploadCatalogItemImage(Number(createdItemId), selectedImage);
+        }
       }
-      return;
-    }
 
-    const createdItem = await createMut.mutateAsync({
-      nameAr: formData.nameAr,
-      nameEn: formData.nameEn,
-      nameUr: formData.nameUr || undefined,
-      code: codeEdited ? (trimmedCode || undefined) : undefined,
-      nodeId: selectedNode.id,
-      unit: formData.unit || undefined,
-    });
-
-    if (selectedImage) {
-      const formDataObj = new FormData();
-      formDataObj.append("file", selectedImage);
-      const result = await fetch("/api/upload", {
-        method: "POST",
-        body: formDataObj,
-      });
-      if (!result.ok) throw new Error("فشل رفع الصورة");
-      const data = await result.json();
-      await attachmentMut.mutateAsync({
-        entityType: "catalog_item",
-        entityId: createdItem,
-        fileName: selectedImage.name,
-        fileUrl: data.url,
-        fileKey: data.fileKey,
-        mimeType: selectedImage.type,
-        fileSize: selectedImage.size,
-      });
+      // Refresh only after the optional attachment is committed so the returned
+      // primaryImageUrl reflects the new image immediately.
+      reloadFromStart();
+      resetForm();
+      setIsDialogOpen(false);
+      toast.success(editingItem ? "تم تحديث الصنف" : "تم إضافة الصنف");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "حدث خطأ غير متوقع";
+      if (itemSaved && selectedImage) {
+        // The item mutation cannot be rolled back after the separate upload/attachment
+        // request fails. Report the partial success explicitly and refresh the list.
+        reloadFromStart();
+        toast.error(`تم ${operationLabel} الصنف، لكن تعذر حفظ الصورة: ${message}`);
+        return;
+      }
+      toast.error(message);
+    } finally {
+      setIsSavingItem(false);
     }
   };
 
@@ -843,13 +851,13 @@ export default function ItemsManager() {
 
             <Button
               onClick={handleCreate}
-              disabled={createMut.isPending || updateMut.isPending}
+              disabled={isSavingItem}
               className="w-full"
             >
-              {(createMut.isPending || updateMut.isPending) && (
+              {isSavingItem && (
                 <Loader2 className="w-4 h-4 animate-spin mr-2" />
               )}
-              {(createMut.isPending || updateMut.isPending)
+              {isSavingItem
                 ? t.common.saving
                 : editingItem
                   ? "تحديث الصنف"

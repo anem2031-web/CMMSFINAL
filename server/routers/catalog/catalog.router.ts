@@ -20,7 +20,6 @@ import {
   catalogItems,
   catalogItemSpecs,
   catalogItemNodes,
-  catalogItemImages,
   catalogSettings,
   catalogAuditLogs,
   catalogUnits,
@@ -720,6 +719,7 @@ const allImages = itemIds.length > 0
           inArray(attachments.entityId, itemIds)
         )
       )
+      .orderBy(asc(attachments.id))
   : [];
 
 const imagesByItemId = new Map<number, typeof allImages[number]>();
@@ -760,11 +760,26 @@ return itemsWithImages;
           .from(catalogItemSpecs)
           .where(eq(catalogItemSpecs.itemId, input));
 
-        // Get images
-        const images = await db
+        // Images use the same authoritative source as items.list and the upload flow.
+        // Preserve the historical `images` response shape so existing consumers do not
+        // need to know that catalog images are stored as generic attachments.
+        const imageAttachments = await db
           .select()
-          .from(catalogItemImages)
-          .where(eq(catalogItemImages.itemId, input));
+          .from(attachments)
+          .where(and(
+            eq(attachments.entityType, "catalog_item"),
+            eq(attachments.entityId, input),
+          ))
+          .orderBy(asc(attachments.id));
+
+        const images = imageAttachments.map((image) => ({
+          id: image.id,
+          itemId: image.entityId,
+          imageUrl: image.fileUrl,
+          imageType: "gallery" as const,
+          sortOrder: 0,
+          createdAt: image.createdAt,
+        }));
 
         return {
           ...item[0],

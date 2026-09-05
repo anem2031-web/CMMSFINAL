@@ -85,8 +85,8 @@ export const attachmentsRouter = router({
     if (!attachment) throw new TRPCError({ code: "NOT_FOUND", message: "المرفق غير موجود" });
     // Verify entity access first, then allow the matching manager role or uploader.
     await assertCanAccessAttachments(ctx.user, attachment.entityType, attachment.entityId, "write");
-    const managerRoles = attachment.entityType === "ticket"
-      ? ["owner", "admin", "maintenance_manager", "general_maintenance_manager", "construction_procurement_manager"]
+    const managerRoles = attachment.entityType === "catalog_item"
+      ? ["owner", "admin", "maintenance_manager", "general_maintenance_manager", "construction_procurement_manager", "warehouse"]
       : ["owner", "admin", "maintenance_manager", "general_maintenance_manager", "construction_procurement_manager"];
     const canDelete = managerRoles.includes(ctx.user.role) || attachment.uploadedById === ctx.user.id;
     if (!canDelete) throw new TRPCError({ code: "FORBIDDEN", message: "ليس لديك صلاحية لحذف هذا المرفق" });

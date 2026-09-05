@@ -16,8 +16,9 @@
  *
  * `catalog_item` بيانات مرجعية مشتركة للقراءة داخل بعض الـworkflows، لكن الكتابة
  * على مرفقاته تعتبر إدارة Master Data. وفق سياسة 2B-10 لا يسمح بالكتابة إلا
- * للمالك/الأدمن/مدير الصيانة/مدير الصيانة العامة/مدير الإنشاءات والمشتريات؛ بقية الأدوار قد تستهلك صورة الصنف
- * كمرجع تشغيلي لكنها لا تستطيع إضافة/حذف مرفقاته.
+ * للمالك/الأدمن والأدوار المخوّلة بإدارة الكتالوج نفسه، بما فيها المستودع.
+ * يجب أن تبقى صلاحية صورة الصنف متطابقة مع صلاحية إنشاء/تعديل الصنف حتى لا ينجح
+ * حفظ الـMaster Data ثم يفشل ربط الصورة لنفس المستخدم.
  *
  * `improvement_idea` و`ticket` على النقيض: وحدتاهما تفرضان فعليًا قيود ملكية
  * حقيقية، فكان تجاوزهما عبر المرفقات ثغرة حقيقية — وكلاهما مُغلَق الآن هنا
@@ -88,6 +89,7 @@ export async function assertCanAccessAttachments(
       APP_ROLE.MAINTENANCE_MANAGER,
       APP_ROLE.GENERAL_MAINTENANCE_MANAGER,
       APP_ROLE.CONSTRUCTION_PROCUREMENT_MANAGER,
+      APP_ROLE.WAREHOUSE,
     ];
     if (!catalogManagers.includes(user.role as any)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "ليس لديك صلاحية لتعديل مرفقات أصناف الكتالوج" });
@@ -117,5 +119,5 @@ export async function assertCanAccessAttachments(
     }
   }
 
-  // catalog_item: القراءة مرجعية مشتركة؛ الكتابة مقيّدة بسياسة إدارة الكتالوج أعلاه.
+  // catalog_item: القراءة مرجعية مشتركة؛ الكتابة تطابق أدوار إدارة الكتالوج نفسها.
 }

@@ -1,77 +1,113 @@
 # تصميم قاعدة البيانات — PM V2
 
-> الحالة: **تصميم مقترح — غير منفذ بعد**
+> الحالة: **تصميم مبدئي محدث — غير منفذ — لا يعتبر ERD نهائيًا قبل إغلاق Phase 0**.
 
-جميع الجداول الجديدة تستخدم بادئة:
+## 1. قاعدة أساسية
+
+جداول PM V2 الجديدة تحمل بادئة:
 
 `pmv2_`
 
-## جداول الإعداد
+لكن هذا لا يعني إنشاء نسخة من كل كيان تستخدمه الوحدة.
 
-### pmv2_location_groups
-مجموعات المواقع.
+**القاعدة: نخزن فقط البيانات التي تملكها PM V2، ونحتفظ بمراجع إلى Master Data الحالية.**
 
-حقول أساسية:
+## 2. Master Data لا تعاد داخل PM V2
+
+لا ينشأ حاليًا بديل لـ:
+
+- `sites`
+- `sections`
+- `assets`
+- `users`
+- `warehouses`
+- `catalog_items`
+- `inventory`
+- `inventory_lots`
+- `inventory_transactions`
+- `tickets`
+- `purchase_orders`
+
+وبالتالي التصميم السابق لـ:
+
+- `pmv2_location_groups`
+- `pmv2_locations`
+
+**ملغى كتصميم افتراضي** ولا يعاد إدخاله إلا إذا أثبت Phase 0 حاجة لا تغطيها الكيانات الحالية.
+
+## 3. جداول التنظيم الخاصة بـPM V2
+
+### `pmv2_specialties`
+
+يمثل التخصص التنظيمي للصيانة.
+
+حقول مبدئية:
+
 - id
-- name
 - code
-- sortOrder
+- name
+- nameEn nullable
+- nameUr nullable
+- managerUserId nullable → `users.id`
+- sourceDepartmentName nullable — Soft Reference إلى القسم الحالي إذا أكد Reality Check أن المصدر هو `users.department`
 - isActive
 - createdById
 - createdAt
 - updatedAt
 
-### pmv2_locations
-المواقع الفعلية.
+ملاحظة:
+
+القسم الحالي لا يكرر هنا. الفحص الحالي لا يظهر Department Master عام؛ إذا أكد Reality Check أن `users.department` هو المصدر، يستخدم `sourceDepartmentName` كSoft Reference بعد validation عبر Organization Adapter، وليس كMaster Data جديد.
+
+### `pmv2_teams`
 
 - id
-- groupId
-- name
+- specialtyId
 - code
-- sortOrder
+- name
+- warehouseId → `warehouses.id`
+- deviceUserId nullable → `users.id`
 - isActive
-- existingSiteId nullable
-- existingAssetId nullable
 - createdById
-- timestamps
+- createdAt
+- updatedAt
 
-### pmv2_teams
-فرق الصيانة.
+قواعد:
 
-- id
-- name
-- code
-- warehouseId → مخزن فرعي حالي
-- tabletUserId nullable → مستخدم حالي
-- isActive
-- timestamps
+- `warehouseId` يجب أن يشير إلى مخزن صالح حسب قواعد النظام الحالية.
+- PM V2 لا تنشئ Warehouse.
 
-### pmv2_team_members
+### `pmv2_team_members`
 
 - id
 - teamId
-- userId → users.id
+- userId → `users.id`
 - isActive
-- timestamps
+- joinedAt nullable
+- leftAt nullable
+- createdAt
+- updatedAt
 
-Unique:
-`teamId + userId`
+Unique مبدئي:
 
----
+`teamId + userId` حسب سياسة التاريخ النهائي.
 
-## جداول Checklist
+## 4. Checklists
 
-### pmv2_checklists
+### `pmv2_checklists`
 
 - id
-- teamId
 - name
 - description nullable
+- defaultSpecialtyId nullable
 - isActive
 - createdById
-- timestamps
+- createdAt
+- updatedAt
 
-### pmv2_checklist_items
+ربط Checklist بالفريق ليس إلزاميًا على مستوى القالب إذا قرر Phase 0 أن القالب reusable بين فرق التخصص نفسه؛ يثبت القرار النهائي قبل التنفيذ.
+
+### `pmv2_checklist_items`
 
 - id
 - checklistId
@@ -79,22 +115,21 @@ Unique:
 - sortOrder
 - isRequired
 - frequency
-- frequencyValue
+- frequencyValue nullable
 - weekday nullable
 - monthDay nullable
 - anchorDate nullable
 - isActive
-- timestamps
+- createdAt
+- updatedAt
 
 التكرارات المبدئية:
 
 `daily | weekly | monthly | quarterly | biannual | annual`
 
----
+## 5. Programs
 
-## البرامج
-
-### pmv2_programs
+### `pmv2_programs`
 
 - id
 - name
@@ -103,41 +138,58 @@ Unique:
 - startDate
 - isActive
 - createdById
-- timestamps
+- createdAt
+- updatedAt
 
-### pmv2_program_locations
+### `pmv2_program_targets`
+
+الهدف: ربط البرنامج بـMaster Data الحالية دون نسخها.
+
+التصميم المفضل مبدئيًا للحفاظ على FK integrity:
 
 - id
 - programId
-- locationId
+- siteId nullable → `sites.id`
+- sectionId nullable → `sections.id`
+- assetId nullable → `assets.id`
 - isActive
-- timestamps
+- createdAt
+- updatedAt
 
-Unique:
-`programId + locationId`
+قاعدة مطلوبة:
 
----
+**Exactly one of `siteId / sectionId / assetId` must be non-null.**
 
-## التنفيذ
+شكل الـCHECK/FK النهائي يعتمد على ما يدعمه Schema الحالي وطريقة المشروع في فرض القيود.
 
-### pmv2_tasks
+بديل polymorphic `targetType + targetId` لا يعتمد إلا إذا كان أفضل تقنيًا بعد Phase 0، لأنه يضعف FK المباشر.
+
+## 6. Tasks
+
+### `pmv2_tasks`
 
 - id
 - taskNumber
 - programId
-- locationId
 - teamId
 - dueDate
 - status
 - firstStartedAt nullable
 - completedAt nullable
-- timestamps
+- createdAt
+- updatedAt
 
-الحالات المقترحة:
+يجب أن تحتفظ المهمة بمرجع Target واضح، إما:
+
+- عبر `programTargetId`
+
+أو Snapshot reference معتمد في ERD النهائي.
+
+الحالات لا تثبت نهائيًا قبل State Machine Freeze، والمبدئي:
 
 `open | in_progress | pending_followup | ready_followup | completed | cancelled`
 
-### pmv2_task_items
+### `pmv2_task_items`
 
 Snapshot للبنود المستحقة.
 
@@ -148,47 +200,60 @@ Snapshot للبنود المستحقة.
 - scheduledDate
 - sortOrder
 - status
+- result nullable
 - resolvedAt nullable
-- timestamps
+- createdAt
+- updatedAt
 
-الحالات:
+التصميم المرشح بعد Existing Capability Audit يفصل Lifecycle عن النتيجة:
 
-`pending | ok | fixed | waiting_material | ready_followup | resolved`
+Lifecycle Status:
 
-### pmv2_visits
+`pending | in_progress | waiting_material | ready_followup | resolved`
 
-كل زيارة فعلية.
+Result:
+
+`ok | fixed | needs_maintenance`
+
+هذا يمنع خلط نتيجة الفحص مع حالة متابعة البند. النهائي يغلق ضمن Phase 0.
+
+## 7. Visits
+
+### `pmv2_visits`
 
 - id
 - taskId
 - visitType
-- teamId
+- executingTeamId
 - startedById
 - startedAt
 - endedAt nullable
 - status
 - leaderUserId nullable
 - summaryNote nullable
-- timestamps
+- createdAt
+- updatedAt
 
-visitType:
+`visitType` مبدئي:
+
 `inspection | followup_repair`
 
-### pmv2_visit_members
+### `pmv2_visit_members`
 
 - id
 - visitId
 - userId
 - memberTeamId nullable
 - role
-- timestamps
+- createdAt
 
-role:
+`role` مبدئي:
+
 `leader | member | external_member`
 
-### pmv2_item_actions
+### `pmv2_item_actions`
 
-Audit trail.
+Audit تشغيلي لكل إجراء على بند.
 
 - id
 - taskItemId
@@ -196,14 +261,14 @@ Audit trail.
 - action
 - performedById
 - note nullable
-- photoUrl nullable
+- photoReference nullable
 - createdAt
 
----
+طريقة تخزين الصور/المرفقات تثبت بعد قرار File/Image Adapter؛ لا نفترض تعديل Attachments العامة الآن.
 
-## المواد
+## 8. المواد
 
-### pmv2_material_requests
+### `pmv2_material_requests`
 
 - id
 - taskId
@@ -212,60 +277,104 @@ Audit trail.
 - teamId
 - teamWarehouseId
 - status
-- linkedBridgeTicketId nullable
-- linkedPurchaseOrderId nullable
-- timestamps
+- bridgeTicketId nullable
+- bridgeTicketItemId nullable
+- purchaseOrderId nullable
+- createdAt
+- updatedAt
 
-status:
+الحالات النهائية تتبع State Machine Phase 0.
+
+مبدئيًا:
+
 `waiting_warehouse | external_purchase | received_warehouse | issued_to_team | cancelled`
 
-### pmv2_material_request_items
+### `pmv2_material_request_items`
 
 - id
 - requestId
-- catalogItemId nullable
-- inventoryId nullable
+- catalogItemId nullable → `catalog_items.id`
 - itemNameSnapshot
 - requestedQuantity
 - unitSnapshot nullable
 - status
-- timestamps
+- purchaseOrderItemId nullable → `purchase_order_items.id` عند الشراء الخارجي
+- receivedInventoryLotId nullable → `inventory_lots.id` عند الحاجة للتتبع
+- createdAt
+- updatedAt
 
-### pmv2_material_usages
+لا نستخدم `inventoryId` كهوية الصنف الأساسية إذا كان Catalog Item هو Master identity.
+
+مرجع `purchaseOrderItemId` مهم لأن Path B والتسليم النهائي يعملان على مستوى مادة طلب الشراء، وليس رأس PO فقط.
+
+الحالات التشغيلية المرشحة للبند:
+
+`waiting_warehouse | external_purchase | received_warehouse | issued_to_team | consumed | cancelled`
+
+### `pmv2_material_usages`
 
 - id
 - taskId
 - taskItemId
 - visitId
 - warehouseId
-- inventoryId
+- catalogItemId nullable
+- inventoryId nullable
 - quantity
 - inventoryTransactionId nullable
+- inventoryLotId nullable
+- deliveryReference nullable
+- purchaseOrderItemId nullable
 - usedById
 - createdAt
 
-PM V2 لا تخصم المخزون بنفسها؛ تحفظ مرجع الحركة التي ينشئها النظام الحالي. الحركة نفسها يجب أن تمر عبر آلية المخزون/المستودع الحالية بكل متطلباتها، ومنها QR/Lot Tracking عندما تكون مفعلة.
+PM V2 لا تخصم الرصيد. `inventoryTransactionId`/Delivery/Lot هي مراجع للحركة التي أنشأها النظام الحالي عبر `issueDelivery`.
 
-### pmv2_request_reminders
+### `pmv2_request_reminders`
 
 - id
 - materialRequestId
 - sentById
 - sentAt
 
----
+## 9. External References
 
-## قواعد الربط والتغيير على قاعدة البيانات
+قبل تثبيت أي FK يجب التحقق يدويًا من:
 
-- `pmv2_material_requests` يجب أن تحفظ الربط بالمهمة الأصلية وبندها، ثم معرف بلاغ الجسر ومعرف Purchase Order عند إنشائهما، بحيث لا ينقطع تتبع الطلب بين PM V2 وPath B.
-- أسماء الحقول النهائية الخاصة ببلاغ الجسر/بند البلاغ وPurchase Order تثبت بعد مطابقة PK/FK الفعلية؛ لا نفترض أسماء إضافية قبل ذلك.
-- أي أوامر قاعدة بيانات مستقبلية ترسل للمستخدم يدويًا **خطوة بخطوة**؛ ينفذ المستخدم كل أمر ويرسل نتيجته قبل الانتقال للأمر التالي.
-- عند أي تعديل Schema، يتم تحديث ملف الـSchema في المشروع وتسليمه للمستخدم للاستبدال.
+- نوع `users.id`.
+- نوع `sites.id`.
+- نوع `sections.id`.
+- نوع `assets.id`.
+- نوع `warehouses.id`.
+- نوع `catalog_items.id`.
+- نوع Inventory Transaction ID.
+- Ticket/Item IDs المستخدمة في Bridge.
+- Purchase Order ID.
 
-لا يتم إنشاء Migration أو جدول فعلي إلا بعد:
-1. فحص Schema الحالي.
-2. التأكد من أسماء PK/FK الحقيقية.
-3. التأكد من أنواع IDs.
-4. التأكد من المخازن الفرعية وطريقة تمثيلها.
-5. توثيق أي فرق بين هذا التصميم والواقع في `08_DECISIONS.md`.
-6. إرسال أوامر قاعدة البيانات للمستخدم يدويًا وتنفيذها بالتسلسل المتفق عليه.
+## 10. ملاحظة Schema Drift حالية
+
+يوجد Migration في المشروع لإضافة:
+
+- `users.specialty`
+- `users.specialtyEn`
+- `users.specialtyUr`
+
+بينما تعريف `users` في `drizzle/schema.ts` في النسخة المفحوصة لا يتضمن هذه الحقول.
+
+لذلك قبل أي اعتماد على هذه الأعمدة يجب مقارنة:
+
+**قاعدة البيانات الفعلية ↔ migrations ↔ schema.ts**
+
+ولا يتم تصحيح ذلك تلقائيًا ضمن PM V2 دون أمر ومعالجة موثقة.
+
+## 11. بروتوكول DB
+
+أي تعديل DB مستقبلي:
+
+1. SQL يدوي واحد للمستخدم.
+2. المستخدم ينفذ ويرسل النتيجة.
+3. تتم المراجعة.
+4. ثم SQL التالي.
+5. عند النهاية يحدث Schema ويسلم ضمن Patch.
+
+لا Migration فعلية ولا أوامر DB قبل قول المستخدم **نفذ الآن** للمرحلة المعنية.

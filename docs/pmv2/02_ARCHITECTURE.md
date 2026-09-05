@@ -1,74 +1,237 @@
 # المعمارية وحدود التكامل — PM V2
 
-## قرار معماري
+## 1. القرار المعماري
 
-PM V2 وحدة مستقلة جديدة، ولا تعتمد على جداول الصيانة الدورية القديمة.
+PM V2 هي **Bounded Module مستقلة معماريًا داخل نفس البرنامج الحالي**.
 
-## نطاق PM V2
+التصنيف الأنسب حاليًا:
 
-- المواقع الخاصة بالوحدة.
-- فرق الصيانة.
-- ربط الفنيين الحاليين بالفرق.
-- ربط المخزن الفرعي الحالي بالفريق.
-- Checklist وجدولة البنود.
-- برامج الصيانة.
-- مهام اليوم.
-- الزيارات والتنفيذ.
-- المواد المعلقة.
-- سجل المتابعة.
-- Adapters للتكامل.
+**Modular Monolith**
 
-## أنظمة خارج PM V2 لا يتم تعديلها
+وليس:
 
-- المستخدمون.
-- المخازن.
-- المخزون.
-- المستودعات.
-- البلاغات.
-- المشتريات.
+- تطبيقًا منفصلًا.
+- Microservice منفصلة.
+- أو مجموعة تغييرات مبعثرة داخل الوحدات الحالية.
+
+## 2. الهدف من هذا القرار
+
+تحقيق ثلاثة أمور معًا:
+
+1. استقلال منطق PM V2 وقابليته للاختبار والصيانة.
+2. إعادة استخدام بيانات وخدمات البرنامج الحالية بدل تكرارها.
+3. منع PM V2 من فرض تغييرات على Workflows النظام الحالي.
+
+## 3. حدود الملكية
+
+### داخل PM V2
+
+- Specialties.
+- Teams.
+- Team Membership.
+- Specialty Manager assignment.
+- Checklists / Checklist Items.
+- Recurrence rules.
+- Maintenance Programs.
+- Program Targets references.
+- Tasks / Task Items.
+- Visits / Visit Members.
+- Item Actions / operational audit.
+- Material Requests state.
+- Follow-up / Closure rules.
+
+### خارج PM V2 — Source of Truth مشترك
+
+- Users.
+- Sites.
+- Sections.
+- Assets.
+- Warehouses.
+- Catalog.
+- Inventory / Lots / Transactions.
+- Tickets.
 - Path B.
-- الاستلام.
-- Workflow الصرف الحالي.
+- Purchase Orders.
 
-## Adapters المقترحة
+PM V2 لا تنسخ هذه الكيانات كـMaster Data.
+
+## 4. Maintenance Targets
+
+البرنامج الحالي يملك بالفعل:
+
+`sites → sections → assets`
+
+لذلك التصميم الجديد لا يعتبر `pmv2_locations` مصدر حقيقة مستقلًا.
+
+PM V2 ستربط برنامج الصيانة بأحد أهداف النظام الحالي حسب الحاجة:
+
+- Site.
+- Section.
+- Asset.
+
+الشكل النهائي لعلاقات DB يثبت في Phase 0 بعد فحص البيانات الفعلية وأنواع IDs.
+
+## 5. الفرق بين المسميات المتشابهة
+
+### Site
+موقع رئيسي موجود في `sites`.
+
+### Section
+قسم مكاني داخل Site موجود في `sections`.
+
+### Department
+القسم الوظيفي/التنظيمي الموجود أصلًا في البرنامج، ومصدره النهائي يثبت في Phase 0.
+
+### Specialty
+تخصص صيانة جديد داخل PM V2 مثل كهرباء/سباكة.
+
+### Team
+فريق صيانة تابع للتخصص.
+
+### Team Members
+Users حاليون مرتبطون بالفريق.
+
+## 6. الهيكل التنظيمي
+
+**القسم الحالي → التخصص → الفريق → الأعضاء**
+
+مع أدوار منفصلة:
+
+- Specialty Manager.
+- Team Member.
+- Visit/Task Leader.
+
+Task Leader مرتبط بزيارة، ولا يحل محل Specialty Manager.
+
+## 7. Integration Adapters
 
 ### Users Adapter
-قراءة الفنيين/المستخدمين الحاليين.
+
+المسؤولية:
+
+- قراءة المستخدمين الحاليين.
+- التحقق من الفعالية والدور حسب القاعدة المعتمدة.
+- توفير بيانات العرض اللازمة لـPM V2.
+
+لا ينشئ PM V2 مستخدمين جدد.
+
+### Organization Adapter
+
+عند الحاجة لعرض/ربط القسم الحالي دون نسخ Master Data.
+
+لا يعتمد التصميم على اسم `department` فقط قبل تثبيت Source of Truth الفعلي.
+
+### Maintenance Target Adapter
+
+قراءة وتوحيد أهداف الصيانة من:
+
+- `sites`
+- `sections`
+- `assets`
+
+بحيث تتعامل طبقة PM V2 مع Contract موحد دون نسخ السجلات.
 
 ### Warehouse Adapter
-قراءة المخازن الفرعية الحالية واستخدام **نفس عملية الصرف/التحويل القائمة** دون بناء منطق صرف موازٍ. كل متطلبات الحركة الحالية تبقى سارية، بما فيها QR/Lot Tracking والتحقق من الكمية والصلاحيات عندما تكون مطلوبة.
+
+- قراءة المخازن الفرعية الحالية.
+- التحقق من المخزن المرتبط بالفريق.
+- نقل المادة إلى مخزن الفريق عبر الخدمات الحالية `createWarehouseTransfer` / `createWarehouseTransferBatch`.
+- لا ينشئ PM V2 منطق Transfer موازيًا.
 
 ### Inventory Adapter
-قراءة أصناف مخزن الفريق وربط الاستخدام بحركة المخزون الحالية. PM V2 لا تخصم الرصيد مباشرة ولا تتجاوز خدمة المخزون الحالية.
+
+- قراءة الأصناف والأرصدة المناسبة.
+- تمرير الصرف/الاستخدام الفعلي إلى خدمة `issueDelivery` الحالية.
+- احترام QR/Lot/Token/Validation الحالية.
+- إعادة مراجع Delivery / Inventory Transaction / Lot اللازمة إلى PM V2.
+- عند وجود شراء خارجي يحتفظ Contract بمرجع Purchase Order Item اللازم لاستمرار التتبع.
+
+PM V2 لا تعدل الرصيد مباشرة ولا تنشئ Inventory Transaction بنفسها.
 
 ### Path B Adapter
-استخدام Path B الحالي دون تعديل Workflow أو صلاحيات إنشاء Purchase Order الحالية.
 
-بعد فحص النسخة الحالية، التكامل مع الشراء الخارجي يعتمد على **بلاغ جسر** مرتبط بالمسار B. يبدأ المستودع طلب الشراء الخارجي من شاشة PM V2، ثم تقوم PM V2 بإنشاء/ربط بلاغ الجسر اللازم، ويكمل إنشاء/إدارة الـPurchase Order المستخدم المخول أصلًا داخل Path B.
+- إنشاء/ربط Bridge Ticket/Item عند الحاجة.
+- متابعة الربط مع Purchase Order.
+- قراءة الحالة المطلوبة لعرضها داخل PM V2.
 
-يجب أن تحتفظ PM V2 بسلسلة الربط التالية طوال دورة الطلب:
+لا يغير Workflow أو Roles الخاصة بـPath B.
 
-`PM V2 Task → Task Item → Material Request → Bridge Ticket/Item → Purchase Order`
+### Notification Adapter
 
-ولا يظهر هذا التعقيد للفني.
+إعادة استخدام البنية الحالية للإشعارات عندما تكون مناسبة، مع إبقاء منطق "متى نرسل" داخل PM V2.
 
-## تنظيم الكود المقترح
+### File/Image Adapter
+
+إعادة استخدام خدمة الرفع/Offline Upload أو المكونات المشتركة المناسبة، مع عدم تعديل Allowlist/Workflow قائم دون حاجة معتمدة.
+
+## 8. قاعدة الاتصال بين الوحدات
+
+القاعدة:
+
+> PM V2 Domain لا يعرف تفاصيل جداول أو Routers النظام الحالي أكثر مما يحتاجه Contract الـAdapter.
+
+مثال:
 
 ```text
-client/src/pmv2/
-server/routers/pmv2/
-server/services/pmv2/
-server/_core/db/pmv2/
-server/jobs/pmv2-*.ts
+Technician Workflow
+        ↓
+PM V2 Inventory Port
+        ↓
+Inventory Adapter
+        ↓
+Current Inventory/Warehouse Services
+        ↓
+Inventory Transaction
+```
+
+## 9. تنظيم الكود المبدئي
+
+المسارات النهائية تثبت بعد مطابقة Structure المشروع، لكن المبدأ:
+
+```text
+client/src/.../pmv2/
+server/.../pmv2/
+  domain/
+  services/
+  repositories/
+  adapters/
+  routers/
+  jobs/
 docs/pmv2/
 ```
 
-المسارات النهائية تحدد بعد فحص Structure المشروع أثناء التنفيذ، مع المحافظة على عزل الوحدة.
+إذا كان Structure الحالي يفرض Naming مختلفًا، نتكيف معه مع الحفاظ على Boundary.
 
-## قاعدة التكامل
+## 10. قاعدة عدم التغيير خارج الوحدة
 
-إذا احتجنا تعديلًا سلوكيًا داخل نظام قائم حتى تعمل PM V2:
+التغييرات خارج PM V2 تكون فقط Additive/Registration عند الحاجة، مثل:
 
-**نتوقف ولا ننفذه.**
+- تسجيل Router.
+- Menu entry.
+- route registration.
+- import محدود.
 
-نبحث أولًا عن تكامل من داخل PM V2. وإذا تعذر، يتم توثيق الحاجة ومناقشتها قبل أي تعديل.
+إذا تطلب التكامل تغيير سلوك نظام قائم:
+
+1. نتوقف.
+2. نوثق المشكلة.
+3. نبحث عن Adapter-side solution.
+4. نناقش المستخدم قبل أي قرار خارج PM V2.
+
+## 11. Department Integration Limitation
+
+الفحص الحالي لا يظهر Department Master عام ثابت؛ `users.department` ظاهر كنص، بينما `sections` مفهوم مكاني و`ticket_departments` خاص بالبلاغات.
+
+لذلك لا تنشئ PM V2 جدول Departments موازٍ. Organization Adapter هو المسؤول عن تقديم/التحقق من مرجع القسم الحالي، والتصميم النهائي للربط ينتظر DB Reality Check في Phase 0.
+
+## 12. Core First, Integration by Contract
+
+نحدد Contracts من البداية، لكن نؤجل التكامل الحساس حتى يستقر قلب PM V2.
+
+الترتيب:
+
+- Phase 0: Contracts.
+- Phases 1–8: Foundation/Core/Stabilization.
+- Phase 9+: Inventory/Warehouse/Path B integrations.
+
+هذا يمنع بناء وحدة عمياء عن البرنامج، ويمنع كذلك تشابكها معه قبل استقرارها.

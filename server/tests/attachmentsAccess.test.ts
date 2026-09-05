@@ -150,11 +150,12 @@ describe("catalog_item — قراءة مشتركة وكتابة لمديري ا�
     ).resolves.toBeUndefined();
   });
 
-  it("يسمح للمديرين الثلاثة بإضافة/تعديل مرفقات الصنف", async () => {
+  it("يسمح لأدوار إدارة الكتالوج بإضافة/تعديل مرفقات الصنف بما فيها المستودع", async () => {
     for (const role of [
       "maintenance_manager",
       "general_maintenance_manager",
       "construction_procurement_manager",
+      "warehouse",
     ]) {
       await expect(
         assertCanAccessAttachments({ id: 55, role }, "catalog_item", 1, "write")
