@@ -29,9 +29,12 @@ import {
   Search,
   X,
   FolderTree,
+  CheckCircle2,
+  AlertCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { Progress } from "@/components/ui/progress";
 import { SupplierPickerSection } from "@/components/catalog/SupplierPicker";
 import CatalogTreeFilter, {
   getCatalogNodePathLabel,
@@ -190,6 +193,11 @@ export default function ItemsManager() {
   const [selectedImage, setSelectedImage] =
     useState<File | null>(null);
   const [isSavingItem, setIsSavingItem] = useState(false);
+  const [imageUploadProgress, setImageUploadProgress] = useState(0);
+  const [imageSaveStage, setImageSaveStage] = useState<
+    "idle" | "uploading" | "linking" | "success" | "error"
+  >("idle");
+  const [imageSaveMessage, setImageSaveMessage] = useState("");
 
   const codePreviewQuery = trpc.catalog.items.previewNextCode.useQuery(
     { nodeId: selectedNode?.id || 0 },
@@ -317,34 +325,97 @@ export default function ItemsManager() {
     setCodeEdited(false);
     setSelectedImage(null);
     setEditingItem(null);
+    setImageUploadProgress(0);
+    setImageSaveStage("idle");
+    setImageSaveMessage("");
   };
 
-  const uploadCatalogItemImage = async (itemId: number, image: File) => {
-    const formDataUpload = new FormData();
-    formDataUpload.append("file", image);
+  type UploadedCatalogImage = { url: string; fileKey: string };
 
-    const result = await fetch("/api/upload", {
-      method: "POST",
-      body: formDataUpload,
+  const uploadCatalogItemImageFile = (image: File) => {
+    setImageSaveStage("uploading");
+    setImageUploadProgress(0);
+    setImageSaveMessage("جارٍ رفع الصورة...");
+
+    return new Promise<UploadedCatalogImage>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formDataUpload = new FormData();
+      formDataUpload.append("file", image);
+
+      xhr.open("POST", "/api/upload");
+
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable) return;
+        // نحتفظ بآخر 10% لمعالجة الصورة وحفظها في التخزين على السيرفر.
+        const pct = Math.min(90, Math.round((event.loaded / event.total) * 90));
+        setImageUploadProgress(pct);
+        setImageSaveMessage(`جارٍ رفع الصورة... ${pct}%`);
+      };
+
+      xhr.onload = () => {
+        if (xhr.status < 200 || xhr.status >= 300) {
+          let serverMessage = `فشل رفع الصورة (HTTP ${xhr.status})`;
+          try {
+            const body = JSON.parse(xhr.responseText);
+            if (body?.error) serverMessage = body.error;
+          } catch {
+            // Keep the HTTP fallback message.
+          }
+          setImageSaveStage("error");
+          setImageUploadProgress(0);
+          setImageSaveMessage(serverMessage);
+          reject(new Error(serverMessage));
+          return;
+        }
+
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (!data?.url || !data?.fileKey) {
+            throw new Error("استجابة رفع الصورة غير مكتملة");
+          }
+          // وصول الرد يعني أن السيرفر أنهى معالجة الصورة وحفظ الملف في التخزين.
+          setImageUploadProgress(95);
+          setImageSaveMessage("تم رفع الملف — جارٍ حفظ وربط الصورة بالصنف...");
+          resolve({ url: data.url, fileKey: data.fileKey });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "استجابة رفع الصورة غير صالحة";
+          setImageSaveStage("error");
+          setImageUploadProgress(0);
+          setImageSaveMessage(message);
+          reject(new Error(message));
+        }
+      };
+
+      xhr.onerror = () => {
+        const message = "تعذر الاتصال أثناء رفع الصورة";
+        setImageSaveStage("error");
+        setImageUploadProgress(0);
+        setImageSaveMessage(message);
+        reject(new Error(message));
+      };
+
+      xhr.send(formDataUpload);
     });
-    if (!result.ok) {
-      throw new Error("فشل رفع ملف الصورة");
-    }
+  };
 
-    const data = await result.json();
-    if (!data?.url || !data?.fileKey) {
-      throw new Error("استجابة رفع الصورة غير مكتملة");
-    }
+  const linkCatalogItemImage = async (itemId: number, image: File, uploaded: UploadedCatalogImage) => {
+    setImageSaveStage("linking");
+    setImageUploadProgress(95);
+    setImageSaveMessage("تم رفع الصورة — جارٍ حفظ الربط بالصنف...");
 
     await attachmentMut.mutateAsync({
       entityType: "catalog_item",
       entityId: itemId,
       fileName: image.name,
-      fileUrl: data.url,
-      fileKey: data.fileKey,
+      fileUrl: uploaded.url,
+      fileKey: uploaded.fileKey,
       mimeType: image.type || undefined,
       fileSize: image.size,
     });
+
+    setImageSaveStage("success");
+    setImageUploadProgress(100);
+    setImageSaveMessage("تم رفع الصورة وحفظها بنجاح");
   };
 
   const handleCreate = async () => {
@@ -384,6 +455,9 @@ export default function ItemsManager() {
     const operationLabel = editingItem ? "تحديث" : "إضافة";
 
     setIsSavingItem(true);
+    setImageSaveStage("idle");
+    setImageUploadProgress(0);
+    setImageSaveMessage(selectedImage ? "سيتم حفظ بيانات الصنف ثم رفع الصورة وربطها قبل الإنهاء" : "");
     try {
       if (editingItem) {
         await updateMut.mutateAsync({
@@ -399,7 +473,8 @@ export default function ItemsManager() {
         itemSaved = true;
 
         if (selectedImage) {
-          await uploadCatalogItemImage(editingItem.id, selectedImage);
+          const uploadedImage = await uploadCatalogItemImageFile(selectedImage);
+          await linkCatalogItemImage(editingItem.id, selectedImage, uploadedImage);
         }
       } else {
         const createdItemId = await createMut.mutateAsync({
@@ -413,7 +488,8 @@ export default function ItemsManager() {
         itemSaved = true;
 
         if (selectedImage) {
-          await uploadCatalogItemImage(Number(createdItemId), selectedImage);
+          const uploadedImage = await uploadCatalogItemImageFile(selectedImage);
+          await linkCatalogItemImage(Number(createdItemId), selectedImage, uploadedImage);
         }
       }
 
@@ -428,10 +504,15 @@ export default function ItemsManager() {
       if (itemSaved && selectedImage) {
         // The item mutation cannot be rolled back after the separate upload/attachment
         // request fails. Report the partial success explicitly and refresh the list.
+        setImageSaveStage("error");
+        setImageUploadProgress(0);
+        setImageSaveMessage(`تعذر حفظ الصورة: ${message}`);
         reloadFromStart();
         toast.error(`تم ${operationLabel} الصنف، لكن تعذر حفظ الصورة: ${message}`);
         return;
       }
+      setImageSaveStage("error");
+      setImageSaveMessage(message);
       toast.error(message);
     } finally {
       setIsSavingItem(false);
@@ -725,7 +806,14 @@ export default function ItemsManager() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isDialogOpen} onOpenChange={open => { if (!open) resetForm(); setIsDialogOpen(open); }}>
+      <Dialog
+        open={isDialogOpen}
+        onOpenChange={open => {
+          if (!open && isSavingItem) return;
+          if (!open) resetForm();
+          setIsDialogOpen(open);
+        }}
+      >
         <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
@@ -809,10 +897,43 @@ export default function ItemsManager() {
                 onChange={(e) => {
                   const file = e.target.files?.[0] || null;
                   setSelectedImage(file);
+                  setImageUploadProgress(0);
+                  setImageSaveStage("idle");
+                  setImageSaveMessage(file ? "الصورة جاهزة للرفع عند الحفظ" : "");
                 }}
+                disabled={isSavingItem}
               />
               {selectedImage && (
-                <p className="text-xs text-muted-foreground">{selectedImage.name}</p>
+                <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                  <div className="flex items-center justify-between gap-3 text-xs">
+                    <span className="truncate text-muted-foreground" title={selectedImage.name}>
+                      {selectedImage.name}
+                    </span>
+                    {(imageSaveStage === "uploading" || imageSaveStage === "linking" || imageSaveStage === "success") && (
+                      <span className="shrink-0 font-medium tabular-nums">{imageUploadProgress}%</span>
+                    )}
+                  </div>
+
+                  {(imageSaveStage === "uploading" || imageSaveStage === "linking" || imageSaveStage === "success") && (
+                    <Progress value={imageUploadProgress} className="h-2" />
+                  )}
+
+                  <div className={cn(
+                    "flex items-start gap-2 text-xs",
+                    imageSaveStage === "success" && "text-emerald-700",
+                    imageSaveStage === "error" && "text-destructive",
+                    imageSaveStage !== "success" && imageSaveStage !== "error" && "text-muted-foreground",
+                  )}>
+                    {imageSaveStage === "success" ? (
+                      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                    ) : imageSaveStage === "error" ? (
+                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    ) : imageSaveStage === "uploading" || imageSaveStage === "linking" ? (
+                      <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+                    ) : null}
+                    <span>{imageSaveMessage || "الصورة جاهزة للرفع عند الحفظ"}</span>
+                  </div>
+                </div>
               )}
             </div>
 
@@ -858,7 +979,11 @@ export default function ItemsManager() {
                 <Loader2 className="w-4 h-4 animate-spin mr-2" />
               )}
               {isSavingItem
-                ? t.common.saving
+                ? imageSaveStage === "uploading"
+                  ? `رفع الصورة ${imageUploadProgress}%`
+                  : imageSaveStage === "linking"
+                    ? "حفظ الصورة..."
+                    : t.common.saving
                 : editingItem
                   ? "تحديث الصنف"
                   : t.common.save}

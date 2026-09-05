@@ -67,3 +67,17 @@ Using a `warehouse` account:
 ## Database impact
 
 None. No SQL commands, schema changes, migrations, or data updates are required for this fix.
+
+## Runtime acceptance result — PASSED
+
+User-reported production/runtime validation completed successfully on 2026-09-05 using a `warehouse` account:
+
+- A Catalog item was created with an image.
+- The image appeared immediately after save.
+- The reported symptom was no longer reproducible in the tested flow.
+
+### Closure status
+
+**Closed — runtime acceptance passed.**
+
+The fix is considered functionally verified for the reported warehouse create-item-with-image scenario. No additional code change was required after the acceptance test.
