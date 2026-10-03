@@ -32,6 +32,7 @@ import * as ideasDb from "../../services/improvement-ideas/improvementIdeas";
 import * as db from "../../_core/db";
 import { assertTicketReadable, isTicketReadOnlyForUser } from "../tickets/tickets.access";
 import { APP_ROLE, MAINTENANCE_RESPONSIBLE_DEPARTMENT } from "../../../shared/roles";
+import { assertPmv2ItemActionEvidenceAccess } from "../../pmv2/technician/evidence-access";
 
 /** نفس القائمة المستخدمة بـimprovement-ideas.router.ts حرفيًا */
 const IDEA_FULL_VISIBILITY_ROLES = [
@@ -43,6 +44,7 @@ export const ALLOWED_ATTACHMENT_ENTITY_TYPES = [
   "ticket",
   "improvement_idea",
   "catalog_item",
+  "pmv2_item_action",
 ] as const;
 
 export type AttachmentEntityType = (typeof ALLOWED_ATTACHMENT_ENTITY_TYPES)[number];
@@ -94,6 +96,18 @@ export async function assertCanAccessAttachments(
     if (!catalogManagers.includes(user.role as any)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "ليس لديك صلاحية لتعديل مرفقات أصناف الكتالوج" });
     }
+  }
+
+  if (entityType === "pmv2_item_action") {
+    try {
+      await assertPmv2ItemActionEvidenceAccess(user, entityId, mode);
+    } catch (error: any) {
+      throw new TRPCError({
+        code: error?.message?.includes("غير موجود") ? "NOT_FOUND" : "FORBIDDEN",
+        message: error?.message || "ليس لديك صلاحية الوصول إلى دليل تنفيذ PM V2",
+      });
+    }
+    return;
   }
 
   if (entityType === "ticket") {

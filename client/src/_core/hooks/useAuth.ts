@@ -63,6 +63,9 @@ export function useAuth(options?: UseAuthOptions) {
   useEffect(() => {
     if (!redirectOnUnauthenticated) return;
     if (meQuery.isLoading || logoutMutation.isPending) return;
+    // A failed auth check can be a temporary server/DB problem. Only a
+    // successful auth.me response with no user is evidence of no session.
+    if (meQuery.error) return;
     if (state.user) return;
     if (typeof window === "undefined") return;
     if (window.location.pathname === redirectPath) return;
@@ -75,6 +78,7 @@ export function useAuth(options?: UseAuthOptions) {
     redirectPath,
     logoutMutation.isPending,
     meQuery.isLoading,
+    meQuery.error,
     state.user,
   ]);
 

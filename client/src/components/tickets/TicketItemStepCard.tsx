@@ -2,17 +2,8 @@ import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, Circle } from "lucide-react";
 import { STATUS_COLORS } from "@shared/types";
 import { TICKET_ITEM_STEPS, getTicketItemStepIndex } from "@/lib/ticketItemSteps";
-
-const DEPARTMENT_LABELS: Record<string, string> = {
-  maintenance_report_department_general: "الصيانة العامة",
-  maintenance_report_department_construction: "قسم الإنشاءات",
-};
-
-const PATH_LABELS: Record<string, string> = {
-  A: "مباشر",
-  B: "يحتاج شراء",
-  C: "صيانة خارجية",
-};
+import { useTranslation } from "@/contexts/LanguageContext";
+import { EntityTranslatedText } from "@/components/i18n/EntityTranslatedText";
 
 /**
  * بطاقة بند بلاغ — الخطوة 2 من ميزة "البلاغ متعدد الجهات والمسارات" (2026-08-08).
@@ -36,25 +27,42 @@ export function TicketItemStepCard({
   };
   getStatusLabel: (status: string) => string;
 }) {
+  const { t } = useTranslation();
   const currentStep = getTicketItemStepIndex(item.status, item.maintenancePath);
-  const deptLabel = item.responsibleDepartment ? DEPARTMENT_LABELS[item.responsibleDepartment] : null;
-  const pathLabel = item.maintenancePath ? PATH_LABELS[item.maintenancePath] : null;
+  const departmentLabels: Record<string, string> = {
+    maintenance_report_department_general: t.workflow.ticket.deptGeneral,
+    maintenance_report_department_construction: t.workflow.ticket.deptConstruction,
+    maintenance_report_department_it: t.workflow.ticket.deptIt,
+  };
+  const pathLabels: Record<string, string> = {
+    A: t.workflow.ticket.pathDirect,
+    B: t.workflow.ticket.pathPurchase,
+    C: t.workflow.ticket.pathExternal,
+  };
+  const deptLabel = item.responsibleDepartment ? departmentLabels[item.responsibleDepartment] : null;
+  const pathLabel = item.maintenancePath ? pathLabels[item.maintenancePath] : null;
+  const stepLabels: Record<string, string> = {
+    inspect: t.workflow.ticket.itemStepInspect,
+    path: t.workflow.ticket.itemStepPath,
+    execute: t.workflow.ticket.itemStepExecute,
+    close: t.workflow.ticket.itemStepClose,
+  };
 
   return (
     <div className="rounded-lg border bg-background p-3 space-y-2.5">
       <div className="flex items-start justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs font-mono text-muted-foreground">بند {item.itemNumber}</span>
+          <span className="text-xs font-mono text-muted-foreground">{t.workflow.ticket.itemLabel} {item.itemNumber}</span>
           <Badge className={STATUS_COLORS[item.status] || "bg-gray-100 text-gray-700"}>
             {getStatusLabel(item.status)}
           </Badge>
           {deptLabel && <Badge variant="outline">{deptLabel}</Badge>}
-          {pathLabel && <Badge variant="secondary">مسار {item.maintenancePath} — {pathLabel}</Badge>}
+          {pathLabel && <Badge variant="secondary">{t.workflow.ticket.pathLabel} {item.maintenancePath} — {pathLabel}</Badge>}
         </div>
       </div>
 
       {item.description && (
-        <p className="text-sm">{item.description}</p>
+        <EntityTranslatedText as="p" className="text-sm" entityType="TICKET_ITEM" entityId={item.id} field="description" original={item.description} />
       )}
 
       {/* خطوات مرتبة بدل نص حر */}
@@ -70,7 +78,7 @@ export function TicketItemStepCard({
                 <Circle className="w-3.5 h-3.5 text-muted-foreground/30" />
               )}
               <span className={`text-[11px] ${idx === currentStep ? "font-semibold text-foreground" : "text-muted-foreground"}`}>
-                {step.label}
+                {stepLabels[step.key] ?? step.label}
               </span>
             </div>
             {idx < TICKET_ITEM_STEPS.length - 1 && (

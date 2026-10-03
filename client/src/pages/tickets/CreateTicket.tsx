@@ -16,6 +16,7 @@ import { useTranslation, useLanguage } from "@/contexts/LanguageContext";
 import { useStaticLabels } from "@/hooks/useContentTranslation";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
+import { localizeApiError } from "@/i18n/apiError";
 
 type FileStatus = "pending" | "uploading" | "done" | "error";
 
@@ -33,7 +34,7 @@ export default function CreateTicket() {
   const { t: tr } = useLanguage();
   const [, setLocation] = useLocation();
   const search = useSearch();
-  const { t, language } = useTranslation();
+  const { t, language, dir } = useTranslation();
   const { getPriorityLabel, getCategoryLabel } = useStaticLabels();
   const { data: sites } = trpc.sites.list.useQuery();
 
@@ -44,6 +45,16 @@ export default function CreateTicket() {
 
   const { data: assets } = trpc.assets.list.useQuery(
     form.sectionId ? { sectionId: Number(form.sectionId) } : {},
+  );
+  const pmv2TaskItemId = (() => {
+    const value = new URLSearchParams(search).get("pmv2TaskItemId");
+    const parsed = value ? Number(value) : NaN;
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+  })();
+
+  const pmv2ContextQuery = trpc.pmv2.technician.ticketHandoffContext.useQuery(
+    { taskItemId: pmv2TaskItemId ?? 0 },
+    { enabled: pmv2TaskItemId != null },
   );
   // Pre-fill form from URL params (e.g. from NFC scan, or من فكرة تحسين معتمدة)
   useEffect(() => {
@@ -66,6 +77,23 @@ export default function CreateTicket() {
       }));
     }
   }, [search]);
+
+  // PM V2 source context is authoritative for the maintenance target. The ticket
+  // remains a normal Ticket; only the source link is added during create.
+  useEffect(() => {
+    const context = pmv2ContextQuery.data;
+    if (!context) return;
+    setForm(prev => ({
+      ...prev,
+      title: prev.title.trim() ? prev.title : `PM V2 - ${context.itemTitle}`,
+      description: prev.description.trim()
+        ? prev.description
+        : (context.ticketDescription?.trim() ?? ""),
+      siteId: String(context.siteId),
+      sectionId: context.sectionId != null ? String(context.sectionId) : prev.sectionId,
+      assetId: context.assetId != null ? String(context.assetId) : prev.assetId,
+    }));
+  }, [pmv2ContextQuery.data]);
 
   // معرّف فكرة التحسين الأصلية لو هذا البلاغ نتيجة تحويل فكرة معتمدة
   const fromIdeaId = (() => {
@@ -106,13 +134,13 @@ export default function CreateTicket() {
           console.error("Failed to save attachment:", err);
         }
       }
-      toast.success(`${t.tickets.createNew} ${data.ticketNumber}`);
+      toast.success(pmv2TaskItemId ? `${t.workflow.ticket.pmv2TicketCreated}: ${data.ticketNumber}` : `${t.tickets.createNew} ${data.ticketNumber}`);
       if (fromIdeaId) {
         linkIdeaMut.mutate({ id: fromIdeaId, ticketId: data.id! });
       }
       setLocation(`/tickets/${data.id}`);
     },
-    onError: (err) => toast.error(err.message),
+    onError: (err) => toast.error(localizeApiError(err.message)),
   });
 
   const uploadFile = useCallback(async (entry: FileEntry) => {
@@ -202,13 +230,13 @@ const incomingImagesCount =
   fileArray.filter(f => f.type.startsWith("image/")).length;
 
 if (currentImagesCount + incomingImagesCount > 4) {
-  toast.error("الحد الأقصى 4 صور للبلاغ");
+  toast.error(t.workflow.ticket.maxTicketPhotos);
   return;
 }
 
 const valid = fileArray.filter(f => {
       if (!allowed.includes(f.type) && !f.type.startsWith("image/") && !f.type.startsWith("video/")) {
-        toast.error(`${at.invalidFileType || "نوع ملف غير مدعوم"}: ${f.name}`);
+        toast.error(`${at.invalidFileType}: ${f.name}`);
         return false;
       }
 const maxSize = f.type.startsWith("video/")
@@ -216,7 +244,7 @@ const maxSize = f.type.startsWith("video/")
   : 10 * 1024 * 1024;
 
 if (f.size > maxSize) {
-        toast.error(`${at.fileTooLarge || "الملف كبير جداً (الحد 10 MB)"}: ${f.name}`);
+        toast.error(`${at.fileTooLarge}: ${f.name}`);
         return false;
       }
       return true;
@@ -288,14 +316,25 @@ if (f.size > maxSize) {
 
   const handleSubmit = () => {
     if (!form.title.trim()) { toast.error(t.tickets.ticketTitle); return; }
-    if (!form.siteId || !form.sectionId) { toast.error("يرجى اختيار الموقع والقسم"); return; }
+    if (!form.siteId || !form.sectionId) { toast.error(t.workflow.ticket.locationSectionRequired); return; }
     const uploading = fileEntries.some(e => e.status === "uploading" || e.status === "pending");
-    if (uploading) { toast.error(at.uploading || "الرجاء انتظار اكتمال رفع الملفات"); return; }
+    if (uploading) { toast.error(at.uploading || t.workflow.ticket.waitUploads); return; }
     // Read beforePhotoUrl directly from fileEntries to avoid stale React state closure.
     // At least one successfully uploaded image is required before a ticket can be created.
     const freshBeforePhotoUrl = fileEntries.find(e => e.status === "done" && e.url && e.file.type.startsWith("image/"))?.url || "";
-    if (!freshBeforePhotoUrl) { toast.error("يرجى إضافة صورة واحدة على الأقل للبلاغ"); return; }
-    createMut.mutate({ ...form, beforePhotoUrl: freshBeforePhotoUrl, siteId: form.siteId ? parseInt(form.siteId) : undefined, sectionId: form.sectionId ? parseInt(form.sectionId) : undefined, assetId: form.assetId ? parseInt(form.assetId) : undefined });
+    if (!freshBeforePhotoUrl) { toast.error(t.workflow.ticket.ticketPhotoRequired); return; }
+    if (pmv2TaskItemId && pmv2ContextQuery.data?.hasActiveTicket) {
+      toast.error(`${t.workflow.pmv2.activeTicketExists}: ${pmv2ContextQuery.data.linkedTicket?.ticketNumber ?? ""}`);
+      return;
+    }
+    createMut.mutate({
+      ...form,
+      beforePhotoUrl: freshBeforePhotoUrl,
+      siteId: form.siteId ? parseInt(form.siteId) : undefined,
+      sectionId: form.sectionId ? parseInt(form.sectionId) : undefined,
+      assetId: form.assetId ? parseInt(form.assetId) : undefined,
+      pmv2TaskItemId,
+    });
   };
 
   const isImage = (type: string) => type.startsWith("image/");
@@ -312,10 +351,37 @@ if (f.size > maxSize) {
     <div className="max-w-2xl space-y-6">
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="icon" onClick={() => goBackOrFallback(setLocation, "/tickets")}>
-          <ArrowRight className="w-5 h-5" />
+          <ArrowRight className={`w-5 h-5 ${dir === "ltr" ? "rotate-180" : ""}`} />
         </Button>
         <h1 className="text-xl font-bold">{t.tickets.createNew}</h1>
       </div>
+
+      {pmv2TaskItemId && (
+        <Card className="border-blue-200 bg-blue-50/40">
+          <CardContent className="p-4 space-y-2">
+            <div className="flex items-center gap-2 font-medium">
+              <FileText className="h-4 w-4" />
+              {t.workflow.pmv2.linkedTicketTitle}
+            </div>
+            {pmv2ContextQuery.isLoading && <p className="text-sm text-muted-foreground">{t.workflow.pmv2.loadingReference}</p>}
+            {pmv2ContextQuery.error && <p className="text-sm text-destructive">{localizeApiError(pmv2ContextQuery.error.message)}</p>}
+            {pmv2ContextQuery.data && (
+              <div className="space-y-1 text-sm">
+                <p>{t.workflow.pmv2.taskLabel}: <span className="font-mono" dir="ltr">{pmv2ContextQuery.data.taskNumber}</span></p>
+                <p>{t.workflow.pmv2.itemLabel}: {pmv2ContextQuery.data.itemTitle}</p>
+                {pmv2ContextQuery.data.hasActiveTicket && pmv2ContextQuery.data.linkedTicket && (
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <span className="text-amber-700">{t.workflow.pmv2.activeTicketExists}: <span dir="ltr">{pmv2ContextQuery.data.linkedTicket.ticketNumber}</span></span>
+                    <Button type="button" size="sm" variant="outline" onClick={() => setLocation(`/tickets/${pmv2ContextQuery.data!.linkedTicket!.id}`)}>
+                      {t.workflow.pmv2.openTicket}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent className="p-6 space-y-5">
@@ -357,7 +423,7 @@ if (f.size > maxSize) {
           <div className="space-y-2">
             <Label>{t.tickets.site} *</Label>
             <Select value={form.siteId} onValueChange={v => setForm(f => ({ ...f, siteId: v, sectionId: "" }))}>
-              <SelectTrigger><SelectValue placeholder="اختر الموقع" /></SelectTrigger>
+              <SelectTrigger><SelectValue placeholder={t.workflow.ticket.chooseSite} /></SelectTrigger>
               <SelectContent>
                 {sites?.map(s => <SelectItem key={s.id} value={String(s.id)}>{getLocalizedName(s, language)}</SelectItem>)}
               </SelectContent>
@@ -367,9 +433,9 @@ if (f.size > maxSize) {
           {/* Section */}
           {form.siteId && (
             <div className="space-y-2">
-              <Label>القسم *</Label>
+              <Label>{t.tickets.section} *</Label>
               <Select value={form.sectionId} onValueChange={v => setForm(f => ({ ...f, sectionId: v }))}>
-                <SelectTrigger><SelectValue placeholder="اختر القسم" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder={t.workflow.ticket.chooseSection} /></SelectTrigger>
                 <SelectContent>
                   {(sections || []).map(s => <SelectItem key={s.id} value={String(s.id)}>{getLocalizedName(s, language)}</SelectItem>)}
                 </SelectContent>
@@ -378,7 +444,7 @@ if (f.size > maxSize) {
           )}
 
           <div className="space-y-2">
-            <Label>{t.assets.title || "الأصل"}</Label>
+            <Label>{t.assets.title}</Label>
             <Select value={form.assetId} onValueChange={v => setForm(f => ({ ...f, assetId: v }))}>
               <SelectTrigger><SelectValue placeholder={t.assets.title} /></SelectTrigger>
               <SelectContent>
@@ -389,7 +455,7 @@ if (f.size > maxSize) {
 
           {/* Location Detail */}
           <div className="space-y-2">
-            <Label>{"أخرى"}</Label>
+            <Label>{t.common.other}</Label>
             <Input value={form.locationDetail} onChange={e => setForm(f => ({ ...f, locationDetail: e.target.value }))} />
           </div>
 
@@ -397,12 +463,12 @@ if (f.size > maxSize) {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <Label>
-                {at.title || "المرفقات"} <span className="text-destructive">*</span>
-                <span className="mr-2 text-xs font-normal text-muted-foreground">صورة واحدة على الأقل مطلوبة</span>
+                {at.title || t.workflow.ticket.attachments} <span className="text-destructive">*</span>
+                <span className="ms-2 text-xs font-normal text-muted-foreground">{t.workflow.ticket.onePhotoRequired}</span>
               </Label>
               {fileEntries.length > 0 && (
                 <span className="text-xs text-muted-foreground">
-                  {doneCount}/{fileEntries.length} {at.uploaded || "مرفوع"}
+                  {doneCount}/{fileEntries.length} {at.uploaded}
                 </span>
               )}
             </div>
@@ -415,7 +481,7 @@ if (f.size > maxSize) {
               onClick={() => setIsRecorderOpen(true)}
             >
               <Video className="w-4 h-4 ml-2" />
-              تصوير فيديو للمشكلة
+              {t.workflow.pmv2.recordProblemVideo}
             </Button>
 
             {/* Hidden file input */}
@@ -453,18 +519,18 @@ if (f.size > maxSize) {
               <div className="text-center">
                 <p className="font-medium text-sm">
                   {isDragging
-                    ? (at.dropHere || "أفلت الملفات هنا")
-                    : (at.dragDrop || "اسحب وأفلت الملفات هنا، أو اضغط للاختيار")
+                    ? (at.dropHere || t.workflow.ticket.dropFiles)
+                    : at.dragDrop
                   }
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  {at.supportedFormats || "صور (JPG, PNG, GIF) · PDF · Word · Excel"} · {at.maxSize || "الحد الأقصى 10 MB"}
+                  {at.supportedFormats} · {at.maxSize}
                 </p>
               </div>
               {uploadingCount > 0 && (
                 <div className="flex items-center gap-2 text-xs text-primary animate-pulse">
                   <Loader2 className="w-3 h-3 animate-spin" />
-                  {at.uploading || "جاري الرفع..."} ({uploadingCount})
+                  {at.uploading} ({uploadingCount})
                 </div>
               )}
             </div>
@@ -503,7 +569,7 @@ if (f.size > maxSize) {
                           </div>
                         )}
                         {entry.status === "error" && (
-                          <p className="text-xs text-destructive mt-0.5">{entry.error || "فشل الرفع"}</p>
+                          <p className="text-xs text-destructive mt-0.5">{entry.error || at.uploadFailed}</p>
                         )}
                       </div>
 
@@ -518,7 +584,7 @@ if (f.size > maxSize) {
                             onClick={(e) => { e.stopPropagation(); retryEntry(entry); }}
                             className="text-xs text-primary underline"
                           >
-                            {at.retry || "إعادة"}
+                            {at.retry}
                           </button>
                         ) : null}
 
@@ -550,20 +616,20 @@ if (f.size > maxSize) {
             {fileEntries.some(e => e.status === "error") && (
               <div className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 rounded-lg p-3">
                 <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{at.someFilesFailed || "بعض الملفات فشل رفعها. يمكنك إعادة المحاولة أو حذفها."}</span>
+                <span>{at.someFilesFailed}</span>
               </div>
             )}
           </div>
 
           {/* Submit */}
-          <Button onClick={handleSubmit} disabled={createMut.isPending || uploadingCount > 0} className="w-full" size="lg">
+          <Button onClick={handleSubmit} disabled={createMut.isPending || uploadingCount > 0 || Boolean(pmv2TaskItemId && (pmv2ContextQuery.isLoading || pmv2ContextQuery.error || pmv2ContextQuery.data?.hasActiveTicket))} className="w-full" size="lg">
             {createMut.isPending
               ? <Loader2 className="w-4 h-4 animate-spin ml-2" />
               : uploadingCount > 0
               ? <Loader2 className="w-4 h-4 animate-spin ml-2" />
               : null}
             {uploadingCount > 0
-              ? (at.uploading || "جاري الرفع...")
+              ? at.uploading
               : t.tickets.createNew}
           </Button>
         </CardContent>

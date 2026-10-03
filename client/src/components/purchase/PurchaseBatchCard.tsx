@@ -1,8 +1,9 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Boxes, ChevronDown, ChevronLeft, Package, User } from "lucide-react";
+import { Boxes, ChevronDown, ChevronLeft, ChevronRight, Package, User } from "lucide-react";
 import { useState } from "react";
 import { useStaticLabels } from "@/hooks/useContentTranslation";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 // ============================================================
 // [PB] بطاقة حزمة الشراء — مكوّن عرض بحت (2026-08-29)
@@ -66,6 +67,10 @@ export function PurchaseBatchCard({
 }: PurchaseBatchCardProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const { getPOStatusLabel } = useStaticLabels();
+  const { t, language, dir } = useLanguage();
+  const w = t.workflow.purchase;
+  const countText = (template: string, count: number) => template.replace("{count}", String(count));
+  const effectiveLocale = locale === "ar" ? (language === "en" ? "en-US" : language === "ur" ? "ur-PK" : "ar-SA") : locale;
 
   const totalItems = orders.reduce((sum, o) => sum + (o.items?.length ?? 0), 0);
 
@@ -82,15 +87,15 @@ export function PurchaseBatchCard({
               <Boxes className="w-4 h-4 text-primary shrink-0" />
               <span className="text-sm font-semibold font-mono">{packageNumber}</span>
               <Badge variant="secondary" className="text-[10px]">
-                {orders.length} طلبات
+                {countText(w.packageOrdersCount, orders.length)}
               </Badge>
             </div>
             <div className="flex items-center gap-4 text-xs text-muted-foreground mt-1 flex-wrap">
               <span className="flex items-center gap-1">
                 <Package className="w-3 h-3" />
-                {totalItems} صنف
+                {countText(w.packageItemsCount, totalItems)}
               </span>
-              <span>{new Date(createdAt).toLocaleDateString(locale)}</span>
+              <span>{new Date(createdAt).toLocaleDateString(effectiveLocale)}</span>
             </div>
           </div>
 
@@ -103,9 +108,9 @@ export function PurchaseBatchCard({
                 e.stopPropagation();
                 setExpanded(!expanded);
               }}
-              aria-label={expanded ? "طي الطلبات" : "عرض الطلبات"}
+              aria-label={expanded ? w.collapseOrders : w.showOrders}
             >
-              {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+              {expanded ? <ChevronDown className="w-4 h-4" /> : (dir === "rtl" ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />)}
             </button>
           </div>
         </div>

@@ -6,11 +6,12 @@ import { candidateReviewDisplayName, decidedPeerIds, findExactCatalogDuplicate, 
 import { isCatalogItemCodeForNode, nextCatalogItemCode } from "../../_core/catalog-item-code";
 import { publishResolvedCatalogIdentity } from "../../_core/catalog-item-identity-publication";
 import { consolidateResolvedCatalogInventory } from "../../_core/catalog-item-inventory-consolidation";
-import { catalogAuditJson, pickAuditValues } from "../../_core/catalog-audit";
+import { catalogAuditJson, catalogAuditRequestMeta, pickAuditValues } from "../../_core/catalog-audit";
 import { findCatalogUnitByName, getActiveCatalogUnitCanonicalName } from "../../_core/catalog-unit-governance";
+import { executeCatalogTaxonomyMove, previewCatalogTaxonomyMove } from "../../services/catalog/catalogTaxonomyMove.service";
 import { router, catalogAdminProcedure, catalogProcedure, catalogItemLifecycleProcedure, catalogReadProcedure } from "../_shared/procedures";
 import { z } from "zod";
-import { eq, and, or, like, isNull, ne, count, desc, asc, inArray, sql, gte, lte } from "drizzle-orm";
+import { eq, and, or, like, ne, count, desc, asc, inArray, sql, gte, lte } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { APP_ROLE } from "@shared/roles";
 import { getDb } from "../../_core/db";
@@ -22,6 +23,7 @@ import {
   catalogItemNodes,
   catalogSettings,
   catalogAuditLogs,
+  catalogCodeAliases,
   catalogUnits,
   catalogSuppliers,
   catalogSupplierPrices,
@@ -114,6 +116,84 @@ async function assertActiveCatalogMasterUnit(db: any, unitName: string | null | 
   return String(unit.nameAr || trimmed).trim();
 }
 
+async function assertCatalogCodeAvailable(
+  db: any,
+  entityType: "node" | "item",
+  codeInput: string,
+  excludeEntityId?: number,
+): Promise<void> {
+  const code = String(codeInput || "").trim();
+  if (!code) return;
+
+  const table = entityType === "node" ? catalogNodes : catalogItems;
+  const conditions: any[] = [eq((table as any).code, code)];
+  if (excludeEntityId) conditions.push(ne((table as any).id, excludeEntityId));
+  const live = await db.select({ id: (table as any).id }).from(table as any).where(and(...conditions)).limit(1);
+  if (live.length > 0) {
+    throw new TRPCError({ code: "CONFLICT", message: `الكود ${code} مستخدم مسبقاً` });
+  }
+
+  const alias = await db.select({ entityId: catalogCodeAliases.entityId }).from(catalogCodeAliases)
+    .where(and(eq(catalogCodeAliases.entityType, entityType), eq(catalogCodeAliases.oldCode, code)))
+    .limit(1);
+  if (alias.length > 0) {
+    throw new TRPCError({ code: "CONFLICT", message: `الكود ${code} كود تاريخي محجوز ولا يمكن إعادة استخدامه` });
+  }
+}
+
+async function nextAvailableCatalogNodeCode(db: any, parentId?: number | null): Promise<string> {
+  const [nodes, aliases] = await Promise.all([
+    db.select().from(catalogNodes),
+    db.select({ oldCode: catalogCodeAliases.oldCode }).from(catalogCodeAliases)
+      .where(eq(catalogCodeAliases.entityType, "node")),
+  ]);
+  const used = new Set<string>([
+    ...nodes.map((n: any) => String(n.code || "").trim()).filter(Boolean),
+    ...aliases.map((a: any) => String(a.oldCode || "").trim()).filter(Boolean),
+  ]);
+
+  if (!parentId) {
+    let max = 0n;
+    for (const node of nodes as any[]) {
+      if (node.parentId != null) continue;
+      const code = String(node.code || "").trim();
+      if (!/^\d+$/.test(code)) continue;
+      const value = BigInt(code);
+      if (value > max) max = value;
+    }
+    let candidate = max + 1n;
+    while (used.has(candidate.toString())) candidate += 1n;
+    return candidate.toString();
+  }
+
+  const parent = (nodes as any[]).find((n: any) => Number(n.id) === Number(parentId));
+  const parentCode = String(parent?.code || "").trim();
+  if (!parent || !/^\d+$/.test(parentCode)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "التصنيف الأب لا يحتوي على كود رقمي صالح" });
+  }
+
+  let maxSuffix = 0n;
+  for (const sibling of (nodes as any[]).filter((n: any) => Number(n.parentId) === Number(parentId))) {
+    const code = String(sibling.code || "").trim();
+    if (!code.startsWith(parentCode)) continue;
+    const suffix = code.slice(parentCode.length);
+    if (!/^\d+$/.test(suffix)) continue;
+    const value = BigInt(suffix);
+    if (value > maxSuffix) maxSuffix = value;
+  }
+
+  let suffix = maxSuffix + 1n;
+  let candidate = `${parentCode}${suffix.toString()}`;
+  while (used.has(candidate)) {
+    suffix += 1n;
+    candidate = `${parentCode}${suffix.toString()}`;
+  }
+  if (candidate.length > 20) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "تعذر توليد كود فرعي ضمن الحد الأقصى لطول الكود" });
+  }
+  return candidate;
+}
+
 async function getLeafCategoryCodeState(db: any, nodeId: number, lockNode = false): Promise<{ node: any; code: string }> {
   if (lockNode) {
     // Serialize code allocation per category during approveNew so two reviewers
@@ -168,14 +248,23 @@ async function getFoodWarehouseNodeIds(): Promise<number[]> {
   const db = await getDb();
   if (!db) return [];
   const allNodes = await db.select().from(catalogNodes);
-  const root = allNodes.find((n: any) => n.code === "95");
+
+  // Stable identity first. Legacy code 95 remains only as a one-time fallback
+  // for installations that have not yet stored the root node ID in settings.
+  const settingRows = await db.select({ settingValue: catalogSettings.settingValue })
+    .from(catalogSettings)
+    .where(and(eq(catalogSettings.settingKey, "food_warehouse_root_node_id"), eq(catalogSettings.isActive, 1)))
+    .limit(1);
+  const configuredId = Number(settingRows[0]?.settingValue || 0);
+  const root = (configuredId > 0 ? allNodes.find((n: any) => Number(n.id) === configuredId) : null)
+    || allNodes.find((n: any) => n.code === "95");
   if (!root) { _foodWarehouseNodeIdsCache = { ids: [], expiresAt: Date.now() + 30_000 }; return []; }
 
   const collect = (nodeId: number): number[] => {
-    const children = allNodes.filter((n: any) => n.parentId === nodeId);
+    const children = allNodes.filter((n: any) => Number(n.parentId) === Number(nodeId));
     return [nodeId, ...children.flatMap((c: any) => collect(c.id))];
   };
-  const ids = collect(root.id);
+  const ids = collect(Number(root.id));
   _foodWarehouseNodeIdsCache = { ids, expiresAt: Date.now() + 30_000 };
   return ids;
 }
@@ -228,19 +317,35 @@ async function rememberCandidateSupplierAlias(
   );
 
   if (existing) {
+    const nextConfirmationCount = Number(existing.confirmationCount || 1) + 1;
     await tx.update(catalogSupplierItemAliases).set({
       supplierItemName,
       supplierItemCode,
       normalizedItemCode,
       normalizedMeasurements: measurements as any,
-      confirmationCount: Number(existing.confirmationCount || 1) + 1,
+      confirmationCount: nextConfirmationCount,
       lastConfirmedAt: new Date(),
       isActive: 1,
     } as any).where(eq(catalogSupplierItemAliases.id, existing.id));
+    await tx.insert(catalogAuditLogs).values({
+      userId: createdById,
+      action: "confirm_supplier_item_alias",
+      entityType: "supplier_item_alias",
+      entityId: existing.id,
+      oldValues: catalogAuditJson({ confirmationCount: Number(existing.confirmationCount || 1) }),
+      newValues: catalogAuditJson({
+        supplierId,
+        catalogItemId,
+        supplierItemName,
+        supplierItemCode,
+        confirmationCount: nextConfirmationCount,
+        isActive: true,
+      }),
+    } as any);
     return;
   }
 
-  await tx.insert(catalogSupplierItemAliases).values({
+  const aliasResult = await tx.insert(catalogSupplierItemAliases).values({
     supplierId,
     catalogItemId,
     supplierItemName,
@@ -253,6 +358,14 @@ async function rememberCandidateSupplierAlias(
     lastConfirmedAt: new Date(),
     createdById,
     isActive: 1,
+  } as any);
+  const aliasId = Number((aliasResult as any)[0]?.insertId || 0) || undefined;
+  await tx.insert(catalogAuditLogs).values({
+    userId: createdById,
+    action: "create_supplier_item_alias",
+    entityType: "supplier_item_alias",
+    entityId: aliasId,
+    newValues: catalogAuditJson({ supplierId, catalogItemId, supplierItemName, supplierItemCode, source: "manual", isActive: true }),
   } as any);
 }
 
@@ -401,61 +514,33 @@ export const catalogRouter = router({
         const db = await getDb();
         if (!db) throw new Error("Database unavailable");
 
-        // 2B-10-2B: لا ننشئ فرعاً جديداً تحت تصنيف معطّل (ولا تحت مسار
-        // يحتوي أباً معطّلاً). التاريخ القديم يبقى كما هو؛ الحماية للمستقبل فقط.
+        // بنية الشجرة وترقيمها يجب أن يحددهما الخادم لا قيمة level القادمة
+        // من الواجهة. هذا يمنع إنشاء فرع بمستوى أو Prefix لا يطابق أباه.
+        let parentNode: any = null;
         if (input.parentId !== undefined) {
-          await assertActiveCatalogNodePath(db, input.parentId);
+          parentNode = await assertActiveCatalogNodePath(db, input.parentId);
+        }
+        const actualLevel = parentNode ? Number(parentNode.level) + 1 : 1;
+        if (actualLevel > 6) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "الحد الأقصى للمستويات هو 6" });
         }
 
-        // ── توليد الكود التلقائي ──────────────────────────────────────────
+        // ── توليد الكود التلقائي + حجز الأكواد التاريخية ───────────────
         let code = input.code?.trim();
-
-        // توليد الكود التلقائي — يعمل فقط بعد db:push
+        if (code && parentNode) {
+          const parentCode = String(parentNode.code || "").trim();
+          const suffix = code.startsWith(parentCode) ? code.slice(parentCode.length) : "";
+          if (!parentCode || !/^\d+$/.test(parentCode) || !suffix || !/^\d+$/.test(suffix)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `كود التصنيف الفرعي يجب أن يبدأ بكود الأب ${parentCode || "المحدد"} ثم رقم فرعي`,
+            });
+          }
+        }
         if (!code) {
-          try {
-            if (!input.parentId) {
-              const roots = await db.select().from(catalogNodes)
-                .where(isNull(catalogNodes.parentId));
-              const maxCode = roots
-                .map((n: any) => parseInt(n.code || "0", 10))
-                .filter((n: number) => !isNaN(n) && n < 10)
-                .sort((a: number, b: number) => b - a)[0] || 0;
-              code = String(maxCode + 1);
-            } else {
-              const parent = await db.select().from(catalogNodes)
-                .where(eq(catalogNodes.id, input.parentId))
-                .limit(1);
-              const parentCode = (parent[0] as any)?.code || "";
-
-              const siblings = await db.select().from(catalogNodes)
-                .where(eq(catalogNodes.parentId, input.parentId));
-              const maxSiblingCode = siblings
-                .map((n: any) => parseInt(n.code || "0", 10))
-                .filter((n: number) => !isNaN(n))
-                .sort((a: number, b: number) => b - a)[0];
-
-              code = maxSiblingCode ? String(maxSiblingCode + 1) : parentCode + "1";
-            }
-          } catch {
-            // عمود code غير موجود بعد — سيُضاف بعد db:push
-            code = null as any;
-          }
+          code = await nextAvailableCatalogNodeCode(db, input.parentId ?? null);
         }
-
-        // ── التحقق من عدم التكرار ─────────────────────────────────────
-        if (code) {
-          const existing = await db.select().from(catalogNodes)
-            .where(eq(catalogNodes.code, String(code)))
-            .limit(1);
-          if (existing.length > 0) {
-            throw new Error(`الكود ${code} مستخدم مسبقاً`);
-          }
-        }
-
-        // ── التحقق من الحد الأقصى للمستويات ─────────────────────────────
-        if (input.level > 6) {
-          throw new Error("الحد الأقصى للمستويات هو 6");
-        }
+        await assertCatalogCodeAvailable(db, "node", String(code));
 
         const insertData = {
           code: code ? String(code) : null,
@@ -463,7 +548,7 @@ export const catalogRouter = router({
           nameEn: input.nameEn,
           nameUr: input.nameUr || null,
           parentId: input.parentId ?? null,
-          level: Number(input.level),
+          level: actualLevel,
           isActive: 1,
         } as any;
 
@@ -509,14 +594,19 @@ export const catalogRouter = router({
 
         const { id, code, ...updateData } = input;
 
-        // التحقق من عدم تكرار الكود — معطّل مؤقتاً حتى db:push
-        if (code) {
-          (updateData as any).code = code;
-        }
-
         const existingRows = await db.select().from(catalogNodes).where(eq(catalogNodes.id, id)).limit(1);
         const existing = existingRows[0] as any;
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "التصنيف غير موجود" });
+
+        // تغيير كود عقدة منفردة يكسر أكواد الأبناء والأصناف. منذ إضافة إعادة
+        // الهيكلة لا يُسمح بتغييره من التعديل العادي؛ النقل الآمن يعيد ترقيم
+        // كامل الفرع داخل Transaction واحدة وبصلاحية Owner/Admin فقط.
+        if (code !== undefined && String(code || "").trim() !== String(existing.code || "").trim()) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "لا يمكن تغيير كود التصنيف من التعديل العادي. استخدم «نقل / إعادة هيكلة» لإعادة ترقيم الفرع بأمان.",
+          });
+        }
 
         await (db as any).transaction(async (tx: any) => {
           await tx.update(catalogNodes).set(updateData as any).where(eq(catalogNodes.id, id));
@@ -529,6 +619,55 @@ export const catalogRouter = router({
             newValues: catalogAuditJson(updateData),
           } as any);
         });
+      }),
+
+    /**
+     * Preview moving/re-parenting a whole taxonomy subtree. Owner/Admin only.
+     * No writes are performed; the result contains the exact node/item codes
+     * that will change plus blockers such as open category counts.
+     */
+    previewMove: catalogAdminProcedure
+      .input(z.object({
+        nodeId: z.number().int().positive(),
+        targetParentId: z.number().int().positive().nullable(),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new Error("Database unavailable");
+        try {
+          return await previewCatalogTaxonomyMove(db, input);
+        } catch (error: any) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "تعذر معاينة نقل التصنيف" });
+        }
+      }),
+
+    /**
+     * Execute the complete subtree move atomically. Category/item identities are
+     * preserved; only parent/level/current codes are changed. Historical codes
+     * are kept as aliases so supported imports can still resolve old files.
+     */
+    moveSubtree: catalogAdminProcedure
+      .input(z.object({
+        nodeId: z.number().int().positive(),
+        targetParentId: z.number().int().positive().nullable(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const db = await getDb();
+        if (!db) throw new Error("Database unavailable");
+        try {
+          const meta = catalogAuditRequestMeta(ctx);
+          const result = await executeCatalogTaxonomyMove(db, {
+            ...input,
+            userId: ctx.user.id,
+            ipAddress: meta.ipAddress,
+            userAgent: meta.userAgent,
+          });
+          _foodWarehouseNodeIdsCache = null;
+          return result;
+        } catch (error: any) {
+          const message = error?.message || "تعذر نقل التصنيف";
+          throw new TRPCError({ code: message.includes("مستخدم") || message.includes("محجوز") ? "CONFLICT" : "BAD_REQUEST", message });
+        }
       }),
 
     /**
@@ -847,14 +986,7 @@ create: catalogProcedure
         });
       }
 
-      const codeCollision = await tx.select({ id: catalogItems.id }).from(catalogItems)
-        .where(eq(catalogItems.code, finalCode)).limit(1);
-      if (codeCollision.length > 0) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: `كود الصنف ${finalCode} مستخدم مسبقاً`,
-        });
-      }
+      await assertCatalogCodeAvailable(tx, "item", finalCode);
 
       const insertData: any = {
         nameAr: input.nameAr,
@@ -953,15 +1085,7 @@ create: catalogProcedure
           if (!submittedCode) {
             delete (updateData as any).code;
           } else if (submittedCode !== existingCode) {
-            const codeCollision = await db.select({ id: catalogItems.id }).from(catalogItems)
-              .where(and(eq(catalogItems.code, submittedCode), ne(catalogItems.id, id))).limit(1);
-            if (codeCollision.length > 0) {
-              throw new TRPCError({
-                code: "CONFLICT",
-                message: `كود الصنف ${submittedCode} مستخدم مسبقاً`,
-              });
-            }
-
+            await assertCatalogCodeAvailable(db, "item", submittedCode, id);
             (updateData as any).code = submittedCode;
           } else {
             // Historical no-hyphen codes remain untouched when the user edits
@@ -2052,12 +2176,21 @@ create: catalogProcedure
                   eq(catalogSupplierAliases.normalizedAlias, normalizedAlias),
                 )).limit(1);
               if (existingAlias.length === 0 && normalizeSupplierName(supplier.nameAr) !== normalizedAlias) {
-                await tx.insert(catalogSupplierAliases).values({
+                const aliasResult = await tx.insert(catalogSupplierAliases).values({
                   supplierId: supplier.id,
                   aliasName: candidate.extractedName,
                   normalizedAlias,
                   source: "invoice",
                   createdById: ctx.user.id,
+                } as any);
+                const aliasId = Number((aliasResult as any)[0]?.insertId || 0) || undefined;
+                await tx.insert(catalogAuditLogs).values({
+                  userId: ctx.user.id,
+                  action: "create_supplier_alias",
+                  entityType: "supplier_alias",
+                  entityId: aliasId,
+                  newValues: catalogAuditJson({ supplierId: supplier.id, aliasName: candidate.extractedName, source: "invoice" }),
+                  ...catalogAuditRequestMeta(ctx),
                 } as any);
               }
             }
@@ -2139,12 +2272,21 @@ create: catalogProcedure
 
             const aliasNormalized = normalizeSupplierName(candidate.extractedName);
             if (aliasNormalized && aliasNormalized !== normalizeSupplierName(input.nameAr)) {
-              await tx.insert(catalogSupplierAliases).values({
+              const aliasResult = await tx.insert(catalogSupplierAliases).values({
                 supplierId: newSupplierId,
                 aliasName: candidate.extractedName,
                 normalizedAlias: aliasNormalized,
                 source: "invoice",
                 createdById: ctx.user.id,
+              } as any);
+              const aliasId = Number((aliasResult as any)[0]?.insertId || 0) || undefined;
+              await tx.insert(catalogAuditLogs).values({
+                userId: ctx.user.id,
+                action: "create_supplier_alias",
+                entityType: "supplier_alias",
+                entityId: aliasId,
+                newValues: catalogAuditJson({ supplierId: newSupplierId, aliasName: candidate.extractedName, source: "invoice" }),
+                ...catalogAuditRequestMeta(ctx),
               } as any);
             }
 
@@ -2442,54 +2584,109 @@ create: catalogProcedure
         isPreferred:      z.boolean().optional().default(false),
         notes:            z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const db = await getDb();
         if (!db) throw new Error("Database unavailable");
 
-        if (input.isPreferred) {
-          await db
-            .update(catalogSupplierPrices)
-            .set({ isPreferred: false } as any)
-            .where(eq(catalogSupplierPrices.itemId, input.itemId));
-        }
+        const itemRows = await db.select({ id: catalogItems.id, code: catalogItems.code, nameAr: catalogItems.nameAr })
+          .from(catalogItems).where(eq(catalogItems.id, input.itemId)).limit(1);
+        const supplierRows = await db.select({ id: catalogSuppliers.id, nameAr: catalogSuppliers.nameAr })
+          .from(catalogSuppliers).where(eq(catalogSuppliers.id, input.supplierId)).limit(1);
+        const itemSnapshot = itemRows[0] as any;
+        const supplierSnapshot = supplierRows[0] as any;
 
-        const existing = await db
-          .select({ id: catalogSupplierPrices.id })
-          .from(catalogSupplierPrices)
-          .where(and(
-            eq(catalogSupplierPrices.itemId,     input.itemId),
+        let resultId = 0;
+        let resultAction: "created" | "updated" = "created";
+
+        await (db as any).transaction(async (tx: any) => {
+          const existingRows = await tx.select().from(catalogSupplierPrices).where(and(
+            eq(catalogSupplierPrices.itemId, input.itemId),
             eq(catalogSupplierPrices.supplierId, input.supplierId),
-          ))
-          .limit(1);
+          )).limit(1);
+          const existing = existingRows[0] as any;
 
-        if (existing.length > 0) {
-          await db
-            .update(catalogSupplierPrices)
-            .set({
-              supplierItemCode: input.supplierItemCode?.trim() || null,
-              price:            String(input.price),
-              currency:         input.currency,
-              isPreferred:      input.isPreferred ?? false,
-              notes:            input.notes?.trim() || null,
-              isActive:         1,
-            } as any)
-            .where(eq(catalogSupplierPrices.id, existing[0].id));
+          // If a different supplier was preferred, record every implicit preference
+          // change as its own catalog movement instead of silently clearing it.
+          if (input.isPreferred) {
+            const preferredRows = await tx.select().from(catalogSupplierPrices).where(and(
+              eq(catalogSupplierPrices.itemId, input.itemId),
+              eq(catalogSupplierPrices.isPreferred, true),
+            ));
+            for (const row of preferredRows as any[]) {
+              if (existing && Number(row.id) === Number(existing.id)) continue;
+              await tx.update(catalogSupplierPrices).set({ isPreferred: false } as any)
+                .where(eq(catalogSupplierPrices.id, row.id));
+              await tx.insert(catalogAuditLogs).values({
+                userId: ctx.user.id,
+                action: "unset_preferred_supplier",
+                entityType: "item_supplier",
+                entityId: row.id,
+                oldValues: catalogAuditJson({ itemId: row.itemId, supplierId: row.supplierId, isPreferred: true }),
+                newValues: catalogAuditJson({ itemId: row.itemId, supplierId: row.supplierId, isPreferred: false }),
+                ...catalogAuditRequestMeta(ctx),
+              } as any);
+            }
+          }
 
-          return { id: existing[0].id, action: "updated" };
-        }
+          const nextValues = {
+            itemId:           input.itemId,
+            supplierId:       input.supplierId,
+            supplierItemCode: input.supplierItemCode?.trim() || null,
+            price:            String(input.price),
+            currency:         input.currency,
+            isPreferred:      input.isPreferred ?? false,
+            notes:            input.notes?.trim() || null,
+            isActive:         1,
+          } as any;
 
-        const result = await db.insert(catalogSupplierPrices).values({
-          itemId:           input.itemId,
-          supplierId:       input.supplierId,
-          supplierItemCode: input.supplierItemCode?.trim() || null,
-          price:            String(input.price),
-          currency:         input.currency,
-          isPreferred:      input.isPreferred ?? false,
-          notes:            input.notes?.trim() || null,
-          isActive:         1,
-        } as any);
+          if (existing) {
+            resultId = Number(existing.id);
+            resultAction = "updated";
+            await tx.update(catalogSupplierPrices).set(nextValues).where(eq(catalogSupplierPrices.id, existing.id));
+            await tx.insert(catalogAuditLogs).values({
+              userId: ctx.user.id,
+              action: Number(existing.isActive) === 1 ? "update_item_supplier_link" : "restore_item_supplier_link",
+              entityType: "item_supplier",
+              entityId: existing.id,
+              oldValues: catalogAuditJson({
+                itemId: existing.itemId,
+                supplierId: existing.supplierId,
+                supplierItemCode: existing.supplierItemCode,
+                price: existing.price,
+                currency: existing.currency,
+                isPreferred: Boolean(existing.isPreferred),
+                notes: existing.notes,
+                isActive: Boolean(existing.isActive),
+              }),
+              newValues: catalogAuditJson({
+                ...nextValues,
+                itemCode: itemSnapshot?.code || null,
+                itemNameAr: itemSnapshot?.nameAr || null,
+                supplierNameAr: supplierSnapshot?.nameAr || null,
+              }),
+              ...catalogAuditRequestMeta(ctx),
+            } as any);
+          } else {
+            const insertResult = await tx.insert(catalogSupplierPrices).values(nextValues);
+            resultId = Number((insertResult as any)[0]?.insertId || 0);
+            if (!resultId) throw new Error("تعذر تحديد رقم ربط المورد بالصنف");
+            await tx.insert(catalogAuditLogs).values({
+              userId: ctx.user.id,
+              action: "assign_supplier_to_item",
+              entityType: "item_supplier",
+              entityId: resultId,
+              newValues: catalogAuditJson({
+                ...nextValues,
+                itemCode: itemSnapshot?.code || null,
+                itemNameAr: itemSnapshot?.nameAr || null,
+                supplierNameAr: supplierSnapshot?.nameAr || null,
+              }),
+              ...catalogAuditRequestMeta(ctx),
+            } as any);
+          }
+        });
 
-        return { id: (result as any)[0]?.insertId, action: "created" };
+        return { id: resultId, action: resultAction };
       }),
 
     remove: catalogProcedure
@@ -2497,17 +2694,39 @@ create: catalogProcedure
         itemId:     z.number(),
         supplierId: z.number(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const db = await getDb();
         if (!db) throw new Error("Database unavailable");
 
-        await db
-          .update(catalogSupplierPrices)
-          .set({ isActive: 0 } as any)
-          .where(and(
-            eq(catalogSupplierPrices.itemId,     input.itemId),
-            eq(catalogSupplierPrices.supplierId, input.supplierId),
-          ));
+        const existingRows = await db.select().from(catalogSupplierPrices).where(and(
+          eq(catalogSupplierPrices.itemId, input.itemId),
+          eq(catalogSupplierPrices.supplierId, input.supplierId),
+        )).limit(1);
+        const existing = existingRows[0] as any;
+        if (!existing || Number(existing.isActive) !== 1) return { success: true };
+
+        await (db as any).transaction(async (tx: any) => {
+          await tx.update(catalogSupplierPrices).set({ isActive: 0 } as any)
+            .where(eq(catalogSupplierPrices.id, existing.id));
+          await tx.insert(catalogAuditLogs).values({
+            userId: ctx.user.id,
+            action: "remove_supplier_from_item",
+            entityType: "item_supplier",
+            entityId: existing.id,
+            oldValues: catalogAuditJson({
+              itemId: existing.itemId,
+              supplierId: existing.supplierId,
+              supplierItemCode: existing.supplierItemCode,
+              price: existing.price,
+              currency: existing.currency,
+              isPreferred: Boolean(existing.isPreferred),
+              notes: existing.notes,
+              isActive: true,
+            }),
+            newValues: catalogAuditJson({ itemId: existing.itemId, supplierId: existing.supplierId, isActive: false }),
+            ...catalogAuditRequestMeta(ctx),
+          } as any);
+        });
 
         return { success: true };
       }),
@@ -2517,22 +2736,32 @@ create: catalogProcedure
         itemId:     z.number(),
         supplierId: z.number(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const db = await getDb();
         if (!db) throw new Error("Database unavailable");
 
-        await db
-          .update(catalogSupplierPrices)
-          .set({ isPreferred: false } as any)
-          .where(eq(catalogSupplierPrices.itemId, input.itemId));
+        await (db as any).transaction(async (tx: any) => {
+          const itemSupplierRows = await tx.select().from(catalogSupplierPrices)
+            .where(eq(catalogSupplierPrices.itemId, input.itemId));
 
-        await db
-          .update(catalogSupplierPrices)
-          .set({ isPreferred: true } as any)
-          .where(and(
-            eq(catalogSupplierPrices.itemId,     input.itemId),
-            eq(catalogSupplierPrices.supplierId, input.supplierId),
-          ));
+          for (const row of itemSupplierRows as any[]) {
+            const shouldBePreferred = Number(row.supplierId) === Number(input.supplierId);
+            const wasPreferred = Boolean(row.isPreferred);
+            if (wasPreferred === shouldBePreferred) continue;
+
+            await tx.update(catalogSupplierPrices).set({ isPreferred: shouldBePreferred } as any)
+              .where(eq(catalogSupplierPrices.id, row.id));
+            await tx.insert(catalogAuditLogs).values({
+              userId: ctx.user.id,
+              action: shouldBePreferred ? "set_preferred_supplier" : "unset_preferred_supplier",
+              entityType: "item_supplier",
+              entityId: row.id,
+              oldValues: catalogAuditJson({ itemId: row.itemId, supplierId: row.supplierId, isPreferred: wasPreferred }),
+              newValues: catalogAuditJson({ itemId: row.itemId, supplierId: row.supplierId, isPreferred: shouldBePreferred }),
+              ...catalogAuditRequestMeta(ctx),
+            } as any);
+          }
+        });
 
         return { success: true };
       }),

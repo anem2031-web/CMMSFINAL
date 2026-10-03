@@ -20,6 +20,8 @@ export interface CatalogAiUsageEvent {
 
 export type CatalogAiUsageReporter = (event: CatalogAiUsageEvent) => void;
 
+const CATALOG_AI_TIMEOUT_MS = 15_000;
+
 const CATALOG_AI_FEATURE = "catalog_invoice_matching" as const;
 const SEARCH_TERMS_CACHE_VERSION = "catalog-search-terms-v1";
 const SEMANTIC_RERANK_CACHE_VERSION = "catalog-semantic-rerank-v1";
@@ -283,8 +285,28 @@ export function compareMeasurements(queryText: string, candidateText: string): {
   return { status: "compatible" };
 }
 
-function candidateDisplayText(candidate: CatalogItemCandidateInput): string {
-  return [candidate.nameAr, candidate.nameEn, candidate.unit, candidate.manufacturer].filter(Boolean).join(" ");
+// Names/aliases are alternative descriptions, not additional physical dimensions.
+// Compare each description separately so translations do not double the dimensions.
+// A conflict in ANY description still wins; repeated dimensions within a name stay intact.
+function compareMeasurementDescriptions(
+  queryTexts: Array<string | null | undefined>,
+  candidateTexts: Array<string | null | undefined>,
+): ReturnType<typeof compareMeasurements> {
+  let result: ReturnType<typeof compareMeasurements> = { status: "unknown" };
+  for (const queryText of queryTexts) {
+    if (!queryText) continue;
+    for (const candidateText of candidateTexts) {
+      if (!candidateText) continue;
+      const comparison = compareMeasurements(queryText, candidateText);
+      if (comparison.status === "conflict") return comparison;
+      if (comparison.status === "compatible") result = comparison;
+    }
+  }
+  return result;
+}
+
+function candidateMeasurementTexts(candidate: CatalogItemCandidateInput): Array<string | null | undefined> {
+  return [candidate.nameAr, candidate.nameEn, candidate.unit, candidate.manufacturer];
 }
 
 function nameSimilarity(query: ItemMatchQuery, candidate: CatalogItemCandidateInput): number {
@@ -335,9 +357,9 @@ export function rankCatalogItemMatches(params: {
     const similarity = aliasSimilarity(query, alias);
     if (!exactCode && similarity < 0.28) continue;
 
-    const measurement = compareMeasurements(
-      [query.itemName, query.itemNameEn, query.unit].filter(Boolean).join(" "),
-      [alias.supplierItemName, candidateDisplayText(candidate)].filter(Boolean).join(" "),
+    const measurement = compareMeasurementDescriptions(
+      [query.itemName, query.itemNameEn, query.unit],
+      [alias.supplierItemName, ...candidateMeasurementTexts(candidate)],
     );
     const baseScore = exactCode ? 100 : similarity === 1 ? 98 : Math.round(78 + similarity * 18);
     const score = measurement.status === "conflict" ? Math.min(baseScore, 59) : baseScore;
@@ -345,7 +367,7 @@ export function rankCatalogItemMatches(params: {
       [query.itemName, query.itemNameEn, query.unit].filter(Boolean).join(" "),
     ).length > 0;
     const candidateHasMeasurements = extractNormalizedMeasurements(
-      [alias.supplierItemName, candidateDisplayText(candidate)].filter(Boolean).join(" "),
+      [alias.supplierItemName, ...candidateMeasurementTexts(candidate)].filter(Boolean).join(" "),
     ).length > 0;
     const safeAliasAutoSelect = similarity === 1 && (
       measurement.status === "compatible" || (!queryHasMeasurements && !candidateHasMeasurements)
@@ -369,9 +391,9 @@ export function rankCatalogItemMatches(params: {
   for (const candidate of catalogItems) {
     const similarity = nameSimilarity(query, candidate);
     if (similarity < 0.2) continue;
-    const measurement = compareMeasurements(
-      [query.itemName, query.itemNameEn, query.unit].filter(Boolean).join(" "),
-      candidateDisplayText(candidate),
+    const measurement = compareMeasurementDescriptions(
+      [query.itemName, query.itemNameEn, query.unit],
+      candidateMeasurementTexts(candidate),
     );
     const exact = similarity >= 0.999;
     let score = exact ? 93 : Math.round(45 + similarity * 45);
@@ -496,9 +518,9 @@ function hybridRetrievalScore(params: {
     }
   }
 
-  const measurement = compareMeasurements(
-    [query.itemName, query.itemNameEn, query.unit].filter(Boolean).join(" "),
-    candidateDisplayText(candidate),
+  const measurement = compareMeasurementDescriptions(
+    [query.itemName, query.itemNameEn, query.unit],
+    candidateMeasurementTexts(candidate),
   );
   if (measurement.status === "compatible") best = Math.min(1, best + 0.08);
   if (measurement.status === "conflict") best *= 0.78;
@@ -563,9 +585,9 @@ export function buildStrongLocalFallbackMatch(params: {
   const candidate = shortlist.topCandidate;
   if (!candidate || shortlist.topRetrievalScore < HYBRID_LOCAL_STRONG_SCORE) return null;
 
-  const measurement = compareMeasurements(
-    [query.itemName, query.itemNameEn, query.unit].filter(Boolean).join(" "),
-    candidateDisplayText(candidate),
+  const measurement = compareMeasurementDescriptions(
+    [query.itemName, query.itemNameEn, query.unit],
+    candidateMeasurementTexts(candidate),
   );
 
   return {
@@ -627,9 +649,9 @@ function toRankedCatalogItemMatch(params: {
   deterministic?: RankedCatalogItemMatch;
 }): RankedCatalogItemMatch {
   const { query, candidate, semanticScore, deterministic } = params;
-  const measurement = compareMeasurements(
-    [query.itemName, query.itemNameEn, query.unit].filter(Boolean).join(" "),
-    candidateDisplayText(candidate),
+  const measurement = compareMeasurementDescriptions(
+    [query.itemName, query.itemNameEn, query.unit],
+    candidateMeasurementTexts(candidate),
   );
 
   const semanticPercent = Math.round(semanticScore * 100);
@@ -749,6 +771,7 @@ async function expandHybridSearchTerms(
       const startedAt = Date.now();
       try {
         const response = await invokeLLM({
+          timeoutMs: CATALOG_AI_TIMEOUT_MS,
           maxTokens: 350,
           messages: [
             {
@@ -818,6 +841,7 @@ async function rerankHybridShortlist(params: {
       const startedAt = Date.now();
       try {
         const response = await invokeLLM({
+          timeoutMs: CATALOG_AI_TIMEOUT_MS,
           maxTokens: 900,
           messages: [
             {

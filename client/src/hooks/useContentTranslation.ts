@@ -20,8 +20,10 @@ export function useEntityTranslation(
 ) {
   const { language } = useLanguage();
 
-  // Only fetch if the entity language differs from user's language
-  const shouldFetch = !!entityId && !!originalLanguage && originalLanguage !== language;
+  // Entities created before the central translation layer (and several workflow
+  // child entities) do not persist originalLanguage. In that case we still query
+  // the engine for the viewer's language and fall back to the original value.
+  const shouldFetch = !!entityId && (!originalLanguage || originalLanguage !== language);
 
   const { data, isLoading } = trpc.translation.getEntityTranslations.useQuery(
     {
@@ -67,8 +69,8 @@ export function useBatchTranslation(
 
   // Filter to only entities that need translation
   const idsNeedingTranslation = useMemo(() => {
-    if (!originalLanguages) return [];
-    return entityIds.filter(id => originalLanguages[id] && originalLanguages[id] !== language);
+    if (!originalLanguages) return entityIds;
+    return entityIds.filter(id => !originalLanguages[id] || originalLanguages[id] !== language);
   }, [entityIds, originalLanguages, language]);
 
   const shouldFetch = idsNeedingTranslation.length > 0;
@@ -133,6 +135,15 @@ export function getLocalizedItemField(
   if (translated && typeof translated === "string" && translated.trim().length > 0) {
     return translated.trim();
   }
+
+  // Some purchase/inventory JOIN queries still expose historical snake-case
+  // aliases (itemName_ar/itemName_en/itemName_ur). Keep them readable during
+  // the transition without changing the API contract.
+  const legacyTranslated = item[`${fieldName}_${language}`];
+  if (legacyTranslated && typeof legacyTranslated === "string" && legacyTranslated.trim().length > 0) {
+    return legacyTranslated.trim();
+  }
+
   return item[fieldName] || "";
 }
 

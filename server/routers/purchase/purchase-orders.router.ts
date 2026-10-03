@@ -11,7 +11,7 @@ import { storagePut } from "../../_core/storage";
 import { findKnownInactiveCatalogUnitNames } from "../../_core/catalog-unit-governance";
 import { assertCanViewPurchaseOrder, filterVisiblePurchaseOrders, assertCanPerformPOAction, assertCanPerformItemPOAction, assertPOItemAssignedToDelegate, isItemAssignedToPODelegate, assertCanPerformItemStatusPOAction, assertCanResolveReturnedPOItem, assertCanRequestDelegateChange, assertCanResolveDelegateChange } from "../../_core/authz/guard";
 import { OWN_REQUESTS_ONLY_ROLES } from "../../_core/authz/policy";
-import { computeActionablePOs } from "./actionable";
+import { computeActionablePOs, getDelegateItemActionMode } from "./actionable";
 import { rejectEmptyPendingPricingBatches } from "./pricing-batch-state";
 import {
   assertCanCreateTicketLinkedPurchaseOrder,
@@ -19,11 +19,18 @@ import {
   syncPathBTicketFromTicketId,
 } from "./ticket-purchase-workflow";
 import {
+  Pmv2WarehousePurchaseHandoffError,
+  pmv2WarehousePurchaseHandoffService,
+} from "../../pmv2/materials/warehouse-purchase-handoff-service";
+import {
   hasActualDeliveryRecipient,
   isPendingTicketMaterialLink,
   shouldExposeTicketMaterialLink,
 } from "@shared/ticketMaterialDelivery";
 import { resolveInventoryLotForIssue } from "../../_core/inventory-lots";
+import { issueCostAllocationsSchema } from "../inventory/issue-cost-allocation.schema";
+import { APP_ROLE, MAINTENANCE_RESPONSIBLE_DEPARTMENT } from "@shared/roles";
+import { createTranslatedProcurementComment, queuePurchaseTranslation } from "./translation-queue";
 
 // ── دالة مشتركة: ترجمة أصناف طلب الشراء في الخلفية ──────────────────────────
 async function queuePOItemsTranslation(items: any[], userId: number): Promise<void> {
@@ -61,6 +68,28 @@ async function assertTicketAllowsNewPurchaseOrder(
   options: { currentPurchaseOrderId?: number; submittingExistingDraft?: boolean; ticketItemId?: number } = {},
 ): Promise<any | null> {
   return assertCanCreateTicketLinkedPurchaseOrder(user, ticketId, options);
+}
+
+function mapPmv2AtomicPurchaseError(error: unknown): never {
+  if (error instanceof Pmv2WarehousePurchaseHandoffError) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+  }
+  throw error;
+}
+
+function assertPmv2PurchaseCreateShape(input: {
+  pmv2RequestItemId?: number;
+  ticketId?: number;
+  ticketItemId?: number;
+  items: Array<unknown>;
+}) {
+  if (!input.pmv2RequestItemId) return;
+  if (input.ticketId || input.ticketItemId) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن دمج ارتباط PM V2 وارتباط البلاغ في طلب شراء واحد" });
+  }
+  if (input.items.length !== 1) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "طلب الشراء المرتبط بـ PM V2 يجب أن يحتوي على صنف واحد فقط" });
+  }
 }
 
 async function assertValidCatalogItemLinks(
@@ -249,7 +278,10 @@ async function getInventoryTicketDeliveryContext(
   };
 }
 
-async function assertActualDeliveryRecipient(deliveredToId?: number | null): Promise<any> {
+async function assertActualDeliveryRecipient(
+  deliveredToId?: number | null,
+  linkedTicket?: any | null,
+): Promise<any> {
   if (!hasActualDeliveryRecipient(deliveredToId)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -260,8 +292,21 @@ async function assertActualDeliveryRecipient(deliveredToId?: number | null): Pro
   if (!recipient || (recipient as any).isActive === 0) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الفني المستلم غير موجود أو غير نشط" });
   }
-  if ((recipient as any).role !== "technician") {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "المستلم الفعلي يجب أن يكون فنيًا" });
+  if ((recipient as any).role === APP_ROLE.TECHNICIAN) return recipient;
+
+  // IT Manager acts as the technical executor only for the exact Path-B IT ticket
+  // routed and assigned to that user. This does not make IT a generic warehouse recipient.
+  const isScopedItRecipient =
+    (recipient as any).role === APP_ROLE.IT_MANAGER &&
+    linkedTicket?.maintenancePath === "B" &&
+    linkedTicket?.maintenanceResponsibleDepartment === MAINTENANCE_RESPONSIBLE_DEPARTMENT.IT &&
+    linkedTicket?.maintenanceResponsibleManagerId === (recipient as any).id &&
+    linkedTicket?.assignedToId === (recipient as any).id;
+  if (!isScopedItRecipient) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "المستلم الفعلي يجب أن يكون فنيًا، أو مدير IT المسؤول عن بلاغ IT المرتبط",
+    });
   }
   return recipient;
 }
@@ -413,7 +458,13 @@ export async function submitPricedBatchForPO(
   } as any);
 
   for (const item of readyItems) {
-    await db.updatePOItem(item.id, { batchId });
+    await db.updatePOItem(item.id, { batchId }, undefined, {
+      actorUserId: user.id,
+      actorName: user.name || null,
+      eventType: "pricing_batch_changed",
+      note: `إرسال الصنف ضمن دفعة التسعير رقم ${batchNumber}`,
+      metadata: { batchNumber },
+    });
   }
 
   // أي دفعة تسعير جديدة (أولى أو لاحقة) تُعيد الطلب لحالة "بانتظار اعتماد الحسابات"
@@ -564,7 +615,7 @@ export const purchaseOrdersRouter = router({
     await db.updatePurchaseOrder(input.id, { status: "closed" });
 
     if (input.note) {
-      await db.createProcurementComment({
+      await createTranslatedProcurementComment(db, {
         purchaseOrderId: input.id,
         userId: ctx.user.id,
         userName: ctx.user.name || "User",
@@ -585,17 +636,18 @@ export const purchaseOrdersRouter = router({
     deliveryQty:   z.number().positive("الكمية يجب أن تكون أكبر من صفر"),
     deliveryUnit:  z.string().min(1, "الوحدة مطلوبة"),
     lotTrackingToken: z.string().trim().min(1).optional(),
+    costAllocations: issueCostAllocationsSchema.optional(),
     notes:         z.string().optional(),
   })).mutation(async ({ input, ctx }) => {
     const item = await db.getPOItemById(input.itemId);
     if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "الصنف غير موجود" });
     assertCanPerformItemStatusPOAction("confirmDeliveryToRequester", ctx.user, item.status);
 
-    const actualRecipient = await assertActualDeliveryRecipient(input.deliveredToId);
     const po = await db.getPurchaseOrderById(item.purchaseOrderId);
     if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
 
     const ticket = po.ticketId ? await db.getTicketById(po.ticketId) : null;
+    const actualRecipient = await assertActualDeliveryRecipient(input.deliveredToId, ticket);
     if (ticket?.maintenancePath === "B" && !ticket.assignedToId) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -638,6 +690,7 @@ export const purchaseOrdersRouter = router({
       warehousePhotoUrl: (item as any).warehousePhotoUrl || undefined,
       markPurchaseOrderItemDelivered: true,
       lotTrackingToken: input.lotTrackingToken,
+      costAllocations: input.costAllocations,
     });
 
     let ticketStatus: string | null = null;
@@ -669,6 +722,8 @@ export const purchaseOrdersRouter = router({
         ticketId: ticket?.id ?? null,
         lotId: deliveryResult.lotId ?? null,
         inventoryTransactionId: deliveryResult.inventoryTransactionId ?? null,
+          costAllocationCount: deliveryResult.costAllocationCount ?? 0,
+          allocatedCostTotal: deliveryResult.allocatedCostTotal ?? null,
       },
     });
 
@@ -758,9 +813,12 @@ export const purchaseOrdersRouter = router({
       purchaseCancelledByName: ctx.user.name || "مندوب",
       purchaseCancelledAt: new Date(),
     });
+    await queuePurchaseTranslation("PO_ITEM", input.itemId, [
+      { fieldName: "purchaseCancelReason", text: input.note },
+    ], ctx.user.id);
 
     // تعليق دائم في سجل الطلب
-    await db.createProcurementComment({
+    await createTranslatedProcurementComment(db, {
       purchaseOrderId: po.id,
       purchaseOrderItemId: input.itemId,
       userId: ctx.user.id,
@@ -1135,6 +1193,7 @@ export const purchaseOrdersRouter = router({
   create: protectedProcedure.input(z.object({
     ticketId: z.number().optional(),
     ticketItemId: z.number().optional(), // الخطوة 4 (2026-08-08) — بند محدد ضمن بلاغ متعدد الجهات
+    pmv2RequestItemId: z.number().int().positive().optional(),
     notes: z.string().optional(),
     items: z.array(z.object({
       catalogItemId: z.number().int().positive().nullable().optional(),
@@ -1155,6 +1214,7 @@ export const purchaseOrdersRouter = router({
     if (input.items.length > 20) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `الحد الأقصى 20 صنف لكل طلب شراء. لديك ${input.items.length} صنف` });
     }
+    assertPmv2PurchaseCreateShape(input);
     await assertValidCatalogItemLinks(input.items);
     await assertNoInactiveCatalogUnitUsage(input.items);
     await assertTicketAllowsNewPurchaseOrder(ctx.user, input.ticketId, { ticketItemId: input.ticketItemId });
@@ -1163,21 +1223,56 @@ export const purchaseOrdersRouter = router({
     // إما ينجحان كلاهما أو يُلغى كل شيء تلقائياً (rollback) عند أي فشل جزئي.
     // سابقاً كانا استدعاءين منفصلين تحت autocommit، فكان يمكن أن ينجح إنشاء
     // الرأس ويفشل إدراج البنود، تاركاً طلباً "رأساً بلا أصناف" للأبد.
-    const poId = await db.withTransaction(async (tx: any) => {
-      const newPoId = await db.createPurchaseOrder({
-        poNumber,
-        ticketId: input.ticketId,
-        ticketItemId: input.ticketItemId,
-        requestedById: ctx.user.id,
-        status: "pending_review",
-        submittedAt: new Date(),
-        notes: input.notes,
-      }, tx);
-      // delegateId is optional at creation — assigned during reviewItems step
-      const itemsData = input.items.map(item => ({ ...item, purchaseOrderId: newPoId!, status: "pending" }));
-      await db.createPOItems(itemsData, tx);
-      return newPoId;
-    });
+    let poId: number | null = null;
+    try {
+      poId = await db.withTransaction(async (tx: any) => {
+        const pmv2Atomic = input.pmv2RequestItemId
+          ? await pmv2WarehousePurchaseHandoffService.prepareAtomicPurchaseCreation(tx, {
+              requestItemId: input.pmv2RequestItemId,
+              purchaseItem: input.items[0],
+            })
+          : null;
+
+        const newPoId = await db.createPurchaseOrder({
+          poNumber,
+          ticketId: input.ticketId,
+          ticketItemId: input.ticketItemId,
+          requestedById: ctx.user.id,
+          status: "pending_review",
+          submittedAt: new Date(),
+          notes: input.notes,
+        }, tx);
+        // delegateId is optional at creation — assigned during reviewItems step
+        const itemsData = input.items.map(item => ({ ...item, purchaseOrderId: newPoId!, status: "pending" }));
+        await db.createPOItems(itemsData, tx);
+
+        if (pmv2Atomic) {
+          const createdItems = await db.getPOItems(newPoId!, tx);
+          const createdItem = createdItems[0];
+          if (!createdItem?.id) {
+            throw new Pmv2WarehousePurchaseHandoffError("تعذر إنشاء بند طلب الشراء المرتبط بـ PM V2");
+          }
+          await pmv2WarehousePurchaseHandoffService.linkAtomicCreatedPurchase(tx, ctx.user.id, {
+            requestItemId: pmv2Atomic.requestItemId,
+            purchaseOrderId: newPoId!,
+            purchaseOrderItemId: Number(createdItem.id),
+            poNumber,
+            purchaseItemQuantity: Number(createdItem.quantity || 0),
+            linkedQuantity: pmv2Atomic.linkedQuantity,
+            remainingRequestQuantity: Number(pmv2Atomic.handoff.remainingQuantity || 0),
+            availableMainQuantity: Number(pmv2Atomic.handoff.availableMainQuantity || 0),
+          }, {
+            ipAddress: ctx.req.ip,
+            userAgent: ctx.req.headers["user-agent"],
+          });
+        }
+
+        return Number(newPoId);
+      });
+    } catch (error) {
+      if (input.pmv2RequestItemId) mapPmv2AtomicPurchaseError(error);
+      throw error;
+    }
 
     // ترجمة حقول الطلب والأصناف في الخلفية
     const poItemsCreated = await db.getPOItems(poId!);
@@ -1200,7 +1295,7 @@ export const purchaseOrdersRouter = router({
     }
     // Delegate notifications are sent in reviewItems after delegates are assigned
     await db.createAuditLog({ userId: ctx.user.id, action: "create_po", entityType: "purchase_order", entityId: poId! });
-    return { id: poId, poNumber };
+    return { id: poId, poNumber, pmv2Linked: Boolean(input.pmv2RequestItemId) };
   }),
 
   delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
@@ -1474,9 +1569,14 @@ export const purchaseOrdersRouter = router({
     }
 
     await db.updatePOItem(oldItem.id, updates);
+    await queuePurchaseTranslation("PO_ITEM", oldItem.id, [
+      { fieldName: "itemName", text: input.itemName },
+      { fieldName: "description", text: input.description },
+      { fieldName: "notes", text: input.notes },
+    ], ctx.user.id);
 
     const finalItemName = input.itemName ?? oldItem.itemName;
-    await db.createProcurementComment({
+    await createTranslatedProcurementComment(db, {
       purchaseOrderId: po.id,
       purchaseOrderItemId: oldItem.id,
       userId: ctx.user.id,
@@ -1554,6 +1654,7 @@ export const purchaseOrdersRouter = router({
       delegateId: ctx.user.id,
       reason: input.reason,
       requestedAt: new Date(),
+      actorName: ctx.user.name || null,
     });
     if (!requestSaved) {
       throw new TRPCError({
@@ -1561,6 +1662,9 @@ export const purchaseOrdersRouter = router({
         message: "تغيّرت حالة الصنف أو بدأ تسعيره؛ قم بتحديث الصفحة ثم أعد المحاولة",
       });
     }
+    await queuePurchaseTranslation("PO_ITEM", item.id, [
+      { fieldName: "delegateChangeReason", text: input.reason },
+    ], ctx.user.id);
 
     // ⚠️ 2026-08-13: الإشعار يذهب لنفس من راجع الطلب واختار المندوب لهذا
     // الصنف أصلًا (po.reviewedById) — لا بثًّا لكل مديري المشتريات. هو الشخص
@@ -1635,6 +1739,8 @@ export const purchaseOrdersRouter = router({
     const assignmentSaved = await db.resolvePOItemDelegateChangeAtomic({
       itemId: item.id,
       newDelegateId: input.delegateId,
+      actorUserId: ctx.user.id,
+      actorName: ctx.user.name || null,
     });
     if (!assignmentSaved) {
       throw new TRPCError({
@@ -1726,7 +1832,11 @@ export const purchaseOrdersRouter = router({
         estimatedTotalCost: String(totalCost),
         status: "estimated",
         batchId: null, // أي إعادة تسعير تفصل الصنف عن أي دفعة قديمة وتجعله جاهزًا لدفعة جديدة
-      }, "pending");
+      }, "pending", {
+        actorUserId: ctx.user.id,
+        actorName: ctx.user.name || null,
+        eventType: "estimate_updated",
+      });
       if (!estimateSaved) {
         throw new TRPCError({
           code: "CONFLICT",
@@ -1865,6 +1975,55 @@ list: protectedProcedure.input(z.object({
     }
     if (ctx.user.role !== "delegate") return [];
     return db.getPOItemsByDelegate(ctx.user.id);
+  }),
+
+  /**
+   * «متابعة أصنافي» — قائمة مسطحة بكل الأصناف داخل طلبات الشراء التي أنشأها
+   * المستخدم نفسه، مع حالة كل صنف والمندوب المسؤول عنه. لا تمنح أي صلاحية
+   * تنفيذ جديدة؛ هي شاشة متابعة فقط.
+   */
+  myRequestedItems: protectedProcedure.query(async ({ ctx }) => {
+    const items = await db.getPOItemsRequestedBy(ctx.user.id);
+    return { items, total: items.length };
+  }),
+
+  /** Timeline لبند شراء محدد، بنفس صلاحية مشاهدة طلب الشراء الأصلي. */
+  itemHistory: protectedProcedure.input(z.object({ itemId: z.number() })).query(async ({ input, ctx }) => {
+    const item = await db.getPOItemById(input.itemId);
+    if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "الصنف غير موجود" });
+    const po = await db.getPurchaseOrderById(item.purchaseOrderId);
+    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
+    await assertCanViewPurchaseOrder(ctx.user, po);
+    const timeline = await db.getPOItemTimeline(input.itemId);
+    if (!timeline) throw new TRPCError({ code: "NOT_FOUND", message: "تعذر جلب تاريخ الصنف" });
+    return timeline;
+  }),
+
+  /**
+   * قائمة مسطحة بأصناف المندوب التي تحتاج إجراءه الآن.
+   * تختلف عن actionableForMe التي تجمع العمل على مستوى PR؛ هذه الواجهة تخدم
+   * تبويب «أصنافي بانتظار المعالجة» لتفادي فتح عشرات الطلبات واحدًا واحدًا.
+   */
+  actionableItemsForMe: protectedProcedure.query(async ({ ctx }) => {
+    if (ctx.user.role !== "delegate") return { items: [], total: 0 };
+
+    const assignedItems = await db.getPOItemsByDelegate(ctx.user.id);
+    if (assignedItems.length === 0) return { items: [], total: 0 };
+
+    const enriched = await enrichPurchaseCycleItemsBatch(assignedItems);
+    const items = enriched.flatMap((item: any) => {
+      const poStatus = String(item.purchaseOrderStatus || "");
+      const actionMode = getDelegateItemActionMode(poStatus, item);
+      if (!actionMode) return [];
+
+      const actionLabel = actionMode === "purchase"
+        ? (poStatus === "partial_purchase" ? "إكمال الشراء" : "تنفيذ الشراء")
+        : (item.status === "estimated" ? "جاهز للإرسال" : "بانتظار التسعير");
+
+      return [{ ...item, actionMode, actionLabel }];
+    });
+
+    return { items, total: items.length };
   }),
 
   pendingEstimateItems: protectedProcedure.query(async ({ ctx }) => {
@@ -2044,6 +2203,7 @@ list: protectedProcedure.input(z.object({
     deliveryQty:   z.number().positive(),
     deliveryUnit:  z.string().min(1, "الوحدة مطلوبة"),
     lotTrackingToken: z.string().trim().min(1).optional(),
+    costAllocations: issueCostAllocationsSchema.optional(),
     notes:         z.string().optional(),
   })).mutation(async ({ input, ctx }) => {
     const invItem = await db.getInventoryItemById(input.inventoryId);
@@ -2055,8 +2215,6 @@ list: protectedProcedure.input(z.object({
         message: `الكمية المطلوبة (${input.deliveryQty}) أكبر من الرصيد (${invItem.quantity})`,
       });
     }
-
-    const actualRecipient = await assertActualDeliveryRecipient(input.deliveredToId);
 
     // QR/Lot هو هوية الوارد الفعلية. نحلّه قبل تقرير ربط البلاغ حتى لا نعتمد
     // على Inventory مجمّع قد يحتوي Lots قادمة من طلبات شراء مختلفة.
@@ -2075,6 +2233,8 @@ list: protectedProcedure.input(z.object({
           ? await getInventoryTicketDeliveryContext(input.inventoryId, scannedLot.purchaseOrderItemId)
           : null)
       : await getInventoryTicketDeliveryContext(input.inventoryId);
+    const linkedTicketForRecipient = context?.ticketId ? await db.getTicketById(context.ticketId) : null;
+    const actualRecipient = await assertActualDeliveryRecipient(input.deliveredToId, linkedTicketForRecipient);
     const contextSnapshot = context ? {
       ticketId: context.ticketId,
       ticketStatus: context.ticketStatus,
@@ -2107,6 +2267,7 @@ list: protectedProcedure.input(z.object({
       notes: input.notes || (linkToTicket ? "تسليم مادة مرتبطة ببلاغ" : "تسليم من المخزون العام"),
       markPurchaseOrderItemDelivered: linkToTicket,
       lotTrackingToken: input.lotTrackingToken,
+      costAllocations: input.costAllocations,
     });
 
     let ticketStatus: string | null = null;
@@ -2138,6 +2299,8 @@ list: protectedProcedure.input(z.object({
         remainingQuantity: Math.max(0, Number(invItem.quantity) - input.deliveryQty),
         lotId: deliveryResult.lotId ?? null,
         inventoryTransactionId: deliveryResult.inventoryTransactionId ?? null,
+          costAllocationCount: deliveryResult.costAllocationCount ?? 0,
+          allocatedCostTotal: deliveryResult.allocatedCostTotal ?? null,
       },
     });
 
@@ -2199,7 +2362,7 @@ list: protectedProcedure.input(z.object({
     }
 
     // Add immutable comment
-    await db.createProcurementComment({
+    await createTranslatedProcurementComment(db, {
       purchaseOrderId: input.id,
       userId: ctx.user.id,
       userName: ctx.user.name || "User",
@@ -2270,8 +2433,11 @@ list: protectedProcedure.input(z.object({
       itemRevisionRequestedById: ctx.user.id,
       itemRevisionRequestedAt: new Date(),
     });
+    await queuePurchaseTranslation("PO_ITEM", item.id, [
+      { fieldName: "itemRevisionNote", text: input.note },
+    ], ctx.user.id);
 
-    await db.createProcurementComment({
+    await createTranslatedProcurementComment(db, {
       purchaseOrderId: po.id,
       purchaseOrderItemId: item.id,
       userId: ctx.user.id,
@@ -2356,7 +2522,7 @@ list: protectedProcedure.input(z.object({
 
     await db.updatePurchaseOrder(input.id, { status: "pending_review" });
 
-    await db.createProcurementComment({
+    await createTranslatedProcurementComment(db, {
       purchaseOrderId: input.id,
       userId: ctx.user.id,
       userName: ctx.user.name || "User",
@@ -2404,7 +2570,7 @@ list: protectedProcedure.input(z.object({
       purchaseCancelledAt: null,
     });
 
-    await db.createProcurementComment({
+    await createTranslatedProcurementComment(db, {
       purchaseOrderId: po.id,
       purchaseOrderItemId: item.id,
       userId: ctx.user.id,
@@ -2476,7 +2642,7 @@ list: protectedProcedure.input(z.object({
       reason: `أُغلقت الدفعة تلقائيًا بعد الإلغاء النهائي لجميع أصنافها — بواسطة ${ctx.user.name || "مستخدم"}`,
     });
 
-    await db.createProcurementComment({
+    await createTranslatedProcurementComment(db, {
       purchaseOrderId: po.id,
       purchaseOrderItemId: item.id,
       userId: ctx.user.id,
@@ -2574,7 +2740,7 @@ list: protectedProcedure.input(z.object({
       itemRevisionRequestedAt: null,
     });
 
-    await db.createProcurementComment({
+    await createTranslatedProcurementComment(db, {
       purchaseOrderId: po.id,
       purchaseOrderItemId: item.id,
       userId: ctx.user.id,

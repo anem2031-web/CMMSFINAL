@@ -8,6 +8,7 @@ import { getActivePricingBatchItems, rejectPricingBatchIfEmpty } from "./pricing
 import { syncPathBTicketFromPurchaseOrder } from "./ticket-purchase-workflow";
 import { generatePurchaseRequestPDF } from "../../services/export/exportService";
 import { storagePut } from "../../_core/storage";
+import { createTranslatedProcurementComment, queuePurchaseTranslation } from "./translation-queue";
 
 /**
  * أرشفة نسخة PDF معتمدة من دفعة تسعير — قسم "الوثائق المالية المعتمدة"
@@ -116,6 +117,9 @@ export const approvalsRouter = router({
             status: "rejected",
             managementRejectionReason: reason,
           });
+          await queuePurchaseTranslation("PO_ITEM", itemId, [
+            { fieldName: "managementRejectionReason", text: reason },
+          ], ctx.user.id);
           if (!updated) {
             throw new TRPCError({ code: "CONFLICT", message: `الصنف "${item.itemName}" ملغى أو تغيرت حالته؛ قم بتحديث الصفحة` });
           }
@@ -173,6 +177,9 @@ export const approvalsRouter = router({
       }
       // Normal flow: PO goes to management
       await db.updatePurchaseOrder(input.id, { status: "pending_management", accountingApprovedById: ctx.user.id, accountingApprovedAt: new Date(), accountingNotes: input.notes, custodyAmount: input.custodyAmount || null });
+      await queuePurchaseTranslation("PO", input.id, [
+        { fieldName: "accountingNotes", text: input.notes },
+      ], ctx.user.id);
       
       // Notify senior management
       const mgmt = await db.getUsersByRole("senior_management");
@@ -230,6 +237,9 @@ export const approvalsRouter = router({
         if (item) {
           const reason = input.rejectionReason || "مرفوض من قبل الحسابات";
           const updated = await db.updatePOItemIfNotTerminal(itemId, { status: "rejected", managementRejectionReason: reason });
+          await queuePurchaseTranslation("PO_ITEM", itemId, [
+            { fieldName: "managementRejectionReason", text: reason },
+          ], ctx.user.id);
           if (!updated) {
             throw new TRPCError({ code: "CONFLICT", message: `الصنف "${item.itemName}" ملغى أو تغيرت حالته؛ قم بتحديث الصفحة` });
           }
@@ -250,6 +260,9 @@ export const approvalsRouter = router({
       await db.updatePOPricingBatch(batch.id, {
         status: "rejected", rejectedById: ctx.user.id, rejectedAt: new Date(), rejectionReason: input.rejectionReason,
       });
+      await queuePurchaseTranslation("PO_BATCH", batch.id, [
+        { fieldName: "rejectionReason", text: input.rejectionReason },
+      ], ctx.user.id);
       await rejectPurchaseOrderIfAllItemsTerminal(
         po,
         ctx.user,
@@ -268,6 +281,9 @@ export const approvalsRouter = router({
         accountingNotes: input.notes,
         custodyAmount: input.custodyAmount || null,
       });
+      await queuePurchaseTranslation("PO_BATCH", batch.id, [
+        { fieldName: "accountingNotes", text: input.notes },
+      ], ctx.user.id);
 
       // أرشفة نسخة معتمدة من مستند الدفعة — "الوثائق المالية المعتمدة" بمركز
       // المستندات (2026-08-10). راجع تعليق الدالة لسبب عدم رمي خطأ عند الفشل.
@@ -439,6 +455,9 @@ export const approvalsRouter = router({
         if (item) {
           const reason = input.rejectionReason || "مرفوض من قبل الإدارة";
           const updated = await db.updatePOItemIfNotTerminal(itemId, { status: "rejected", managementRejectionReason: reason });
+          await queuePurchaseTranslation("PO_ITEM", itemId, [
+            { fieldName: "managementRejectionReason", text: reason },
+          ], ctx.user.id);
           if (!updated) {
             throw new TRPCError({ code: "CONFLICT", message: `الصنف "${item.itemName}" ملغى أو تغيرت حالته؛ قم بتحديث الصفحة` });
           }
@@ -458,6 +477,9 @@ export const approvalsRouter = router({
       await db.updatePOPricingBatch(batch.id, {
         status: "rejected", rejectedById: ctx.user.id, rejectedAt: new Date(), rejectionReason: input.rejectionReason,
       });
+      await queuePurchaseTranslation("PO_BATCH", batch.id, [
+        { fieldName: "rejectionReason", text: input.rejectionReason },
+      ], ctx.user.id);
       await rejectPurchaseOrderIfAllItemsTerminal(
         po,
         ctx.user,
@@ -467,6 +489,9 @@ export const approvalsRouter = router({
       await db.updatePOPricingBatch(batch.id, {
         status: "approved", managementApprovedById: ctx.user.id, managementApprovedAt: new Date(), managementNotes: input.notes,
       });
+      await queuePurchaseTranslation("PO_BATCH", batch.id, [
+        { fieldName: "managementNotes", text: input.notes },
+      ], ctx.user.id);
 
       for (const item of refreshedManagementBatchItems) {
         if (item.status !== "rejected" && item.status !== "cancelled") {
@@ -538,6 +563,9 @@ export const approvalsRouter = router({
             status: "rejected",
             managementRejectionReason: reason,
           });
+          await queuePurchaseTranslation("PO_ITEM", itemId, [
+            { fieldName: "managementRejectionReason", text: reason },
+          ], ctx.user.id);
           if (!updated) {
             throw new TRPCError({ code: "CONFLICT", message: `الصنف "${item.itemName}" ملغى أو تغيرت حالته؛ قم بتحديث الصفحة` });
           }
@@ -598,6 +626,9 @@ export const approvalsRouter = router({
       managementApprovedAt: new Date(),
       managementNotes: input.notes
     });
+    await queuePurchaseTranslation("PO", input.id, [
+      { fieldName: "managementNotes", text: input.notes },
+    ], ctx.user.id);
 
     // ── اعتمد الأصناف الجاهزة فقط ──
     // الأصناف في needs_item_revision تبقى كما هي — ستُعتمد تلقائياً لاحقاً
@@ -676,7 +707,10 @@ export const approvalsRouter = router({
     assertCanPerformPOAction("reject", ctx.user, poReject);
 
     await db.updatePurchaseOrder(input.id, { status: "rejected", rejectedById: ctx.user.id, rejectedAt: new Date(), rejectionReason: input.reason });
-    await db.createProcurementComment({
+    await queuePurchaseTranslation("PO", input.id, [
+      { fieldName: "rejectionReason", text: input.reason },
+    ], ctx.user.id);
+    await createTranslatedProcurementComment(db, {
       purchaseOrderId: input.id,
       userId: ctx.user.id,
       userName: ctx.user.name || "مستخدم",

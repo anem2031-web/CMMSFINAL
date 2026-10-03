@@ -11,6 +11,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/contexts/LanguageContext";
 
 // عنصر واحد بقائمة الفنيين: label نص بسيط يُستخدم للبحث/الفلترة،
 // وrender (اختياري) عرض مخصص (نقطة لون/الدور/التخصص...) لو الشكل مختلف عن النص البسيط
@@ -36,13 +37,17 @@ export function TechnicianCombobox({
   options,
   value,
   onValueChange,
-  placeholder = "اختر فنياً...",
-  searchPlaceholder = "بحث عن فني...",
-  emptyText = "لا يوجد فني مطابق",
+  placeholder,
+  searchPlaceholder,
+  emptyText,
   className,
 }: TechnicianComboboxProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const selected = options.find(o => o.value === value);
+  const resolvedPlaceholder = placeholder ?? t.workflow.ticket.chooseTechnician;
+  const resolvedSearchPlaceholder = searchPlaceholder ?? t.workflow.ticket.searchTechnician;
+  const resolvedEmptyText = emptyText ?? t.workflow.ticket.noTechnicianMatchShort;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -59,16 +64,16 @@ export function TechnicianCombobox({
           )}
         >
           <span className="truncate flex items-center gap-2">
-            {selected ? (selected.render ?? selected.label) : placeholder}
+            {selected ? (selected.render ?? selected.label) : resolvedPlaceholder}
           </span>
           <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
         <Command>
-          <CommandInput placeholder={searchPlaceholder} />
+          <CommandInput placeholder={resolvedSearchPlaceholder} />
           <CommandList>
-            <CommandEmpty>{emptyText}</CommandEmpty>
+            <CommandEmpty>{resolvedEmptyText}</CommandEmpty>
             <CommandGroup>
               {options.map(opt => (
                 <CommandItem

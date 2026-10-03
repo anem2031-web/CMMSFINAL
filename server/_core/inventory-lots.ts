@@ -27,6 +27,7 @@ export interface InventoryLotIssueResolution extends InventoryLotIdentity {
   purchaseOrderId: number | null;
   purchaseOrderItemId: number | null;
   supplierItemName?: string | null;
+  issueUnitCost?: number;
   balanceId: number;
   balanceQuantity: number;
   remainingQuantity: number;
@@ -256,6 +257,20 @@ export async function getInventoryLotByTrackingToken(tx: any, trackingToken: str
 }
 
 /**
+ * Resolve user-facing Lot input consistently across inventory movements.
+ * A scanned QR carries trackingToken, while manual entry usually carries the
+ * human-readable lotCode. Both columns are unique, so either identifier can
+ * safely resolve the same physical Inventory Lot. Callers should continue with
+ * the canonical trackingToken returned by the resolved Lot.
+ */
+function matchInventoryLotIdentifier(identifier: string) {
+  return or(
+    eq(inventoryLots.trackingToken, identifier),
+    eq(inventoryLots.lotCode, identifier),
+  );
+}
+
+/**
  * Resolve a scanned lot inside a specific Inventory row/warehouse balance.
  * The QR token alone is never trusted to imply the current warehouse: the lot
  * must have a balance row for the Inventory record being issued from.
@@ -280,6 +295,7 @@ export async function resolveInventoryLotForIssue(params: {
       purchaseOrderId: inventoryLots.purchaseOrderId,
       purchaseOrderItemId: inventoryLots.purchaseOrderItemId,
       supplierItemName: inventoryLots.supplierItemName,
+      issueUnitCost: inventoryLots.issueUnitCost,
       remainingQuantity: inventoryLots.remainingQuantity,
       balanceId: inventoryLotBalances.id,
       balanceQuantity: inventoryLotBalances.quantity,
@@ -293,7 +309,7 @@ export async function resolveInventoryLotForIssue(params: {
       ),
     )
     // يقبل إما مسح QR (trackingToken) أو كتابة رقم اللوت البشري (lotCode) يدوياً.
-    .where(or(eq(inventoryLots.trackingToken, token), eq(inventoryLots.lotCode, token)))
+    .where(matchInventoryLotIdentifier(token))
     .limit(1);
 
   const row = rows[0] as any;
@@ -329,6 +345,7 @@ export async function resolveInventoryLotForIssue(params: {
     purchaseOrderId: row.purchaseOrderId == null ? null : Number(row.purchaseOrderId),
     purchaseOrderItemId: row.purchaseOrderItemId == null ? null : Number(row.purchaseOrderItemId),
     supplierItemName: row.supplierItemName == null ? null : String(row.supplierItemName),
+    issueUnitCost: Number(row.issueUnitCost || 0),
     balanceId: Number(row.balanceId),
     balanceQuantity,
     remainingQuantity,
@@ -424,8 +441,8 @@ export async function assertInventoryLotMovementAllowedDuringCount(params: {
 
 
 /**
- * Resolve a scanned Lot inside a specific source warehouse for transfer.
- * The QR is the source of truth for the Lot; the warehouse context is still
+ * Resolve a Lot identifier inside a specific source warehouse for transfer.
+ * QR trackingToken and manual lotCode both resolve to the same Lot; warehouse context is still
  * required so a split Lot cannot silently resolve to a balance in another
  * warehouse. An optional Inventory id can be supplied when the operator first
  * selected an item manually; it is verified, never trusted.
@@ -437,7 +454,7 @@ export async function resolveInventoryLotForWarehouseTransfer(params: {
   fromInventoryId?: number;
 }): Promise<InventoryLotWarehouseTransferResolution> {
   const token = String(params.trackingToken || "").trim();
-  if (!token) throw new Error("يجب مسح QR الدفعة قبل التحويل");
+  if (!token) throw new Error("يجب مسح QR الدفعة أو إدخال رقم اللوت قبل التحويل");
 
   const rows = await params.tx
     .select({
@@ -458,7 +475,7 @@ export async function resolveInventoryLotForWarehouseTransfer(params: {
     .innerJoin(inventoryLotBalances, eq(inventoryLotBalances.lotId, inventoryLots.id))
     .innerJoin(inventory, eq(inventory.id, inventoryLotBalances.inventoryId))
     .where(and(
-      eq(inventoryLots.trackingToken, token),
+      matchInventoryLotIdentifier(token),
       eq(inventory.warehouseId, params.fromWarehouseId),
       ...(params.fromInventoryId ? [eq(inventory.id, params.fromInventoryId)] : []),
     ));
@@ -467,10 +484,10 @@ export async function resolveInventoryLotForWarehouseTransfer(params: {
     normalizeInventoryQuantity(Number(row.balanceQuantity || 0)) > 0
   );
   if (positiveRows.length === 0) {
-    throw new Error("QR الممسوح لا يملك رصيدًا في المخزن المصدر المحدد");
+    throw new Error("رقم اللوت أو الـQR لا يملك رصيدًا في المخزن المصدر المحدد");
   }
   if (positiveRows.length > 1) {
-    throw new Error("QR الدفعة مرتبط بأكثر من سجل مخزون داخل المخزن المصدر؛ أوقف التحويل وراجع بيانات المخزون");
+    throw new Error("معرّف الدفعة مرتبط بأكثر من سجل مخزون داخل المخزن المصدر؛ أوقف التحويل وراجع بيانات المخزون");
   }
 
   const row: any = positiveRows[0];
@@ -567,7 +584,7 @@ export async function moveInventoryLotBalanceForTransfer(params: {
       gte(inventoryLotBalances.quantity, quantity),
     ));
   if (Number(sourceResult?.[0]?.affectedRows ?? 0) !== 1) {
-    throw new Error("رصيد الدفعة تغيّر أثناء التحويل؛ أعد مسح QR وحاول مرة أخرى");
+    throw new Error("رصيد الدفعة تغيّر أثناء التحويل؛ أعد مسح QR أو إدخال رقم اللوت وحاول مرة أخرى");
   }
 
   await params.tx
@@ -591,7 +608,7 @@ export async function moveInventoryLotBalanceForTransfer(params: {
 
 
 /**
- * Resolve a scanned Lot for disposal/damage inside an explicitly selected
+ * Resolve a Lot identifier for disposal/damage inside an explicitly selected
  * warehouse. A Lot may be split across warehouses after transfers; warehouseId
  * is therefore mandatory and no balance is chosen silently from another warehouse.
  */
@@ -601,7 +618,7 @@ export async function resolveInventoryLotForDisposal(params: {
   warehouseId: number;
 }): Promise<InventoryLotDisposalResolution> {
   const token = String(params.trackingToken || "").trim();
-  if (!token) throw new Error("يجب مسح QR الدفعة قبل الاستبعاد");
+  if (!token) throw new Error("يجب مسح QR الدفعة أو إدخال رقم اللوت قبل الاستبعاد");
 
   const rows = await params.tx
     .select({
@@ -622,7 +639,7 @@ export async function resolveInventoryLotForDisposal(params: {
     .innerJoin(inventoryLotBalances, eq(inventoryLotBalances.lotId, inventoryLots.id))
     .innerJoin(inventory, eq(inventory.id, inventoryLotBalances.inventoryId))
     .where(and(
-      eq(inventoryLots.trackingToken, token),
+      matchInventoryLotIdentifier(token),
       eq(inventory.warehouseId, params.warehouseId),
     ));
 
@@ -630,12 +647,12 @@ export async function resolveInventoryLotForDisposal(params: {
     const knownLot = await params.tx
       .select({ id: inventoryLots.id })
       .from(inventoryLots)
-      .where(eq(inventoryLots.trackingToken, token))
+      .where(matchInventoryLotIdentifier(token))
       .limit(1);
     if (knownLot.length > 0) {
       throw new Error("هذه الدفعة لا تملك رصيدًا في المستودع المحدد للاستبعاد");
     }
-    throw new Error("QR الدفعة غير معروف في نظام المخزون");
+    throw new Error("رقم اللوت أو QR الدفعة غير معروف في نظام المخزون");
   }
 
   const positiveRows = rows.filter((row: any) =>
@@ -681,7 +698,7 @@ export async function resolveInventoryLotForDisposal(params: {
 
 
 /**
- * Resolve a scanned Lot inside the warehouse of a periodic count.
+ * Resolve a Lot identifier inside the warehouse of a periodic count.
  * Unlike issue/disposal resolution, a zero balance is allowed: physically finding
  * a known QR whose system balance is zero is a valid positive count discrepancy.
  * The Lot must already have a balance row in the count warehouse; we do not invent
@@ -693,7 +710,7 @@ export async function resolveInventoryLotForCount(params: {
   warehouseId: number;
 }): Promise<InventoryLotCountResolution> {
   const token = String(params.trackingToken || "").trim();
-  if (!token) throw new Error("يجب مسح QR الدفعة قبل عدّها");
+  if (!token) throw new Error("يجب مسح QR الدفعة أو إدخال رقم اللوت قبل عدّها");
 
   const rows = await params.tx
     .select({
@@ -714,15 +731,15 @@ export async function resolveInventoryLotForCount(params: {
     .innerJoin(inventoryLotBalances, eq(inventoryLotBalances.lotId, inventoryLots.id))
     .innerJoin(inventory, eq(inventory.id, inventoryLotBalances.inventoryId))
     .where(and(
-      eq(inventoryLots.trackingToken, token),
+      matchInventoryLotIdentifier(token),
       eq(inventory.warehouseId, params.warehouseId),
     ));
 
   if (rows.length === 0) {
-    throw new Error("QR الدفعة لا يخص رصيداً مسجلاً في مستودع عملية الجرد");
+    throw new Error("رقم اللوت أو QR الدفعة لا يخص رصيداً مسجلاً في مستودع عملية الجرد");
   }
   if (rows.length > 1) {
-    throw new Error("QR الدفعة مرتبط بأكثر من سجل مخزون داخل نفس المستودع؛ أوقف الجرد وراجع بيانات المخزون");
+    throw new Error("معرّف الدفعة مرتبط بأكثر من سجل مخزون داخل نفس المستودع؛ أوقف الجرد وراجع بيانات المخزون");
   }
 
   const row: any = rows[0];
@@ -883,7 +900,7 @@ export async function applyInventoryLotCountAdjustment(params: {
 }
 
 /**
- * Resolve a scanned lot for a supplier return without trusting an Inventory id
+ * Resolve a Lot identifier for a supplier return without trusting an Inventory id
  * from the client. A receipt lot is the source of truth for receipt/PO identity.
  * Opening-balance lots are intentionally rejected because they have no proven
  * supplier/invoice source.
@@ -898,7 +915,7 @@ export async function resolveInventoryLotForSupplierReturn(params: {
   warehouseId: number;
 }): Promise<InventoryLotSupplierReturnResolution> {
   const token = String(params.trackingToken || "").trim();
-  if (!token) throw new Error("يجب مسح QR الدفعة قبل إنشاء مرتجع المورد");
+  if (!token) throw new Error("يجب مسح QR الدفعة أو إدخال رقم اللوت قبل إنشاء مرتجع المورد");
 
   const rows = await params.tx
     .select({
@@ -921,7 +938,7 @@ export async function resolveInventoryLotForSupplierReturn(params: {
     .innerJoin(inventoryLotBalances, eq(inventoryLotBalances.lotId, inventoryLots.id))
     .innerJoin(inventory, eq(inventory.id, inventoryLotBalances.inventoryId))
     .where(and(
-      eq(inventoryLots.trackingToken, token),
+      matchInventoryLotIdentifier(token),
       eq(inventory.warehouseId, params.warehouseId),
     ));
 
@@ -929,7 +946,7 @@ export async function resolveInventoryLotForSupplierReturn(params: {
     const knownLot = await params.tx
       .select({ id: inventoryLots.id, sourceType: inventoryLots.sourceType })
       .from(inventoryLots)
-      .where(eq(inventoryLots.trackingToken, token))
+      .where(matchInventoryLotIdentifier(token))
       .limit(1);
     if (knownLot.length > 0) {
       if (knownLot[0].sourceType !== "receipt") {
@@ -937,7 +954,7 @@ export async function resolveInventoryLotForSupplierReturn(params: {
       }
       throw new Error("هذه الدفعة لا تملك رصيدًا في المستودع المحدد للإرجاع");
     }
-    throw new Error("QR الدفعة غير معروف في نظام المخزون");
+    throw new Error("رقم اللوت أو QR الدفعة غير معروف في نظام المخزون");
   }
 
   const sourceType = rows[0].sourceType as InventoryLotSourceType;

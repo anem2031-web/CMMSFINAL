@@ -937,7 +937,7 @@ export default function InventoryOperations() {
   function handleQRScan(code: string) {
     if (lotsEnabled) {
       if (!disposalWarehouseId) {
-        toast.error("اختر المستودع أولاً ثم امسح QR الدفعة");
+        toast.error("اختر المستودع أولاً ثم امسح QR الدفعة أو أدخل رقم اللوت");
         return;
       }
       resolveDisposalLotMut.mutate({ warehouseId: Number(disposalWarehouseId), trackingToken: code });
@@ -958,7 +958,7 @@ export default function InventoryOperations() {
   }
 
   function addItemToList() {
-    if (!foundItem) { toast.error(lotsEnabled ? "امسح QR الدفعة أولاً" : "اختر صنفاً أولاً"); return; }
+    if (!foundItem) { toast.error(lotsEnabled ? "امسح QR الدفعة أو أدخل رقم اللوت أولاً" : "اختر صنفاً أولاً"); return; }
     if (lotsEnabled && !disposalLotInfo) { toast.error("يجب مسح QR دفعة صالح قبل إضافة البند"); return; }
     if (!qty || parseFloat(qty) <= 0) { toast.error("أدخل كمية صحيحة"); return; }
     const availableQuantity = lotsEnabled
@@ -1281,7 +1281,7 @@ export default function InventoryOperations() {
                           QR يبقى الطريقة الأساسية للجرد بالـLot. عند الحاجة يمكنك البحث بكود الصنف، الاسم العربي أو الإنجليزي، باركود المصنع، رقم LOT أو شجرة التصنيف.
                           {" "}{t.inventory.countManualEntryHint}
                         </p>
-                        <BarcodeScanner onScan={handleScanResolved} placeholder="امسح QR الدفعة CMMS-LOT-..." />
+                        <BarcodeScanner onScan={handleScanResolved} placeholder="امسح QR الدفعة أو أدخل رقم اللوت LOT-..." />
 
                         <div className="border-t pt-3 mt-3 space-y-2">
                           <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(260px,0.75fr)]">
@@ -2428,7 +2428,7 @@ export default function InventoryOperations() {
                   {!foundItem && disposalWarehouseId && (
                     <BarcodeScanner
                       onScan={handleQRScan}
-                      placeholder="امسح QR الدفعة للاستبعاد..."
+                      placeholder="امسح QR الدفعة أو أدخل رقم اللوت للاستبعاد..."
                     />
                   )}
                   {!foundItem && !disposalWarehouseId && (

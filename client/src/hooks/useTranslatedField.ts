@@ -83,7 +83,7 @@ export function useResolvedTranslation(
 ) {
   const { language } = useLanguage();
 
-  const shouldFetch = !!entityId && !!originalLanguage && originalLanguage !== language;
+  const shouldFetch = !!entityId && (!originalLanguage || originalLanguage !== language);
 
   const { data, isLoading } = trpc.translation.getEntityTranslations.useQuery(
     {

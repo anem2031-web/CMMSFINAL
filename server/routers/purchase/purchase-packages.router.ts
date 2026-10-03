@@ -14,6 +14,7 @@ import { syncPathBTicketFromPurchaseOrder } from "./ticket-purchase-workflow";
 import { notifyItemRejection } from "../_shared/router-helpers";
 import { generatePurchaseRequestPDF } from "../../services/export/exportService";
 import { storagePut } from "../../_core/storage";
+import { queuePurchaseTranslation } from "./translation-queue";
 
 // ============================================================
 // [PB] راوتر حزمة الشراء — حاوية عليا فوق طلبات الشراء (2026-08-29)
@@ -216,6 +217,12 @@ export const purchasePackagesRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "تعذّر إنشاء حزمة الشراء",
         });
+      }
+
+      if (input.notes?.trim()) {
+        await queuePurchaseTranslation("PO_PACKAGE", Number(created.id), [
+          { fieldName: "notes", text: input.notes.trim() },
+        ], ctx.user.id);
       }
 
       return created;

@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { catalogItemCandidates, inventory } from "../../drizzle/schema";
+import { catalogAuditLogs, catalogItemCandidates, inventory } from "../../drizzle/schema";
 
 export interface CatalogItemCandidateSource {
   inventoryId: number;
@@ -106,6 +106,24 @@ export async function ensurePendingCatalogItemCandidate(
     if (!id) {
       throw new Error("catalog_item_candidates insert did not return insertId");
     }
+    await tx.insert(catalogAuditLogs).values({
+      userId: source.createdById,
+      action: "create_item_candidate",
+      entityType: "catalog_item_candidate",
+      entityId: id,
+      newValues: JSON.stringify({
+        inventoryId: source.inventoryId,
+        sourceReceiptId: source.sourceReceiptId,
+        sourceReceiptItemId: source.sourceReceiptItemId,
+        purchaseOrderId: source.purchaseOrderId ?? null,
+        purchaseOrderItemId: source.purchaseOrderItemId ?? null,
+        catalogSupplierId: source.catalogSupplierId ?? null,
+        supplierCandidateId: source.supplierCandidateId ?? null,
+        itemName: values.itemName,
+        supplierItemCode: values.supplierItemCode,
+        status: values.status,
+      }),
+    } as any);
     return { id, created: true };
   } catch (error: any) {
     // Concurrency safety: UNIQUE(inventoryId) may win in another request between

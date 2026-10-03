@@ -178,7 +178,7 @@ export async function createWarehouseTransfer(params: {
   const lotsEnabled = isInventoryLotsEnabled();
   const lotTrackingToken = String(params.lotTrackingToken || "").trim();
   if (lotsEnabled && !lotTrackingToken) {
-    throw new Error("يجب مسح QR الدفعة قبل التحويل");
+    throw new Error("يجب مسح QR الدفعة أو إدخال رقم اللوت قبل التحويل");
   }
 
   if (params.fromWarehouseId === params.toWarehouseId) {
@@ -315,7 +315,7 @@ export async function createWarehouseTransfer(params: {
     // inventory movements for traceability. AUTO_INCREMENT gaps on rollback are accepted.
     const transferNumber = await generateTransferNumber(tx);
 
-    // ── 2B-8: عند تفعيل Lots، التحويل ينقل نفس Lot/QR بين المخازن.
+    // ── 2B-8: عند تفعيل Lots، التحويل ينقل نفس Lot بين المخازن سواء تم تعريفه بالـQR أو برقم اللوت.
     // لا ننقص inventory_lots.remainingQuantity لأن الكمية ما زالت داخل الشركة.
     // نحدّث Lot Balance + Aggregate Inventory داخل نفس Transaction، ثم نسجل
     // حركتي OUT/IN بنفس lotId. عند إغلاق الـGate يبقى المسار التاريخي كما هو.

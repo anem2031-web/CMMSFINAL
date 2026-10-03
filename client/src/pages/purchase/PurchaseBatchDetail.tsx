@@ -12,8 +12,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { useStaticLabels } from "@/hooks/useContentTranslation";
+import { useStaticLabels, useBatchTranslation, useEntityTranslation, getLocalizedItemField } from "@/hooks/useContentTranslation";
 import { useTranslation } from "@/contexts/LanguageContext";
+import { localizeApiError } from "@/i18n/apiError";
+import { getLocalizedCatalogUnitName } from "@/i18n/catalogMasterData";
 
 // ============================================================
 // [PB-P2] صفحة تفاصيل حزمة الشراء — المندوب والحسابات (2026-08-30/31)
@@ -79,19 +81,37 @@ function currentWorkflowIndex(status: string) {
 export default function PurchaseBatchDetail() {
   const [, params] = useRoute("/purchase-packages/:id");
   const [, setLocation] = useLocation();
-  const { language, t } = useTranslation();
+  const { language, t, dir } = useTranslation();
   const { user } = useAuth();
   const { getPOStatusLabel, getPOItemStatusLabel } = useStaticLabels();
   const locale = language === "ar" ? "ar-SA" : language === "ur" ? "ur-PK" : "en-US";
-  const currency = t?.common?.currency || "ر.س";
+  const currency = t?.common?.currency || "SAR";
 
   const packageId = Number(params?.id);
   const utils = trpc.useUtils();
+  const { data: catalogUnits = [] } = trpc.catalog.units.list.useQuery();
+  const displayUnit = (value: string | null | undefined) =>
+    getLocalizedCatalogUnitName(value, catalogUnits as any[], language);
+  const displayItemName = (item: any) => getLocalizedItemField(item, "itemName", language) || getLocalizedItemField(item, "description", language) || t.workflow.purchase.itemFallback.replace("{id}", String(item?.id ?? ""));
+  const displayItemDescription = (item: any) => getLocalizedItemField(item, "description", language);
   const { data: pkg, isLoading } = trpc.purchasePackages.getById.useQuery(
     { id: packageId },
     { enabled: Number.isFinite(packageId) }
   );
   const { data: users = [] } = trpc.users.list.useQuery();
+  const packageOrders = (pkg as any)?.orders ?? [];
+  const packageItems = packageOrders.flatMap((order: any) => order.items ?? []);
+  const { translations: packageTranslations } = useEntityTranslation(
+    "PO_PACKAGE",
+    (pkg as any)?.id,
+    ["notes"],
+  );
+  const { translationsMap: itemWorkflowTranslations } = useBatchTranslation(
+    "PO_ITEM",
+    packageItems.map((item: any) => Number(item.id)).filter((id: number) => Number.isFinite(id)),
+    ["delegateChangeReason", "managementRejectionReason", "itemRevisionNote", "purchaseCancelReason", "returnReason"],
+  );
+  const workflowItemField = (item: any, field: string) => itemWorkflowTranslations[Number(item.id)]?.[field] || item?.[field] || "";
 
   const isDelegate = user?.role === "delegate";
   // عند الدخول من «بانتظار إجرائي» أثناء التسعير نعرض البطاقة التشغيلية
@@ -128,46 +148,46 @@ export default function PurchaseBatchDetail() {
 
   const estimateMut = trpc.purchaseOrders.estimateCost.useMutation({
     onSuccess: () => {
-      toast.success(t?.common?.save || "تم الحفظ");
+      toast.success(t?.common?.save || t.workflow.purchase.saved);
       refreshPackage();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
 
   // نفس وظيفة طلب مراجعة الصنف المستخدمة في شاشة الطلب المفرد؛ لا مسار جديد.
   const requestItemRevisionMut = trpc.purchaseOrders.requestItemRevision.useMutation({
     onSuccess: () => {
-      toast.success(t?.purchaseOrders?.itemRevisionRequested || "تم إرسال طلب مراجعة الصنف");
+      toast.success(t?.purchaseOrders?.itemRevisionRequested || t.workflow.purchase.reviewRequestSent);
       setSelectedRevisionItemId(null);
       setItemRevisionReason("");
       refreshPackage();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
 
   // نفس وظيفة تغيير المندوب الحالية في PurchaseOrderDetail.
   const requestDelegateChangeMut = trpc.purchaseOrders.requestDelegateChange.useMutation({
     onSuccess: () => {
-      toast.success("تم إرسال طلب تغيير المندوب إلى مدير الصيانة");
+      toast.success(t.workflow.purchase.delegateChangeSent);
       setDelegateChangeDialogItem(null);
       setDelegateChangeReason("");
       refreshPackage();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
 
   const submitPackageBatchMut = trpc.purchasePackages.submitPackageBatch.useMutation({
     onSuccess: (res: any) => {
-      toast.success(`تم إرسال الدفعة ${res.submissionNumber} — ${res.sent.length} طلب`);
+      toast.success(t.workflow.purchase.batchSentSuccess.replace("{number}", res.submissionNumber).replace("{count}", String(res.sent.length)));
       if (res.skipped?.length > 0) {
-        toast.info(`تم تجاوز ${res.skipped.length} طلب بلا أصناف مسعّرة جاهزة`);
+        toast.info(t.workflow.purchase.skippedOrders.replace("{count}", String(res.skipped.length)));
       }
       if (res.pricingDocumentArchived === false) {
-        toast.warning("تم إرسال دفعة الحزمة للحسابات، لكن تعذر حفظ وثيقة التسعير في مركز المستندات");
+        toast.warning(t.workflow.purchase.packagePricingDocumentWarning);
       }
       void utils.attachments.listByType.invalidate({ entityType: "delegate_pricing_documents" });
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
     // لا نعتمد على onSuccess وحده لتحديث الزر؛ إذا تم الإرسال فعليًا ثم
     // فشلت خطوة لاحقة، نعيد قراءة الحزمة وتختفي إمكانية الإرسال القديمة.
     onSettled: () => refreshPackage(),
@@ -188,7 +208,7 @@ export default function PurchaseBatchDetail() {
     return (
       <Card>
         <CardContent className="p-12 text-center text-muted-foreground">
-          حزمة الشراء غير موجودة
+          {t.workflow.purchase.packageNotFound}
         </CardContent>
       </Card>
     );
@@ -237,7 +257,7 @@ export default function PurchaseBatchDetail() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h1 className="text-xl sm:text-2xl font-bold">دفعة طلبات حاوية</h1>
+                    <h1 className="text-xl sm:text-2xl font-bold">{t.workflow.purchase.containerPackageBatch}</h1>
                     <div className="font-mono text-lg sm:text-xl font-bold text-sky-700 mt-1">
                       {(pkg as any).packageNumber}
                     </div>
@@ -247,17 +267,17 @@ export default function PurchaseBatchDetail() {
                     size="icon"
                     className="shrink-0"
                     onClick={() => setLocation("/purchase-orders")}
-                    aria-label="رجوع"
+                    aria-label={t.workflow.purchase.back}
                   >
-                    <ArrowRight className="w-5 h-5" />
+                    <ArrowRight className={`w-5 h-5 ${dir === "ltr" ? "rotate-180" : ""}`} />
                   </Button>
                 </div>
                 <p className="text-sm text-muted-foreground mt-2">
-                  تحتوي هذه الدفعة على ({orders.length}) طلبات شراء · {totalItems} صنف
+                  {t.workflow.purchase.packageContainsOrders.replace("{count}", String(orders.length))} · {totalItems} {t.workflow.purchase.itemCount}
                 </p>
                 {(pkg as any).notes && (
                   <p className="text-xs text-muted-foreground mt-2 bg-muted/40 rounded-lg px-3 py-2">
-                    {(pkg as any).notes}
+                    {packageTranslations.notes || (pkg as any).notes}
                   </p>
                 )}
               </div>
@@ -267,15 +287,15 @@ export default function PurchaseBatchDetail() {
               <div className="flex items-center gap-3 text-sm">
                 <CalendarDays className="w-4 h-4 text-muted-foreground" />
                 <div>
-                  <div className="text-xs text-muted-foreground">تاريخ إنشاء الدفعة</div>
+                  <div className="text-xs text-muted-foreground">{t.workflow.purchase.packageCreatedDate}</div>
                   <div className="font-semibold">{new Date((pkg as any).createdAt).toLocaleDateString(locale)}</div>
                 </div>
               </div>
               <div className="flex items-center gap-3 text-sm">
                 <User className="w-4 h-4 text-muted-foreground" />
                 <div>
-                  <div className="text-xs text-muted-foreground">إنشاء بواسطة</div>
-                  <div className="font-semibold">{creator?.name || creator?.username || `مستخدم #${(pkg as any).createdById}`}</div>
+                  <div className="text-xs text-muted-foreground">{t.workflow.purchase.createdBy}</div>
+                  <div className="font-semibold">{creator?.name || creator?.username || t.workflow.purchase.userFallback.replace("{id}", String((pkg as any).createdById))}</div>
                 </div>
               </div>
             </div>
@@ -292,10 +312,10 @@ export default function PurchaseBatchDetail() {
                   ) : (
                     <Send className="w-5 h-5" />
                   )}
-                  إرسال للحسابات
+                  {t.workflow.purchase.sendAccounting}
                 </Button>
                 <div className="text-[11px] text-center text-muted-foreground">
-                  {`${readyToSubmitCount} صنف جاهز ضمن ${readyOrderCount} طلب`}
+                  {t.workflow.purchase.readyOrderSummary.replace("{items}", String(readyToSubmitCount)).replace("{orders}", String(readyOrderCount))}
                 </div>
               </div>
             )}
@@ -306,20 +326,19 @@ export default function PurchaseBatchDetail() {
       {isDelegate && !isDelegatePricingActionView ? (
         <>
           {/* [PB-DELEGATE-SUMMARY 2026-08-31]
-              في العرض الكامل للمندوب تبقى صفحة الحزمة ملخصًا وتنقّلًا فقط:
-              الطلبات تظل مستقلة، وإجراءات كل صنف تُنفّذ من شاشة الطلب المفرد.
+              {t.workflow.purchase.packageSummaryOnly}
               لا تغيير هنا لأي حالة Workflow أو لأي استدعاء تشغيلي. */}
           <Card className="rounded-2xl border-slate-200 shadow-sm overflow-hidden">
             <CardContent className="p-4 sm:p-5 space-y-3">
               <div className="flex items-center justify-between gap-3 flex-wrap pb-2 border-b">
                 <div>
-                  <h2 className="font-bold text-base">طلبات الشراء داخل الدفعة</h2>
+                  <h2 className="font-bold text-base">{t.workflow.purchase.ordersInsideBatch}</h2>
                   <p className="text-xs text-muted-foreground mt-1">
-                    افتح رقم الطلب لتنفيذ الإجراء على أصنافه من شاشة الطلب نفسها.
+                    {t.workflow.purchase.openOrderForItemsHelp}
                   </p>
                 </div>
                 <Badge variant="secondary" className="text-xs">
-                  {orders.length} طلب
+                  {t.workflow.purchase.orderCountShort.replace("{count}", String(orders.length))}
                 </Badge>
               </div>
 
@@ -348,14 +367,14 @@ export default function PurchaseBatchDetail() {
                             </Badge>
                           </div>
                           <div className="flex items-center gap-x-4 gap-y-1 flex-wrap text-xs text-muted-foreground mt-2">
-                            <span>{delegateItems.length} صنف</span>
-                            {requestedBy && <span>مقدم الطلب: {requestedBy.name || requestedBy.username}</span>}
+                            <span>{delegateItems.length} {t.workflow.purchase.itemCount}</span>
+                            {requestedBy && <span>{t.workflow.purchase.requesterColon} {requestedBy.name || requestedBy.username}</span>}
                             <span>
-                              الإجمالي: {estimatedTotal.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {currency}
+                              {t.workflow.purchase.totalColon} {estimatedTotal.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {currency}
                             </span>
                           </div>
                         </div>
-                        <ArrowRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                        <ArrowRight className={`w-4 h-4 text-muted-foreground shrink-0 ${dir === "rtl" ? "rotate-180" : ""}`} />
                       </div>
                     </button>
                   );
@@ -375,8 +394,8 @@ export default function PurchaseBatchDetail() {
       {!isPackageSubmissionFocusView && (
       <>
       {/* الطلبات داخل الحزمة — الخط الجانبي بصري فقط ولا يمثل علاقة بيانات جديدة. */}
-      <div className="relative space-y-5 md:pl-14">
-        <div className="hidden md:block absolute top-0 bottom-0 left-5 border-l border-dashed border-sky-600/60" />
+      <div className={`relative space-y-5 ${dir === "rtl" ? "md:pl-14" : "md:pr-14"}`}>
+        <div className={`hidden md:block absolute top-0 bottom-0 border-dashed border-sky-600/60 ${dir === "rtl" ? "left-5 border-l" : "right-5 border-r"}`} />
 
         {orders.map((po: any) => {
           const requestedBy = (users as any[]).find((u: any) => u.id === po.requestedById);
@@ -432,22 +451,22 @@ export default function PurchaseBatchDetail() {
                           {getPOStatusLabel(po.status)}
                         </Badge>
                       </div>
-                      <h2 className="text-lg font-bold">إدارة طلبات الشراء</h2>
+                      <h2 className="text-lg font-bold">{t.workflow.purchase.purchaseOrdersManagement}</h2>
                     </div>
 
                     <div className="flex items-center gap-2">
                       {hasRevisionAttention && (
                         <Badge variant="outline" className="border-rose-200 text-rose-700 bg-rose-50">
-                          يحتاج متابعة
+                          {t.workflow.purchase.needsFollowup}
                         </Badge>
                       )}
                       <Button
                         variant="ghost"
                         size="icon"
                         onClick={() => setLocation(`/purchase-orders/${po.id}`)}
-                        aria-label={`فتح ${po.poNumber}`}
+                        aria-label={t.workflow.purchase.openOrderAria.replace("{number}", po.poNumber)}
                       >
-                        <ArrowRight className="w-5 h-5" />
+                        <ArrowRight className={`w-5 h-5 ${dir === "rtl" ? "rotate-180" : ""}`} />
                       </Button>
                     </div>
                   </div>
@@ -490,29 +509,29 @@ export default function PurchaseBatchDetail() {
                     <div className="border rounded-xl p-3 min-h-[78px] flex items-center gap-3">
                       <User className="w-5 h-5 text-muted-foreground shrink-0" />
                       <div className="min-w-0">
-                        <div className="text-[11px] text-muted-foreground">مقدم الطلب</div>
-                        <div className="text-sm font-semibold truncate">{requestedBy?.name || requestedBy?.username || `مستخدم #${po.requestedById}`}</div>
+                        <div className="text-[11px] text-muted-foreground">{t.workflow.purchase.requester}</div>
+                        <div className="text-sm font-semibold truncate">{requestedBy?.name || requestedBy?.username || t.workflow.purchase.userFallback.replace("{id}", String(po.requestedById))}</div>
                       </div>
                     </div>
                     <div className="border rounded-xl p-3 min-h-[78px] flex items-center gap-3">
                       <CalendarDays className="w-5 h-5 text-muted-foreground shrink-0" />
                       <div>
-                        <div className="text-[11px] text-muted-foreground">تاريخ الطلب</div>
+                        <div className="text-[11px] text-muted-foreground">{t.workflow.purchase.requestDate}</div>
                         <div className="text-sm font-semibold">{new Date(po.createdAt).toLocaleDateString(locale)}</div>
                       </div>
                     </div>
                     <div className="border rounded-xl p-3 min-h-[78px] flex items-center gap-3">
                       <DollarSign className="w-5 h-5 text-muted-foreground shrink-0" />
                       <div>
-                        <div className="text-[11px] text-muted-foreground">العملة</div>
+                        <div className="text-[11px] text-muted-foreground">{t.workflow.purchase.currencyLabel}</div>
                         <div className="text-sm font-semibold">{currency}</div>
                       </div>
                     </div>
                     <div className="border rounded-xl p-3 min-h-[78px] flex items-center gap-3">
                       <ShoppingCart className="w-5 h-5 text-muted-foreground shrink-0" />
                       <div>
-                        <div className="text-[11px] text-muted-foreground">جاهز للإرسال</div>
-                        <div className="text-sm font-semibold">{orderReadyCount} جاهز · {orderAwaitingPricing} بانتظار التسعير</div>
+                        <div className="text-[11px] text-muted-foreground">{t.workflow.purchase.readyToSendShort}</div>
+                        <div className="text-sm font-semibold">{t.workflow.purchase.readyCount.replace("{count}", String(orderReadyCount))} · {orderAwaitingPricing} {t.workflow.purchase.waitingPricing}</div>
                       </div>
                     </div>
                   </div>
@@ -521,7 +540,7 @@ export default function PurchaseBatchDetail() {
                   <div className="border rounded-xl p-3 sm:p-4 space-y-3">
                     <div className="flex items-center gap-2 font-semibold text-sm">
                       <ShoppingCart className="w-4 h-4" />
-                      الأصناف
+                      {t.workflow.purchase.itemsLabel}
                     </div>
 
                     {displayItems.map((item: any) => {
@@ -540,40 +559,40 @@ export default function PurchaseBatchDetail() {
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <h3 className={`font-semibold text-sm ${isCancelled ? "line-through text-gray-400" : ""}`}>
-                                  {item.itemName || item.description || `صنف #${item.id}`}
+                                  {displayItemName(item)}
                                 </h3>
                                 <Badge className={`text-[10px] ${ITEM_STATUS_COLORS[item.status] || "bg-gray-100 text-gray-700"}`}>
                                   {getPOItemStatusLabel(item.status)}
                                 </Badge>
                               </div>
-                              {item.description && item.itemName && (
-                                <p className="text-xs text-muted-foreground mt-1">{item.description}</p>
+                              {displayItemDescription(item) && getLocalizedItemField(item, "itemName", language) && (
+                                <p className="text-xs text-muted-foreground mt-1">{displayItemDescription(item)}</p>
                               )}
                               <div className="flex gap-x-4 gap-y-1 flex-wrap text-xs text-muted-foreground mt-2">
-                                <span>الكمية: <strong>{item.quantity} {item.unit || ""}</strong></span>
-                                {delegate && <span>المندوب: <strong>{delegate.name || delegate.username}</strong></span>}
+                                <span>{t.workflow.purchase.quantityLabel} <strong>{item.quantity} {displayUnit(item.unit)}</strong></span>
+                                {delegate && <span>{t.workflow.purchase.delegateLabelColon} <strong>{delegate.name || delegate.username}</strong></span>}
                               </div>
                             </div>
                           </div>
 
                           {item.delegateChangeRequestedAt && (
                             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-900 space-y-1">
-                              <div className="font-semibold">طلب إعادة تعيين المندوب قيد المراجعة</div>
-                              <div>السبب: {item.delegateChangeReason || "لم يُذكر سبب"}</div>
+                              <div className="font-semibold">{t.workflow.purchase.delegateChangePending}</div>
+                              <div>{t.workflow.purchase.reasonColon} {workflowItemField(item, "delegateChangeReason") || t.workflow.purchase.reasonNotProvided}</div>
                             </div>
                           )}
 
                           {item.status === "needs_item_revision" && (
                             <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 text-xs text-rose-900 space-y-1">
-                              <div className="font-semibold">هذا الصنف يحتاج مراجعة</div>
-                              {item.itemRevisionNote && <div>السبب: {item.itemRevisionNote}</div>}
+                              <div className="font-semibold">{t.workflow.purchase.needsReview}</div>
+                              {item.itemRevisionNote && <div>{t.workflow.purchase.reasonColon} {workflowItemField(item, "itemRevisionNote")}</div>}
                             </div>
                           )}
 
                           {itemBelongsToMe && item.status === "estimated" && !item.batchId && (
                             <div className="bg-teal-50 border border-teal-200 rounded-lg p-2.5 flex items-center justify-between gap-2">
                               <p className="text-xs text-teal-800 flex items-center gap-1.5">
-                                <CheckCircle2 className="w-3.5 h-3.5" /> تم التسعير — بانتظار الإرسال للحسابات
+                                <CheckCircle2 className="w-3.5 h-3.5" /> {t.workflow.purchase.pricedWaitingAccounting}
                               </p>
                               <span className="text-xs font-bold text-teal-700">
                                 {Number(item.estimatedTotalCost || 0).toLocaleString(locale)} {currency}
@@ -584,12 +603,12 @@ export default function PurchaseBatchDetail() {
                           {itemBelongsToMe && item.status === "pending" && !item.batchId && !item.delegateChangeRequestedAt && (
                             <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3 space-y-2">
                               <p className="text-xs font-semibold text-amber-900 flex items-center gap-1.5">
-                                <DollarSign className="w-3.5 h-3.5" /> التكلفة التقديرية للوحدة:
+                                <DollarSign className="w-3.5 h-3.5" /> {t.workflow.purchase.estimatedUnitCost}
                               </p>
                               <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
                                 <div className="flex-1 space-y-1">
                                   <Label className="text-[11px] text-amber-700">
-                                    التكلفة التقديرية للوحدة ({currency})
+                                    {t.workflow.purchase.estimatedUnitCostCurrency.replace("{currency}", currency)}
                                   </Label>
                                   <Input
                                     type="number"
@@ -603,7 +622,7 @@ export default function PurchaseBatchDetail() {
                                 </div>
                                 {estimates[item.id] && parseFloat(estimates[item.id]) > 0 && (
                                   <div className="text-xs text-amber-800 sm:pb-2 whitespace-nowrap">
-                                    الإجمالي {(parseFloat(estimates[item.id]) * item.quantity).toLocaleString(locale)} {currency}
+                                    {t.workflow.purchase.total} {(parseFloat(estimates[item.id]) * item.quantity).toLocaleString(locale)} {currency}
                                   </div>
                                 )}
                                 <div className="flex gap-2 flex-wrap">
@@ -611,7 +630,7 @@ export default function PurchaseBatchDetail() {
                                     size="sm"
                                     onClick={() => {
                                       if (!estimates[item.id] || parseFloat(estimates[item.id]) <= 0) {
-                                        toast.error("أدخل سعراً صحيحاً");
+                                        toast.error(t.workflow.purchase.enterValidPrice);
                                         return;
                                       }
                                       estimateMut.mutate({
@@ -621,7 +640,7 @@ export default function PurchaseBatchDetail() {
                                     }}
                                     disabled={estimateMut.isPending}
                                   >
-                                    {estimateMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "حفظ"}
+                                    {estimateMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : t.workflow.purchase.save}
                                   </Button>
                                   <Button
                                     size="sm"
@@ -631,7 +650,7 @@ export default function PurchaseBatchDetail() {
                                       setItemRevisionReason("");
                                     }}
                                   >
-                                    طلب مراجعة
+                                    {t.workflow.purchase.requestReview}
                                   </Button>
                                   {isDelegate && item.delegateId === user?.id && !item.estimatedUnitCost && (
                                     <Button
@@ -642,7 +661,7 @@ export default function PurchaseBatchDetail() {
                                         setDelegateChangeReason("");
                                       }}
                                     >
-                                      إعادة تعيين المندوب
+                                      {t.workflow.purchase.reassignDelegate}
                                     </Button>
                                   )}
                                 </div>
@@ -655,7 +674,7 @@ export default function PurchaseBatchDetail() {
                   </div>
 
                   <div className="rounded-xl border bg-slate-50/80 px-4 py-3 flex items-center justify-between gap-4">
-                    <span className="font-semibold text-sm">إجمالي التكلفة التقديرية</span>
+                    <span className="font-semibold text-sm">{t.workflow.purchase.estimatedTotalCost}</span>
                     <span className="font-bold text-lg" dir="ltr">
                       {orderEstimatedTotal.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {currency}
                     </span>
@@ -692,22 +711,22 @@ export default function PurchaseBatchDetail() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>طلب مراجعة الصنف</DialogTitle>
+            <DialogTitle>{t.workflow.purchase.itemReviewRequest}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 py-2">
-            <p className="text-sm text-muted-foreground">اكتب سبب طلب مراجعة هذا الصنف.</p>
+            <p className="text-sm text-muted-foreground">{t.workflow.purchase.itemReviewHelp}</p>
             <div className="space-y-2">
-              <Label>سبب المراجعة *</Label>
+              <Label>{t.workflow.purchase.reviewReasonRequired}</Label>
               <Textarea
                 value={itemRevisionReason}
                 onChange={(e) => setItemRevisionReason(e.target.value)}
-                placeholder={t?.purchaseOrders?.revisionNoteExample || "اكتب سبب المراجعة"}
+                placeholder={t?.purchaseOrders?.revisionNoteExample || t.workflow.purchase.enterReviewReason}
                 rows={4}
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setSelectedRevisionItemId(null)}>إلغاء</Button>
+            <Button variant="outline" onClick={() => setSelectedRevisionItemId(null)}>{t.workflow.purchase.cancel}</Button>
             <Button
               variant="destructive"
               disabled={itemRevisionReason.trim().length < 5 || requestItemRevisionMut.isPending || !selectedRevisionItemId}
@@ -719,7 +738,7 @@ export default function PurchaseBatchDetail() {
                 });
               }}
             >
-              {requestItemRevisionMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "إرسال طلب المراجعة"}
+              {requestItemRevisionMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : t.workflow.purchase.sendReviewRequest}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -736,27 +755,27 @@ export default function PurchaseBatchDetail() {
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>طلب إعادة تعيين المندوب</DialogTitle>
+            <DialogTitle>{t.workflow.purchase.delegateChangeRequest}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 py-2">
             <p className="text-sm text-muted-foreground">
-              يتوقف تسعير هذا الصنف مؤقتًا إلى أن يختار المسؤول مندوبًا جديدًا، بنفس السلوك الحالي في طلب الشراء المفرد.
+              {t.workflow.purchase.pricingPausedDelegate}
             </p>
             <div className="rounded-lg bg-muted/40 border p-2 text-sm">
-              الصنف: <strong>{delegateChangeDialogItem?.itemName}</strong>
+              {t.workflow.purchase.itemColon} <strong>{delegateChangeDialogItem?.itemName}</strong>
             </div>
             <div className="space-y-2">
-              <Label>سبب طلب التغيير *</Label>
+              <Label>{t.workflow.purchase.delegateChangeReason}</Label>
               <Textarea
                 value={delegateChangeReason}
                 onChange={(e) => setDelegateChangeReason(e.target.value)}
-                placeholder="اكتب سبب عدم تمكنك من متابعة تسعير هذا الصنف"
+                placeholder={t.workflow.purchase.delegateChangePlaceholder}
                 rows={4}
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDelegateChangeDialogItem(null)}>إلغاء</Button>
+            <Button variant="outline" onClick={() => setDelegateChangeDialogItem(null)}>{t.workflow.purchase.cancel}</Button>
             <Button
               disabled={delegateChangeReason.trim().length < 5 || requestDelegateChangeMut.isPending}
               onClick={() => {
@@ -768,7 +787,7 @@ export default function PurchaseBatchDetail() {
               }}
             >
               {requestDelegateChangeMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-              إرسال الطلب
+              {t.workflow.purchase.sendRequest}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -782,6 +801,7 @@ export default function PurchaseBatchDetail() {
  * تفاصيل الطلبات والأصناف داخل صفحة الحزمة. عرض فقط؛ لا يكتب أي حالة.
  */
 function DelegateSubmissionExports({ packageId, packageNumber }: { packageId: number; packageNumber: string }) {
+  const { t } = useTranslation();
   const { data: submissions = [], isLoading } = trpc.purchasePackages.submissions.useQuery(
     { packageId },
     { enabled: Number.isFinite(packageId) }
@@ -793,9 +813,9 @@ function DelegateSubmissionExports({ packageId, packageNumber }: { packageId: nu
     <Card className="rounded-2xl border-slate-200 shadow-sm">
       <CardContent className="p-4 sm:p-5 space-y-3">
         <div>
-          <h2 className="font-semibold text-sm">ملفات دفعات الإرسال</h2>
+          <h2 className="font-semibold text-sm">{t.workflow.purchase.dispatchFiles}</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            التصدير فقط؛ تفاصيل الطلبات والأصناف تبقى في طلب الشراء المفرد.
+            {t.workflow.purchase.dispatchExportOnly}
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
@@ -816,7 +836,7 @@ function DelegateSubmissionExports({ packageId, packageNumber }: { packageId: nu
                 }
               >
                 <FileDown className="w-3.5 h-3.5" />
-                تصدير {packageNumber}-{sub.subNumber}
+                {t.workflow.purchase.export} {packageNumber}-{sub.subNumber}
               </Button>
             );
           })}
@@ -843,6 +863,18 @@ function PackageSubmissions({
   packageNumber: string;
   focusedSubmissionId?: number;
 }) {
+  const { t, language } = useTranslation();
+  const locale = language === "ar" ? "ar-SA" : language === "ur" ? "ur-PK" : "en-US";
+  const currency = t?.common?.currency || "SAR";
+  const { data: catalogUnits = [] } = trpc.catalog.units.list.useQuery();
+  const displayUnit = (value: string | null | undefined) =>
+    getLocalizedCatalogUnitName(value, catalogUnits as any[], language);
+  const displayItemName = (item: any) =>
+    getLocalizedItemField(item, "itemName", language) ||
+    getLocalizedItemField(item, "description", language) ||
+    t.workflow.purchase.itemFallback.replace("{id}", String(item?.id ?? ""));
+  const displayItemDescription = (item: any) =>
+    getLocalizedItemField(item, "description", language);
   const { user } = useAuth();
   const utils = trpc.useUtils();
   const [custodyBalance, setCustodyBalance] = useState<Record<number, string>>({});
@@ -871,13 +903,13 @@ function PackageSubmissions({
 
   const approveSubmissionMut = trpc.purchasePackages.approveAccountingSubmission.useMutation({
     onSuccess: (result: any) => {
-      toast.success(`تم اعتماد ${result.submissionNumber} من الحسابات وإرسالها للإدارة`);
+      toast.success(t.workflow.purchase.accountingApprovedSentManagement.replace("{number}", result.submissionNumber));
       if (result.financialDocumentArchived === false) {
-        toast.warning("تم اعتماد دفعة الإرسال، لكن تعذر حفظ الوثيقة المالية في مركز المستندات");
+        toast.warning(t.workflow.purchase.dispatchFinancialWarning);
       }
       void utils.attachments.listByType.invalidate({ entityType: "po_financial_batch" });
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
     // إعادة جلب الحالة في الحالتين تمنع بقاء بطاقة «بانتظار الحسابات»
     // إذا نجح الاعتماد في قاعدة البيانات ثم أخفقت خطوة لاحقة غير حرجة.
     onSettled: () => {
@@ -891,8 +923,8 @@ function PackageSubmissions({
     onSuccess: (result: any) => {
       toast.success(
         result.status === "rejected"
-          ? `تمت مراجعة ${result.submissionNumber} من الإدارة ورفض جميع أصنافها`
-          : `تم اعتماد ${result.submissionNumber} من الإدارة العليا`
+          ? t.workflow.purchase.managementAllRejected.replace("{number}", result.submissionNumber)
+          : t.workflow.purchase.managementApprovedSubmission.replace("{number}", result.submissionNumber)
       );
       setManagementRejections((prev) =>
         Object.fromEntries(
@@ -905,7 +937,7 @@ function PackageSubmissions({
       utils.purchasePackages.submissions.invalidate({ packageId });
       utils.purchasePackages.getById.invalidate({ id: packageId });
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
 
   // نفس إجراء رفض الصنف الفوري الموجود في شاشة طلب الشراء المفرد.
@@ -913,15 +945,15 @@ function PackageSubmissions({
     onSuccess: (result: any) => {
       toast.success(
         result?.batchNowClosed
-          ? "تم رفض الصنف وإغلاق دفعة التسعير لعدم وجود أصناف فعالة"
-          : "تم رفض الصنف"
+          ? t.workflow.purchase.pricingBatchRejectedNoActive
+          : t.workflow.purchase.itemRejectedShort
       );
       setRejectItemDialog(null);
       setRejectItemReason("");
       utils.purchasePackages.submissions.invalidate({ packageId });
       utils.purchasePackages.getById.invalidate({ id: packageId });
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
 
   const isAccountant = user?.role === "accountant" || ["owner", "admin"].includes(user?.role || "");
@@ -938,7 +970,7 @@ function PackageSubmissions({
   const approveSubmission = async (sub: any) => {
     const value = parseFloat(custodyBalance[sub.id] || "");
     if (!(value > 0)) {
-      toast.error("أدخل إجمالي رصيد العهد التي على المندوب");
+      toast.error(t.workflow.purchase.enterCustodyBalance);
       return;
     }
 
@@ -971,11 +1003,11 @@ function PackageSubmissions({
 
   return (
     <div className="space-y-3">
-      <h2 className="text-sm font-semibold text-muted-foreground">دفعات الإرسال</h2>
+      <h2 className="text-sm font-semibold text-muted-foreground">{t.workflow.purchase.dispatchBatches}</h2>
       {visibleSubmissions.length === 0 && focusedSubmissionId ? (
         <Card className="border-amber-200 bg-amber-50/40">
           <CardContent className="p-4 text-sm text-amber-900">
-            دفعة الإرسال المحددة غير متاحة لك أو لم تعد ضمن هذه الحزمة.
+            {t.workflow.purchase.selectedDispatchUnavailable}
           </CardContent>
         </Card>
       ) : null}
@@ -1015,13 +1047,13 @@ function PackageSubmissions({
                 <div className="flex items-center gap-2 flex-wrap">
                   <Send className="w-4 h-4 text-orange-600" />
                   <span className="font-mono font-semibold text-sm">
-                    دفعة {packageNumber}-{sub.subNumber}
+                    {t.workflow.purchase.batchWord} {packageNumber}-{sub.subNumber}
                   </span>
                   <Badge variant="secondary" className="text-[10px]">
-                    {sub.batches?.length ?? 0} طلب
+                    {t.workflow.purchase.orderCountShort.replace("{count}", String(sub.batches?.length ?? 0))}
                   </Badge>
                   <span className="text-xs text-muted-foreground">
-                    الإجمالي: {total.toLocaleString("ar-SA")} ر.س
+                    {t.workflow.purchase.totalColon} {total.toLocaleString(locale)} {currency}
                   </span>
                 </div>
                 <div className="flex gap-2 flex-wrap">
@@ -1040,7 +1072,7 @@ function PackageSubmissions({
                       }
                     >
                       <FileDown className="w-3.5 h-3.5" />
-                      تصدير PDF للدفعة
+                      {t.workflow.purchase.exportBatchPdf}
                     </Button>
                   )}
                   {isAccountant && canApproveSubmission && (
@@ -1051,7 +1083,7 @@ function PackageSubmissions({
                       onClick={() => approveSubmission(sub)}
                     >
                       {approvingSubmission === sub.id && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                      اعتماد وإرسال للإدارة
+                      {t.workflow.purchase.approveSendManagement}
                     </Button>
                   )}
                   {isManagementApprover && canApproveManagementSubmission && (
@@ -1063,8 +1095,8 @@ function PackageSubmissions({
                     >
                       {approvingSubmission === sub.id && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                       {managementRejectedCount > 0
-                        ? `اعتماد مع رفض ${managementRejectedCount} صنف`
-                        : "اعتماد الدفعة"}
+                        ? t.workflow.purchase.approveWithRejected.replace("{count}", String(managementRejectedCount))
+                        : t.workflow.purchase.approveBatch}
                     </Button>
                   )}
                 </div>
@@ -1075,7 +1107,7 @@ function PackageSubmissions({
                   <div className="flex items-end gap-3 flex-wrap">
                     <div className="space-y-1 flex-1 min-w-[220px]">
                       <Label className="text-xs font-medium text-orange-800">
-                        إجمالي رصيد العهد التي على المندوب (ر.س) *
+                        {t.workflow.purchase.custodyBalanceRequired.replace("{currency}", currency)}
                       </Label>
                       <Input
                         type="number"
@@ -1090,7 +1122,7 @@ function PackageSubmissions({
                       />
                     </div>
                     <div className="text-xs text-orange-800 pb-2">
-                      إجمالي قيمة دفعة الإرسال: <strong>{total.toLocaleString("ar-SA")} ر.س</strong>
+                      {t.workflow.purchase.dispatchBatchValue} <strong>{total.toLocaleString(locale)} {currency}</strong>
                     </div>
                   </div>
                 </div>
@@ -1098,20 +1130,20 @@ function PackageSubmissions({
 
               {isAccountant && pendingCount > 0 && hasConflictingStatus && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-                  لا يمكن اعتماد دفعة الإرسال جماعيًا لأن حالات دفعات التسعير التابعة لها غير موحدة. حدّث الصفحة وراجع الحالة.
+                  {t.workflow.purchase.mixedBatchAccounting}
                 </div>
               )}
 
               {isManagementViewer && pendingManagementCount > 0 && hasManagementConflictingStatus && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-                  لا يمكن اعتماد دفعة الإرسال من الإدارة لأن بعض دفعات التسعير التابعة لها في مرحلة مختلفة. حدّث الصفحة وراجع الحالة.
+                  {t.workflow.purchase.mixedBatchManagement}
                 </div>
               )}
 
               {!pendingCount && sub.custodyBalance && (isAccountant || isManagementViewer) && (
                 <div className="rounded-lg border bg-muted/30 p-3 text-sm">
-                  <span className="text-muted-foreground">إجمالي رصيد العهد التي على المندوب: </span>
-                  <strong>{Number(sub.custodyBalance).toLocaleString("ar-SA")} ر.س</strong>
+                  <span className="text-muted-foreground">{t.workflow.purchase.custodyBalanceColon} </span>
+                  <strong>{Number(sub.custodyBalance).toLocaleString(locale)} {currency}</strong>
                 </div>
               )}
 
@@ -1124,7 +1156,7 @@ function PackageSubmissions({
                           {b.poNumber}
                         </span>
                         <span className="text-xs text-muted-foreground">
-                          {b.itemCount} صنف · {Number(b.totalEstimatedCost || 0).toLocaleString("ar-SA")} ر.س
+                          {b.itemCount} {t.workflow.purchase.itemCountUnit} · {Number(b.totalEstimatedCost || 0).toLocaleString(locale)} {currency}
                         </span>
                       </div>
                       <Badge
@@ -1135,9 +1167,9 @@ function PackageSubmissions({
                           "bg-orange-100 text-orange-700"
                         }
                       >
-                        {b.status === "pending_accounting" ? "بانتظار الحسابات" :
-                         b.status === "pending_management" ? "بانتظار الإدارة" :
-                         b.status === "approved" ? "معتمدة" : "مرفوضة"}
+                        {b.status === "pending_accounting" ? t.workflow.purchase.statusPendingAccounting :
+                         b.status === "pending_management" ? t.workflow.purchase.statusPendingManagement :
+                         b.status === "approved" ? t.workflow.purchase.statusApprovedShort : t.workflow.purchase.statusRejectedShort}
                       </Badge>
                     </div>
 
@@ -1164,10 +1196,10 @@ function PackageSubmissions({
                             >
                               <div className="flex items-center justify-between gap-3">
                                 <div className="min-w-0">
-                                  <div className="text-xs font-medium truncate">{item.itemName || item.description || `صنف #${item.id}`}</div>
+                                  <div className="text-xs font-medium truncate">{displayItemName(item)}</div>
                                   <div className="text-[11px] text-muted-foreground">
-                                    {item.quantity} {item.unit || ""}
-                                    {item.estimatedTotalCost ? ` · ${Number(item.estimatedTotalCost).toLocaleString("ar-SA")} ر.س` : ""}
+                                    {item.quantity} {displayUnit(item.unit)}
+                                    {item.estimatedTotalCost ? ` · ${Number(item.estimatedTotalCost).toLocaleString(locale)} ${currency}` : ""}
                                   </div>
                                 </div>
                                 {isMarkedForManagementRejection ? (
@@ -1183,7 +1215,7 @@ function PackageSubmissions({
                                       })
                                     }
                                   >
-                                    إلغاء الرفض
+                                    {t.workflow.purchase.undoRejection}
                                   </Button>
                                 ) : (canRejectAccountingItem || canRejectManagementItem) && (
                                   <Button
@@ -1201,21 +1233,21 @@ function PackageSubmissions({
                                       }
                                       setRejectItemDialog({
                                         itemId: item.id,
-                                        itemName: item.itemName || item.description || `صنف #${item.id}`,
+                                        itemName: displayItemName(item) || displayItemDescription(item) || t.workflow.purchase.itemFallback.replace("{id}", String(item.id)),
                                         mode: "accounting",
                                       });
                                       setRejectItemReason("");
                                     }}
                                   >
                                     <XCircle className="w-3.5 h-3.5" />
-                                    رفض الصنف
+                                    {t.workflow.purchase.rejectItemTitle}
                                   </Button>
                                 )}
                               </div>
 
                               {isEditingManagementRejection && canRejectManagementItem && (
                                 <div className="rounded-md border border-red-200 bg-red-50/60 p-3 space-y-2">
-                                  <Label className="text-xs font-medium text-red-700">سبب رفض هذا الصنف *</Label>
+                                  <Label className="text-xs font-medium text-red-700">{t.workflow.purchase.itemRejectReasonRequired}</Label>
                                   <Textarea
                                     value={managementRejectEditor.reason}
                                     onChange={(e) =>
@@ -1225,14 +1257,14 @@ function PackageSubmissions({
                                           : current
                                       )
                                     }
-                                    placeholder="اكتب سبب رفض هذا الصنف..."
+                                    placeholder={t.workflow.purchase.writeRejectReason}
                                     rows={2}
                                     className="resize-none bg-background"
                                     autoFocus
                                   />
                                   <div className="flex items-center justify-between gap-2 flex-wrap">
                                     <p className={`text-[11px] ${managementRejectEditor.reason.trim().length < REJECT_ITEM_MIN_LENGTH ? "text-red-600" : "text-emerald-600"}`}>
-                                      {managementRejectEditor.reason.trim().length}/{REJECT_ITEM_MIN_LENGTH} حرفًا على الأقل
+                                      {managementRejectEditor.reason.trim().length}/{REJECT_ITEM_MIN_LENGTH} {t.workflow.purchase.minimumChars}
                                     </p>
                                     <div className="flex items-center gap-2">
                                       <Button
@@ -1241,7 +1273,7 @@ function PackageSubmissions({
                                         className="h-8"
                                         onClick={() => setManagementRejectEditor(null)}
                                       >
-                                        إلغاء
+                                        {t.workflow.purchase.cancel}
                                       </Button>
                                       <Button
                                         size="sm"
@@ -1256,11 +1288,11 @@ function PackageSubmissions({
                                             [item.id]: { submissionId: sub.id, reason },
                                           }));
                                           setManagementRejectEditor(null);
-                                          toast.info("تم تحديد الصنف للرفض عند اعتماد الدفعة");
+                                          toast.info(t.workflow.purchase.markedForReject);
                                         }}
                                       >
                                         <XCircle className="w-3.5 h-3.5" />
-                                        تحديد الصنف للرفض
+                                        {t.workflow.purchase.markForReject}
                                       </Button>
                                     </div>
                                   </div>
@@ -1293,7 +1325,7 @@ function PackageSubmissions({
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-red-700">
               <XCircle className="w-5 h-5" />
-              رفض الصنف
+              {t.workflow.purchase.rejectItemTitle}
             </DialogTitle>
           </DialogHeader>
           {rejectItemDialog && (
@@ -1303,28 +1335,28 @@ function PackageSubmissions({
               </div>
               {rejectItemDialog.mode === "management" && (
                 <p className="text-xs text-muted-foreground">
-                  سيتم تطبيق رفض هذا الصنف عند اعتماد دفعة الإرسال من الإدارة، ضمن نفس العملية الواحدة.
+                  {t.workflow.purchase.rejectAppliedAtManagement}
                 </p>
               )}
               <div className="space-y-1.5">
-                <Label className="text-xs font-medium">سبب الرفض *</Label>
+                <Label className="text-xs font-medium">{t.workflow.purchase.rejectReasonLabel}</Label>
                 <Textarea
                   value={rejectItemReason}
                   onChange={(e) => setRejectItemReason(e.target.value)}
-                  placeholder="اكتب سبب رفض هذا الصنف..."
+                  placeholder={t.workflow.purchase.writeRejectReason}
                   rows={4}
                   className="resize-none"
                   autoFocus
                 />
                 <p className={`text-[11px] ${rejectItemReason.trim().length < REJECT_ITEM_MIN_LENGTH ? "text-red-600" : "text-emerald-600"}`}>
-                  {rejectItemReason.trim().length}/{REJECT_ITEM_MIN_LENGTH} حرفًا على الأقل
+                  {rejectItemReason.trim().length}/{REJECT_ITEM_MIN_LENGTH} {t.workflow.purchase.minimumChars}
                 </p>
               </div>
             </div>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => { setRejectItemDialog(null); setRejectItemReason(""); }}>
-              إلغاء
+              {t.workflow.purchase.cancel}
             </Button>
             <Button
               variant="destructive"
@@ -1347,7 +1379,7 @@ function PackageSubmissions({
                   }));
                   setRejectItemDialog(null);
                   setRejectItemReason("");
-                  toast.info("تم تحديد الصنف للرفض عند اعتماد الدفعة");
+                  toast.info(t.workflow.purchase.markedForReject);
                   return;
                 }
                 rejectAccountingItemMut.mutate({
@@ -1359,7 +1391,7 @@ function PackageSubmissions({
               {rejectItemDialog?.mode === "accounting" && rejectAccountingItemMut.isPending
                 ? <Loader2 className="w-4 h-4 animate-spin" />
                 : <XCircle className="w-4 h-4" />}
-              {rejectItemDialog?.mode === "management" ? "تحديد الصنف للرفض" : "تأكيد رفض الصنف"}
+              {rejectItemDialog?.mode === "management" ? t.workflow.purchase.markForReject : t.workflow.purchase.confirmRejectMark}
             </Button>
           </DialogFooter>
         </DialogContent>

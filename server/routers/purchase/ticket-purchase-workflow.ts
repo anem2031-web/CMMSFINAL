@@ -11,6 +11,7 @@ export const PATH_B_TICKET_PURCHASE_CREATOR_ROLES = new Set<string>([
   APP_ROLE.MAINTENANCE_MANAGER,
   APP_ROLE.GENERAL_MAINTENANCE_MANAGER,
   APP_ROLE.CONSTRUCTION_PROCUREMENT_MANAGER,
+  APP_ROLE.IT_MANAGER,
   APP_ROLE.ADMIN,
   APP_ROLE.OWNER,
 ]);
@@ -63,7 +64,7 @@ export async function assertCanCreateTicketLinkedPurchaseOrder(
   if (!PATH_B_TICKET_PURCHASE_CREATOR_ROLES.has(user.role)) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "إنشاء طلب شراء مرتبط ببلاغ متاح فقط لمديري الصيانة ومدير الإنشاءات والمشتريات والإدارة والمالك",
+      message: "إنشاء طلب شراء مرتبط ببلاغ متاح فقط لمسؤول المسار المخول لهذا البلاغ",
     });
   }
 

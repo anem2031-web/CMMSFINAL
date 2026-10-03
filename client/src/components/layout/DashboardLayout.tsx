@@ -75,10 +75,10 @@ const NAV_SECTIONS: NavSection[] = [
       { icon: Nfc,           labelKey: "nav.scanAsset",    path: "/scan-asset",
         roles: ["operator","technician","maintenance_manager","general_maintenance_manager","supervisor","gate_security","owner","admin"] },
       { icon: ClipboardList, labelKey: "nav.tickets",      path: "/tickets",
-        roles: ["operator","technician","maintenance_manager","general_maintenance_manager","construction_procurement_manager","supervisor","gate_security","delegate","senior_management","executive_director","owner","admin"] },
+        roles: ["operator","technician","it_manager","maintenance_manager","general_maintenance_manager","construction_procurement_manager","supervisor","gate_security","delegate","senior_management","executive_director","owner","admin"] },
       // صندوق البلاغات — يبقى محجوبًا عن مدير الإنشاءات والمشتريات
       { icon: Inbox,         labelKey: "nav.ticketsInbox", path: "/tickets/inbox",
-        roles: ["operator","technician","maintenance_manager","general_maintenance_manager","supervisor","gate_security","delegate","senior_management","executive_director","owner","admin"] },
+        roles: ["operator","technician","it_manager","maintenance_manager","general_maintenance_manager","supervisor","gate_security","delegate","senior_management","executive_director","owner","admin"] },
       { icon: Lightbulb,     labelKey: "nav.improvementIdeas", path: "/improvement-ideas" },
       { icon: ScanSearch,    labelKey: "nav.triage",       path: "/triage",
         roles: ["maintenance_manager","general_maintenance_manager","owner","admin"] },
@@ -99,14 +99,32 @@ const NAV_SECTIONS: NavSection[] = [
         roles: ["maintenance_manager","general_maintenance_manager","construction_procurement_manager","owner","admin"] },
     ],
   },
-  // 3. اللوجستيات والشراء
+  // 3. الصيانة المجدولة — PM V2 مستقلة عن Legacy PM
+  {
+    id: "scheduled-maintenance",
+    labelKey: "nav.sections.scheduledMaintenance",
+    icon: CalendarClock,
+    roles: ["technician","it_manager","warehouse","maintenance_manager","general_maintenance_manager","owner","admin"],
+    items: [
+      { icon: ClipboardList, labelKey: "nav.pmv2MyTasks", path: "/scheduled-maintenance/my-tasks",
+        roles: ["technician","it_manager"] },
+      { icon: Warehouse, labelKey: "nav.pmv2WarehouseRequests", path: "/scheduled-maintenance/warehouse-requests",
+        roles: ["warehouse","owner","admin"] },
+      { icon: FileText, labelKey: "nav.pmv2MaintenanceReports", path: "/scheduled-maintenance/reports",
+        roles: ["maintenance_manager","general_maintenance_manager","owner","admin"] },
+      { icon: CalendarClock, labelKey: "nav.scheduledMaintenance", path: "/scheduled-maintenance",
+        roles: ["maintenance_manager","general_maintenance_manager","owner","admin"] },
+    ],
+  },
+  // 4. اللوجستيات والشراء
   {
     id: "logistics",
     labelKey: "nav.sections.logistics",
     icon: ShoppingCart,
-    roles: ["delegate","warehouse","accountant","senior_management","executive_director","maintenance_manager","general_maintenance_manager","construction_procurement_manager","purchase_requester","food_warehouse_manager","food_warehouse_assistant","owner","admin"],
+    roles: ["delegate","warehouse","accountant","senior_management","executive_director","maintenance_manager","general_maintenance_manager","construction_procurement_manager","it_manager","purchase_requester","food_warehouse_manager","food_warehouse_assistant","owner","admin"],
     items: [
-      { icon: ShoppingCart, labelKey: "nav.purchaseOrders", path: "/purchase-orders" },
+      { icon: ShoppingCart, labelKey: "nav.purchaseOrders", path: "/purchase-orders",
+        roles: ["delegate","warehouse","accountant","senior_management","executive_director","maintenance_manager","general_maintenance_manager","construction_procurement_manager","it_manager","purchase_requester","food_warehouse_manager","food_warehouse_assistant","owner","admin"] },
       { icon: ShoppingBag,  labelKey: "nav.myItems",        path: "/my-items",
         roles: ["delegate","owner","admin"] },
       { icon: Package,      labelKey: "nav.inventory",      path: "/inventory",
@@ -127,6 +145,8 @@ const NAV_SECTIONS: NavSection[] = [
       { icon: Warehouse,      labelKey: "nav.warehouses",         path: "/warehouses",
         roles: ["warehouse","owner","admin"] },
       { icon: ArrowLeftRight, labelKey: "nav.warehouseTransfer",  path: "/warehouse/transfer",
+        roles: ["warehouse","owner","admin"] },
+      { icon: Truck,        labelKey: "nav.warehouseIssue", path: "/warehouse/issue",
         roles: ["warehouse","owner","admin"] },
       { icon: Truck,        labelKey: "nav.purchaseCycle",  path: "/purchase-cycle",
         roles: ["delegate","warehouse","owner","admin"] },
@@ -262,13 +282,28 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
     return saved ? parseInt(saved, 10) : DEFAULT_WIDTH;
   });
-  const { loading, user } = useAuth();
+  const { loading, user, error, refresh } = useAuth();
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_WIDTH_KEY, sidebarWidth.toString());
   }, [sidebarWidth]);
 
   if (loading) return <DashboardLayoutSkeleton />;
+  if (error && !user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6" dir="rtl">
+        <div className="w-full max-w-md rounded-lg border bg-background p-6 text-center shadow-sm">
+          <h1 className="text-lg font-semibold">تعذر التحقق من الجلسة مؤقتًا</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            لم يتم تسجيل خروجك. حاول إعادة الاتصال بالخادم.
+          </p>
+          <Button className="mt-4" onClick={() => void refresh()}>
+            إعادة المحاولة
+          </Button>
+        </div>
+      </div>
+    );
+  }
   if (!user) return <Login />;
 
   return (
@@ -523,9 +558,13 @@ function DashboardLayoutContent({ children, setSidebarWidth }: { children: React
   const canAccessCurrentPath = canRoleAccessPath(role, location);
   useEffect(() => {
     if (canAccessCurrentPath) return;
-    const fallback = role === "construction_procurement_manager" ? "/tickets?tab=construction" : "/tickets";
+    const fallback = role === "technician" && location.startsWith("/scheduled-maintenance")
+      ? "/scheduled-maintenance/my-tasks"
+      : role === "warehouse" && location.startsWith("/scheduled-maintenance")
+        ? "/scheduled-maintenance/warehouse-requests"
+        : role === "construction_procurement_manager" ? "/tickets?tab=construction" : "/tickets";
     setLocation(fallback);
-  }, [canAccessCurrentPath, role, setLocation]);
+  }, [canAccessCurrentPath, location, role, setLocation]);
 
   // ── Build visible sections with translated labels ──
   const visibleSections = useMemo(() => {
@@ -535,7 +574,7 @@ function DashboardLayoutContent({ children, setSidebarWidth }: { children: React
         ...s,
         label: getNestedValue(t, s.labelKey),
         items: s.items
-          .filter(item => canSeeItem(item, role))
+          .filter(item => canSeeItem(item, role) && canRoleAccessPath(role, item.path))
           .map(item => ({ ...item, label: getNestedValue(t, item.labelKey) })),
       }))
       .filter(s => s.items.length > 0);

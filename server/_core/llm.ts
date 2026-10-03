@@ -56,6 +56,8 @@ export type ToolChoice =
   | ToolChoiceExplicit;
 
 export type InvokeParams = {
+  /** End-to-end deadline, including model discovery, retry and response body. */
+  timeoutMs?: number;
   messages: Message[];
   tools?: Tool[];
   toolChoice?: ToolChoice;
@@ -279,11 +281,12 @@ const selectDeepSeekModel = (models: string[]): string => {
   return availableModels[0];
 };
 
-const fetchAvailableDeepSeekModel = async (): Promise<string> => {
+const fetchAvailableDeepSeekModel = async (signal?: AbortSignal): Promise<string> => {
   assertApiKey();
 
   const response = await fetch(resolveModelsUrl(), {
     method: "GET",
+    signal,
     headers: {
       authorization: `Bearer ${ENV.deepSeekApiKey}`,
     },
@@ -307,7 +310,8 @@ const fetchAvailableDeepSeekModel = async (): Promise<string> => {
 };
 
 const resolveDeepSeekModel = async (
-  forceRefresh = false
+  forceRefresh = false,
+  signal?: AbortSignal,
 ): Promise<string> => {
   const now = Date.now();
 
@@ -319,20 +323,23 @@ const resolveDeepSeekModel = async (
     return cachedDeepSeekModel;
   }
 
-  if (modelResolutionPromise) {
+  // Timed callers own their discovery request: cancelling one must not abort
+  // another caller or wait on an older, unbounded shared discovery.
+  if (!signal && modelResolutionPromise) {
     return modelResolutionPromise;
   }
 
   const previousModel = cachedDeepSeekModel;
 
-  modelResolutionPromise = (async () => {
+  const resolveModel = async () => {
     try {
-      const selectedModel = await fetchAvailableDeepSeekModel();
+      const selectedModel = await fetchAvailableDeepSeekModel(signal);
       cachedDeepSeekModel = selectedModel;
       cachedDeepSeekModelExpiresAt = Date.now() + MODEL_CACHE_TTL_MS;
       console.info(`[DeepSeek] Selected model: ${selectedModel}`);
       return selectedModel;
     } catch (error) {
+      if (signal?.aborted) throw signal.reason;
       const fallbackModel = previousModel ?? FALLBACK_DEEPSEEK_MODEL;
       cachedDeepSeekModel = fallbackModel;
       cachedDeepSeekModelExpiresAt = Date.now() + MODEL_RETRY_CACHE_TTL_MS;
@@ -342,8 +349,10 @@ const resolveDeepSeekModel = async (
       );
       return fallbackModel;
     }
-  })();
+  };
 
+  if (signal) return resolveModel();
+  modelResolutionPromise = resolveModel();
   try {
     return await modelResolutionPromise;
   } finally {
@@ -361,10 +370,12 @@ const isModelSelectionError = (status: number, errorText: string): boolean => {
 
 const sendDeepSeekRequest = async (
   payload: Record<string, unknown>,
-  allowModelRefresh = true
+  allowModelRefresh = true,
+  signal?: AbortSignal,
 ): Promise<InvokeResult> => {
   const response = await fetch(resolveApiUrl(), {
     method: "POST",
+    signal,
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${ENV.deepSeekApiKey}`,
@@ -386,11 +397,12 @@ const sendDeepSeekRequest = async (
     cachedDeepSeekModel = null;
     cachedDeepSeekModelExpiresAt = 0;
 
-    const refreshedModel = await resolveDeepSeekModel(true);
+    const refreshedModel = await resolveDeepSeekModel(true, signal);
     if (refreshedModel !== previousModel) {
       return sendDeepSeekRequest(
         { ...payload, model: refreshedModel },
-        false
+        false,
+        signal,
       );
     }
   }
@@ -445,7 +457,7 @@ const normalizeResponseFormat = ({
   };
 };
 
-export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
+async function invokeLLMRequest(params: InvokeParams, signal?: AbortSignal): Promise<InvokeResult> {
   assertApiKey();
 
   const {
@@ -460,7 +472,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   } = params;
 
   const payload: Record<string, unknown> = {
-    model: await resolveDeepSeekModel(),
+    model: await resolveDeepSeekModel(false, signal),
     messages: messages.map(normalizeMessage),
   };
 
@@ -489,5 +501,25 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.response_format = normalizedResponseFormat;
   }
 
-  return sendDeepSeekRequest(payload);
+  signal?.throwIfAborted();
+  return sendDeepSeekRequest(payload, true, signal);
+}
+
+export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
+  if (params.timeoutMs === undefined) return invokeLLMRequest(params);
+  const timeoutMs = params.timeoutMs;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("timeoutMs must be a positive finite number");
+  }
+  const controller = new AbortController();
+  const timeoutError = new Error(`LLM request timed out after ${timeoutMs}ms`);
+  const timer = setTimeout(() => controller.abort(timeoutError), timeoutMs);
+  try {
+    return await invokeLLMRequest(params, controller.signal);
+  } catch (error) {
+    if (controller.signal.aborted) throw timeoutError;
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }

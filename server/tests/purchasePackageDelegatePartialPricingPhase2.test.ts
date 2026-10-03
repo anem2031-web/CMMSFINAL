@@ -33,10 +33,13 @@ describe("Purchase Packages — partial delegate pricing remains actionable", ()
     expect(purchaseBatchDetail).toContain("if (isDelegatePricingActionView && displayItems.length === 0) return null");
   });
 
-  it("يفتح PR المعتمد من بانتظار إجرائي في سياق الشراء ويعرض أصناف الشراء فقط", () => {
-    expect(purchaseOrdersPage).toContain('? "?action=purchase" : ""');
-    expect(purchaseOrderDetail).toContain('new URLSearchParams(window.location.search).get("action") === "purchase"');
+  it("يفتح PR من بانتظار إجرائي في سياق إجراء المندوب الصحيح", () => {
+    expect(purchaseOrdersPage).toContain('it.actionMode === "purchase"');
+    expect(purchaseOrdersPage).toContain('"?action=estimate"');
+    expect(purchaseOrderDetail).toContain('delegateActionView === "purchase"');
+    expect(purchaseOrderDetail).toContain('delegateActionView === "estimate"');
     expect(purchaseOrderDetail).toContain('["approved", "funded"].includes(item.status)');
+    expect(purchaseOrderDetail).toContain('["pending", "estimated"].includes(item.status)');
   });
 
   it("لا يظهر زر إرسال الحسابات داخل PR تابع لحزمة", () => {

@@ -9,6 +9,7 @@ import {
 } from "../../services/catalog/catalogExport.service";
 import { parseCatalogImportFile, commitCatalogImport } from "../../services/catalog/catalogImport.service";
 import { validateCatalogImport }                       from "../../services/catalog/catalogValidation.service";
+import { catalogAuditRequestMeta } from "../../_core/catalog-audit";
 
 export const catalogImportExportRouter = router({
 
@@ -66,7 +67,7 @@ export const catalogImportExportRouter = router({
 
   importCommit: catalogAdminProcedure
     .input(z.object({ parsed: z.any() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
 
       const db         = await getDb();   // ← await
       const validation = await validateCatalogImport(db, input.parsed);
@@ -77,6 +78,9 @@ export const catalogImportExportRouter = router({
         );
       }
 
-      return await commitCatalogImport(db, input.parsed);
+      return await commitCatalogImport(db, input.parsed, {
+        userId: ctx.user.id,
+        ...catalogAuditRequestMeta(ctx),
+      });
     }),
 });

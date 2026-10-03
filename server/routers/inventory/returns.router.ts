@@ -106,13 +106,13 @@ export const returnsRouter = router({
       return result;
     }),
 
-  // 2B-8 — QR الدفعة هو مصدر الحقيقة لمرتجع المورد. لا نطلب من المستخدم
+  // 2B-8 — هوية الدفعة هي مصدر الحقيقة لمرتجع المورد. يمكن مسح QR أو إدخال رقم اللوت، ولا نطلب من المستخدم
   // اختيار الصنف/المورد/الفاتورة عندما يكون نظام Lots مفعلاً؛ الخادم يحلها
   // من trackingToken ويمنع Opening Balance Lots من مسار مرتجع المورد.
   resolveReturnLot: warehouseProcedure
     .input(z.object({
       warehouseId: z.number().int().positive("المستودع مطلوب"),
-      trackingToken: z.string().trim().min(1, "QR الدفعة مطلوب"),
+      trackingToken: z.string().trim().min(1, "QR الدفعة أو رقم اللوت مطلوب"),
     }))
     .mutation(async ({ input }) => {
       if (!isInventoryLotsEnabled()) {
@@ -185,7 +185,7 @@ export const returnsRouter = router({
           },
         };
       } catch (error: any) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "QR الدفعة غير صالح لمرتجع المورد" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "QR الدفعة أو رقم اللوت غير صالح لمرتجع المورد" });
       }
     }),
 
@@ -211,7 +211,7 @@ export const returnsRouter = router({
       if (isInventoryLotsEnabled()) {
         const trackingToken = String(input.lotTrackingToken || "").trim();
         if (!trackingToken) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "يجب مسح QR الدفعة قبل تأكيد مرتجع المورد" });
+          throw new TRPCError({ code: "BAD_REQUEST", message: "يجب مسح QR الدفعة أو إدخال رقم اللوت قبل تأكيد مرتجع المورد" });
         }
         if (!input.warehouseId) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "يجب اختيار المستودع قبل تأكيد مرتجع المورد" });

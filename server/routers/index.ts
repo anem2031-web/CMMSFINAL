@@ -55,6 +55,7 @@ import { maintenanceReportsRouter } from "./reports/maintenance-reports.router";
 // الموجودتين فعلياً وبشكل صحيح في reportsRouter أعلاه. راجع docs/CHANGELOG_TECHNICAL.md
 // (بند 2026-07-21) لتفاصيل هذا الاكتشاف والإصلاح الكامل.
 import { inventoryReportsRouter } from "./reports/inventory-reports.router";
+import { warehouseIssueBatchesRouter } from "./inventory/warehouse-issue-batches.router";
 
 import { aiRouter } from "./ai/ai.router";
 import { imageRouter } from "./ai/image.router";
@@ -70,6 +71,7 @@ import { catalogRouter } from "./catalog/catalog.router";
 import { improvementIdeasRouter } from "./improvement-ideas/improvement-ideas.router";
 import { constructionRouter } from "./construction/index";
 import { externalMaintenanceRouter } from "./external-maintenance/external-maintenance.router";
+import { pmv2Router } from "./pmv2";
 
 export const appRouter = router({
   system: systemRouter,
@@ -106,6 +108,7 @@ purchaseOrders: router({
   warehouseReturns: returnsRouter,
   stock: stockRouter,
   warehouse: warehouseRouter,
+  warehouseIssueBatches: warehouseIssueBatchesRouter,
   transfers: transfersRouter,
   disposal: disposalRouter,
   inventoryReconciliation: reconciliationRouter,
@@ -150,6 +153,9 @@ purchaseOrders: router({
   construction: constructionRouter,
 
   externalMaintenance: externalMaintenanceRouter,
+
+  // PM V2 bounded-module namespace — additive registration only.
+  pmv2: pmv2Router,
 });
 
 export type AppRouter = typeof appRouter;

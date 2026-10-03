@@ -1,4 +1,5 @@
 import { mediaUrl } from "@/lib/mediaUrl";
+import { activeUiLanguage, purchaseOpsText } from "@/i18n/purchaseOpsUi";
 
 type ExternalDocumentType = "exit" | "return" | "handover";
 
@@ -10,10 +11,10 @@ function esc(value: unknown): string {
     .replaceAll('"', "&quot;");
 }
 
-function fmt(value: unknown): string {
+function fmt(value: unknown, locale: string): string {
   if (!value) return "—";
   const date = new Date(String(value));
-  return Number.isNaN(date.getTime()) ? esc(value) : date.toLocaleString("ar-SA");
+  return Number.isNaN(date.getTime()) ? esc(value) : date.toLocaleString(locale);
 }
 
 // يبني جدول بيانات رسمي: عمودان من أزواج (عنوان/قيمة) في كل صف — يعطي مظهر نموذج مطبوع.
@@ -48,12 +49,16 @@ function blankFieldsTable(fieldLabels: string[]): string {
 }
 
 export function printExternalMaintenanceDocument(type: ExternalDocumentType, row: any) {
+  const language = activeUiLanguage();
+  const dir = language === "en" ? "ltr" : "rtl";
+  const locale = language === "en" ? "en-US" : language === "ur" ? "ur-PK" : "ar-SA";
+  const p = (source: string, vars?: Record<string, string | number | null | undefined>) => purchaseOpsText(language, source, vars);
   const job = row.job || row;
   const title = type === "exit"
-    ? "وثيقة تسليم أصل للصيانة الخارجية / تصريح خروج"
+    ? p("وثيقة تسليم أصل للصيانة الخارجية / تصريح خروج")
     : type === "return"
-      ? "وثيقة استلام أصل عائد من الصيانة الخارجية"
-      : "وثيقة تسليم أصل لإعادة التركيب";
+      ? p("وثيقة استلام أصل عائد من الصيانة الخارجية")
+      : p("وثيقة تسليم أصل لإعادة التركيب");
   const documentNumber = type === "exit"
     ? job.exitDocumentNumber
     : type === "return"
@@ -73,71 +78,71 @@ export function printExternalMaintenanceDocument(type: ExternalDocumentType, row
     // وتظهر تلقائيًا بمجرد إعادة طباعة/عرض الوثيقة بعد اعتماد الحراسة للخروج.
     const gateApproved = !!job.gateExitApprovedAt;
     const baseFields: [string, unknown][] = [
-      ["رقم البلاغ", row.ticketNumber],
-      ["اسم الأصل", assetName],
-      ["المندوب المسؤول", row.delegateName],
-      ["موظف المستودع", row.warehousePreparedByName],
-      ["تاريخ التجهيز", fmt(job.warehousePreparedAt)],
-      ["الفني المسند للبلاغ", row.assignedTechnicianName],
+      [p("رقم البلاغ"), row.ticketNumber],
+      [p("اسم الأصل"), assetName],
+      [p("المندوب المسؤول"), row.delegateName],
+      [p("موظف المستودع"), row.warehousePreparedByName],
+      [p("تاريخ التجهيز"), fmt(job.warehousePreparedAt, locale)],
+      [p("الفني المسند للبلاغ"), row.assignedTechnicianName],
     ];
     const gateFields: [string, unknown][] = gateApproved ? [
-      ["موافقة الحراسة بالنظام", row.gateExitApprovedByName],
-      ["وقت الخروج المسجل بالنظام", fmt(job.gateExitApprovedAt)],
-      ["حامل الأصل المسجل بالنظام", job.gateExitCarrierName],
+      [p("موافقة الحراسة بالنظام"), row.gateExitApprovedByName],
+      [p("وقت الخروج المسجل بالنظام"), fmt(job.gateExitApprovedAt, locale)],
+      [p("حامل الأصل المسجل بالنظام"), job.gateExitCarrierName],
     ] : [];
     mainTable = infoTable([...baseFields, ...gateFields]);
     if (!gateApproved) {
-      mainTable += `<div class="pending-note">⏳ بانتظار اعتماد الحراسة لخروج الأصل بالنظام — ستُستكمل بيانات الخروج تلقائيًا في الوثيقة بعد الاعتماد</div>`;
+      mainTable += `<div class="pending-note">⏳ ${p("بانتظار اعتماد الحراسة لخروج الأصل بالنظام — ستُستكمل بيانات الخروج تلقائيًا في الوثيقة بعد الاعتماد")}</div>`;
     }
-    extraRows = fullRow("حالة الأصل قبل الخروج", job.assetBeforeCondition) + fullRow("ملاحظات المستودع", job.warehouseNotes);
+    extraRows = fullRow(p("حالة الأصل قبل الخروج"), job.assetBeforeCondition) + fullRow(p("ملاحظات المستودع"), job.warehouseNotes);
     gateSection = `
-      <h2>قسم الحراسة عند الخروج (يُعبأ يدويًا)</h2>
+      <h2>${p("قسم الحراسة عند الخروج (يُعبأ يدويًا)")}</h2>
       ${blankFieldsTable([
-        "اسم الحارس المناوب",
-        "تاريخ ووقت الخروج الفعلي",
-        "اسم الشخص الذي أخرج الأصل",
+        p("اسم الحارس المناوب"),
+        p("تاريخ ووقت الخروج الفعلي"),
+        p("اسم الشخص الذي أخرج الأصل"),
       ])}
       <table class="info signatures">
         <tr>
-          <td class="label" style="width:32%">توقيع حامل الأصل</td><td class="blank"></td>
-          <td class="label" style="width:16%">توقيع الحارس</td><td class="blank"></td>
+          <td class="label" style="width:32%">${p("توقيع حامل الأصل")}</td><td class="blank"></td>
+          <td class="label" style="width:16%">${p("توقيع الحارس")}</td><td class="blank"></td>
         </tr>
       </table>`;
   } else if (type === "return") {
     mainTable = infoTable([
-      ["رقم البلاغ", row.ticketNumber],
-      ["اسم الأصل", assetName],
-      ["وثيقة الخروج", job.exitDocumentNumber],
-      ["تاريخ دخول الحراسة", fmt(job.gateEntryApprovedAt)],
-      ["الشخص الذي أعاد الأصل", job.gateEntryCarrierName],
-      ["تاريخ استلام المستودع", fmt(job.warehouseReceivedAt)],
-      ["الحارس الذي وافق على الدخول", row.gateEntryApprovedByName],
-      ["موظف المستودع المستلم", row.warehouseReceivedByName],
+      [p("رقم البلاغ"), row.ticketNumber],
+      [p("اسم الأصل"), assetName],
+      [p("وثيقة الخروج"), job.exitDocumentNumber],
+      [p("تاريخ دخول الحراسة"), fmt(job.gateEntryApprovedAt, locale)],
+      [p("الشخص الذي أعاد الأصل"), job.gateEntryCarrierName],
+      [p("تاريخ استلام المستودع"), fmt(job.warehouseReceivedAt, locale)],
+      [p("الحارس الذي وافق على الدخول"), row.gateEntryApprovedByName],
+      [p("موظف المستودع المستلم"), row.warehouseReceivedByName],
     ]);
-    extraRows = fullRow("حالة الأصل عند العودة", job.returnCondition) + fullRow("ملاحظات المستودع", job.warehouseReturnNotes);
+    extraRows = fullRow(p("حالة الأصل عند العودة"), job.returnCondition) + fullRow(p("ملاحظات المستودع"), job.warehouseReturnNotes);
   } else {
     mainTable = infoTable([
-      ["رقم البلاغ", row.ticketNumber],
-      ["اسم الأصل", assetName],
-      ["الفني المسند للبلاغ", row.assignedTechnicianName],
-      ["المستلم فعليًا", row.actualRecipientName],
-      ["تاريخ التسليم", fmt(job.handoverAt)],
-      ["وثيقة استلام العودة", job.returnDocumentNumber],
-      ["موظف المستودع المسلّم", row.handoverByName],
+      [p("رقم البلاغ"), row.ticketNumber],
+      [p("اسم الأصل"), assetName],
+      [p("الفني المسند للبلاغ"), row.assignedTechnicianName],
+      [p("المستلم فعليًا"), row.actualRecipientName],
+      [p("تاريخ التسليم"), fmt(job.handoverAt, locale)],
+      [p("وثيقة استلام العودة"), job.returnDocumentNumber],
+      [p("موظف المستودع المسلّم"), row.handoverByName],
     ]);
-    extraRows = fullRow("ملاحظات التسليم", job.handoverNotes);
+    extraRows = fullRow(p("ملاحظات التسليم"), job.handoverNotes);
     signatures = `
       <table class="info signatures">
         <tr>
-          <td class="label" style="width:32%">توقيع موظف المستودع</td><td class="blank"></td>
-          <td class="label" style="width:16%">توقيع المستلم</td><td class="blank"></td>
+          <td class="label" style="width:32%">${p("توقيع موظف المستودع")}</td><td class="blank"></td>
+          <td class="label" style="width:16%">${p("توقيع المستلم")}</td><td class="blank"></td>
         </tr>
       </table>`;
   }
 
   const win = window.open("", "_blank", "width=900,height=900");
   if (!win) return;
-  win.document.write(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"/>
+  win.document.write(`<!doctype html><html dir="${dir}" lang="${language}"><head><meta charset="utf-8"/>
     <title>${esc(documentNumber)}</title>
     <style>
       *{box-sizing:border-box}
@@ -146,7 +151,7 @@ export function printExternalMaintenanceDocument(type: ExternalDocumentType, row
       h1{font-size:16px;margin:0;color:#1e3a5f}
       header .sub{font-size:10.5px;color:#64748b;margin-top:2px}
       .number{font-weight:700;border:1px solid #1e3a5f;padding:4px 10px;border-radius:5px;font-size:12px;white-space:nowrap}
-      h2{color:#1e3a5f;font-size:12.5px;margin:12px 0 5px;border-right:3px solid #1e3a5f;padding-right:6px}
+      h2{color:#1e3a5f;font-size:12.5px;margin:12px 0 5px;border-inline-start:3px solid #1e3a5f;padding-inline-start:6px}
       table.info{width:100%;border-collapse:collapse;margin-bottom:8px;table-layout:fixed}
       table.info td{border:1px solid #c3ccd6;padding:4px 8px;font-size:11.5px;vertical-align:top;overflow-wrap:anywhere}
       table.info td.label{background:#eef2f7;font-weight:700;color:#1e3a5f;width:20%}
@@ -161,15 +166,15 @@ export function printExternalMaintenanceDocument(type: ExternalDocumentType, row
       @media print{@page{size:A4;margin:10mm}button{display:none}}
     </style></head><body>
     <header>
-      <div><h1>${title}</h1><div class="sub">نظام الحارس المركزي لإدارة الصيانة</div></div>
+      <div><h1>${title}</h1><div class="sub">${p("نظام الحارس المركزي لإدارة الصيانة")}</div></div>
       <div class="number">${esc(documentNumber)}</div>
     </header>
-    ${photoUrl ? `<div class="photo-wrap"><img class="photo" src="${esc(mediaUrl(photoUrl))}" alt="صورة الأصل"/></div>` : ""}
+    ${photoUrl ? `<div class="photo-wrap"><img class="photo" src="${esc(mediaUrl(photoUrl))}" alt="${p("اسم الأصل")}"/></div>` : ""}
     ${mainTable}
     ${extraRows}
     ${gateSection}
     ${signatures}
-    <footer>طُبعت الوثيقة بتاريخ ${new Date().toLocaleString("ar-SA")}. النسخة الورقية الموقعة تُعاد للمستودع وتحفظ مع سجل البلاغ.</footer>
+    <footer>${p("طُبعت الوثيقة بتاريخ {date}. النسخة الورقية الموقعة تُعاد للمستودع وتحفظ مع سجل البلاغ.", { date: new Date().toLocaleString(locale) })}</footer>
     <script>window.onload=()=>setTimeout(()=>window.print(),350)</script></body></html>`);
   win.document.close();
 }

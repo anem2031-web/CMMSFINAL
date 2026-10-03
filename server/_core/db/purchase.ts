@@ -18,6 +18,7 @@ import {
   type InsertSection, type InsertInspectionResult,
   assetCategories,
   procurementComments,
+  purchaseOrderItemHistory,
   type InsertProcurementComment,
   warehouseReceipts,
   warehouseReturns,
@@ -69,6 +70,171 @@ export async function getProcurementComments(purchaseOrderId: number) {
   return db.select().from(procurementComments)
     .where(eq(procurementComments.purchaseOrderId, purchaseOrderId))
     .orderBy(asc(procurementComments.createdAt));
+}
+
+
+export interface POItemHistoryMeta {
+  actorUserId?: number | null;
+  actorName?: string | null;
+  eventType?: string;
+  note?: string | null;
+  metadata?: Record<string, any> | null;
+}
+
+function historyJsonValue(value: any) {
+  if (value instanceof Date) return value.toISOString();
+  if (value === null || ["string", "number", "boolean"].includes(typeof value)) return value;
+  return undefined;
+}
+
+/**
+ * كتابة حدث صريح بتاريخ بند طلب الشراء. تستخدمها المسارات التي لا تمر عبر
+ * updatePOItem (مثل بعض عمليات المستودع/الصيانة الخارجية)، بينما المسارات
+ * الاعتيادية تُسجَّل تلقائيًا من دوال التحديث المركزية أدناه.
+ */
+export async function createPOItemHistoryEvent(input: {
+  purchaseOrderItemId: number;
+  purchaseOrderId: number;
+  eventType: string;
+  previousStatus?: string | null;
+  newStatus?: string | null;
+  previousDelegateId?: number | null;
+  newDelegateId?: number | null;
+  actorUserId?: number | null;
+  actorName?: string | null;
+  note?: string | null;
+  metadata?: Record<string, any> | null;
+  createdAt?: Date | string | null;
+}, tx?: any) {
+  const writer = tx || await getDb();
+  if (!writer) return null;
+  const result = await writer.insert(purchaseOrderItemHistory).values({
+    purchaseOrderItemId: input.purchaseOrderItemId,
+    purchaseOrderId: input.purchaseOrderId,
+    eventType: input.eventType,
+    previousStatus: input.previousStatus ?? null,
+    newStatus: input.newStatus ?? null,
+    previousDelegateId: input.previousDelegateId ?? null,
+    newDelegateId: input.newDelegateId ?? null,
+    actorUserId: input.actorUserId ?? null,
+    actorName: input.actorName ?? null,
+    note: input.note ?? null,
+    metadata: input.metadata ?? null,
+    ...(input.createdAt ? { createdAt: input.createdAt as any } : {}),
+  } as any);
+  return result?.[0]?.insertId ?? null;
+}
+
+async function readPOItemHistorySnapshot(writer: any, id: number) {
+  const rows = await writer
+    .select({
+      id: purchaseOrderItems.id,
+      purchaseOrderId: purchaseOrderItems.purchaseOrderId,
+      status: purchaseOrderItems.status,
+      delegateId: purchaseOrderItems.delegateId,
+      batchId: purchaseOrderItems.batchId,
+      delegateChangeRequestedAt: purchaseOrderItems.delegateChangeRequestedAt,
+      estimatedUnitCost: purchaseOrderItems.estimatedUnitCost,
+      actualUnitCost: purchaseOrderItems.actualUnitCost,
+      supplierName: purchaseOrderItems.supplierName,
+      returnedQuantity: purchaseOrderItems.returnedQuantity,
+      returnedAt: purchaseOrderItems.returnedAt,
+    })
+    .from(purchaseOrderItems)
+    .where(eq(purchaseOrderItems.id, id))
+    .limit(1);
+  return rows[0] || null;
+}
+
+function inferPOItemHistoryActor(data: any, meta?: POItemHistoryMeta) {
+  if (meta?.actorUserId != null) return meta.actorUserId;
+  for (const key of [
+    "purchasedById",
+    "receivedById",
+    "deliveredById",
+    "purchaseCancelledById",
+    "itemRevisionRequestedById",
+    "estimatedById",
+  ]) {
+    if (data?.[key] != null) return Number(data[key]);
+  }
+  return null;
+}
+
+async function recordPOItemMutationHistory(
+  writer: any,
+  before: any,
+  data: any,
+  meta?: POItemHistoryMeta,
+) {
+  if (!before) return;
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(data || {}, key);
+  const nextStatus = has("status") ? data.status : before.status;
+  const nextDelegateId = has("delegateId") ? data.delegateId : before.delegateId;
+  const nextBatchId = has("batchId") ? data.batchId : before.batchId;
+
+  const statusChanged = has("status") && nextStatus !== before.status;
+  const delegateChanged = has("delegateId") && nextDelegateId !== before.delegateId;
+  const batchChanged = has("batchId") && nextBatchId !== before.batchId;
+  const delegateChangeRequested = has("delegateChangeRequestedAt") && !!data.delegateChangeRequestedAt;
+  const returned = has("returnedAt") || has("returnedQuantity") || has("returnReason");
+  const estimateChanged = has("estimatedUnitCost") || has("estimatedTotalCost");
+  const purchaseDetailsChanged = has("actualUnitCost") || has("actualTotalCost") || has("supplierName") || has("supplierInvoiceNumber");
+  const receiptChanged = has("receivedAt") || has("receivedQuantity");
+  const deliveryChanged = has("deliveredAt") || has("deliveredQuantity");
+
+  if (!(statusChanged || delegateChanged || batchChanged || delegateChangeRequested || returned || estimateChanged || purchaseDetailsChanged || receiptChanged || deliveryChanged || meta?.eventType)) {
+    return;
+  }
+
+  let eventType = meta?.eventType;
+  if (!eventType) {
+    if (delegateChangeRequested) eventType = "delegate_change_requested";
+    else if (statusChanged) eventType = "status_changed";
+    else if (delegateChanged) eventType = "delegate_changed";
+    else if (batchChanged) eventType = "pricing_batch_changed";
+    else if (returned) eventType = "returned";
+    else if (receiptChanged) eventType = "warehouse_received";
+    else if (deliveryChanged) eventType = "delivered";
+    else if (purchaseDetailsChanged) eventType = "purchase_details_updated";
+    else if (estimateChanged) eventType = "estimate_updated";
+    else eventType = "item_updated";
+  }
+
+  const changedFields: Record<string, any> = {};
+  for (const key of [
+    "batchId", "estimatedUnitCost", "estimatedTotalCost", "actualUnitCost", "actualTotalCost",
+    "supplierName", "supplierInvoiceNumber", "receivedAt", "receivedQuantity", "deliveredAt",
+    "deliveredQuantity", "returnedAt", "returnedQuantity", "returnReason", "delegateChangeRequestedAt",
+  ]) {
+    if (!has(key)) continue;
+    const normalized = historyJsonValue(data[key]);
+    if (normalized !== undefined) changedFields[key] = normalized;
+  }
+
+  try {
+    await writer.insert(purchaseOrderItemHistory).values({
+      purchaseOrderItemId: before.id,
+      purchaseOrderId: before.purchaseOrderId,
+      eventType,
+      previousStatus: before.status ?? null,
+      newStatus: nextStatus ?? null,
+      previousDelegateId: before.delegateId ?? null,
+      newDelegateId: nextDelegateId ?? null,
+      actorUserId: inferPOItemHistoryActor(data, meta),
+      actorName: meta?.actorName ?? null,
+      note: meta?.note ?? null,
+      metadata: {
+        ...(meta?.metadata || {}),
+        ...(Object.keys(changedFields).length ? { changedFields } : {}),
+        ...(batchChanged ? { previousBatchId: before.batchId ?? null, newBatchId: nextBatchId ?? null } : {}),
+      },
+    } as any);
+  } catch (error) {
+    // سجل المتابعة ثانوي ولا يجوز أن يحول نجاح حركة شراء إلى فشل جزئي إذا
+    // لم تُطبّق migration بعد أو حدث عطل مؤقت في جدول التاريخ.
+    console.error("[PO_ITEM_HISTORY] failed to record mutation", { itemId: before.id, eventType, error });
+  }
 }
 
 export async function getUsersByRole(role: string) {
@@ -482,10 +648,340 @@ export async function getPOItemsByDelegate(delegateId: number) {
   return db.select().from(purchaseOrderItems).where(eq(purchaseOrderItems.delegateId, delegateId)).orderBy(desc(purchaseOrderItems.createdAt));
 }
 
-export async function updatePOItem(id: number, data: any, tx?: any) {
+
+/** جميع أصناف طلبات الشراء التي أنشأها مستخدم معيّن، لواجهة «متابعة أصنافي». */
+export async function getPOItemsRequestedBy(requestedById: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const delegateUser = alias(users, "requestedItemDelegate");
+  return db
+    .select({
+      ...getTableColumns(purchaseOrderItems),
+      purchaseOrderNumber: purchaseOrders.poNumber,
+      purchaseOrderStatus: purchaseOrders.status,
+      purchaseOrderCreatedAt: purchaseOrders.createdAt,
+      purchaseOrderSubmittedAt: purchaseOrders.submittedAt,
+      delegateName: delegateUser.name,
+    })
+    .from(purchaseOrderItems)
+    .innerJoin(purchaseOrders, eq(purchaseOrderItems.purchaseOrderId, purchaseOrders.id))
+    .leftJoin(delegateUser, eq(purchaseOrderItems.delegateId, delegateUser.id))
+    .where(and(
+      eq(purchaseOrders.requestedById, requestedById),
+      ne(purchaseOrders.status, "draft" as any),
+    ))
+    .orderBy(desc(purchaseOrderItems.updatedAt), desc(purchaseOrderItems.id));
+}
+
+/**
+ * تاريخ بند واحد بالهوية الثابتة، لا بالاسم. يجمع السجل الموحد الجديد مع
+ * المصادر التاريخية القائمة قبل إضافة الجدول (comments / audit / timestamps /
+ * pricing batch / warehouse receipt) حتى لا يبدأ الـTimeline من يوم التحديث فقط.
+ */
+export async function getPOItemTimeline(itemId: number) {
+  const db = await getDb();
+  if (!db) return null;
+
+  const delegateUser = alias(users, "timelineDelegate");
+  const requesterUser = alias(users, "timelineRequester");
+  const itemRows = await db
+    .select({
+      ...getTableColumns(purchaseOrderItems),
+      purchaseOrderNumber: purchaseOrders.poNumber,
+      purchaseOrderStatus: purchaseOrders.status,
+      requestedById: purchaseOrders.requestedById,
+      requestedByName: requesterUser.name,
+      delegateName: delegateUser.name,
+    })
+    .from(purchaseOrderItems)
+    .innerJoin(purchaseOrders, eq(purchaseOrderItems.purchaseOrderId, purchaseOrders.id))
+    .leftJoin(delegateUser, eq(purchaseOrderItems.delegateId, delegateUser.id))
+    .leftJoin(requesterUser, eq(purchaseOrders.requestedById, requesterUser.id))
+    .where(eq(purchaseOrderItems.id, itemId))
+    .limit(1);
+  const item: any = itemRows[0];
+  if (!item) return null;
+
+  const historyActor = alias(users, "historyActor");
+  let historyRows: any[] = [];
+  try {
+    historyRows = await db
+      .select({
+        id: purchaseOrderItemHistory.id,
+        eventType: purchaseOrderItemHistory.eventType,
+        previousStatus: purchaseOrderItemHistory.previousStatus,
+        newStatus: purchaseOrderItemHistory.newStatus,
+        previousDelegateId: purchaseOrderItemHistory.previousDelegateId,
+        newDelegateId: purchaseOrderItemHistory.newDelegateId,
+        actorUserId: purchaseOrderItemHistory.actorUserId,
+        actorNameSnapshot: purchaseOrderItemHistory.actorName,
+        actorNameCurrent: historyActor.name,
+        note: purchaseOrderItemHistory.note,
+        metadata: purchaseOrderItemHistory.metadata,
+        createdAt: purchaseOrderItemHistory.createdAt,
+      })
+      .from(purchaseOrderItemHistory)
+      .leftJoin(historyActor, eq(purchaseOrderItemHistory.actorUserId, historyActor.id))
+      .where(eq(purchaseOrderItemHistory.purchaseOrderItemId, itemId))
+      .orderBy(asc(purchaseOrderItemHistory.createdAt), asc(purchaseOrderItemHistory.id));
+  } catch (error) {
+    // التوافق الرجعي: إذا لم تُطبّق migration بعد نعرض السجل القديم من المصادر
+    // القائمة بدل إسقاط شاشة المتابعة كلها. بعد إنشاء الجدول يبدأ التسجيل الجديد.
+    console.error("[PO_ITEM_HISTORY] unable to read unified history table", { itemId, error });
+  }
+
+  const commentRows = await db
+    .select()
+    .from(procurementComments)
+    .where(eq(procurementComments.purchaseOrderItemId, itemId))
+    .orderBy(asc(procurementComments.createdAt), asc(procurementComments.id));
+
+  const auditActor = alias(users, "auditActor");
+  const auditRows = await db
+    .select({
+      id: auditLogs.id,
+      action: auditLogs.action,
+      oldValues: auditLogs.oldValues,
+      newValues: auditLogs.newValues,
+      createdAt: auditLogs.createdAt,
+      userId: auditLogs.userId,
+      actorName: auditActor.name,
+    })
+    .from(auditLogs)
+    .leftJoin(auditActor, eq(auditLogs.userId, auditActor.id))
+    .where(and(
+      eq(auditLogs.entityType, "purchase_order_item"),
+      eq(auditLogs.entityId, itemId),
+    ))
+    .orderBy(asc(auditLogs.createdAt), asc(auditLogs.id));
+
+  const receiptActor = alias(users, "receiptActor");
+  const receiptRows = await db
+    .select({
+      id: warehouseReceiptItems.id,
+      receiptNumber: warehouseReceipts.receiptNumber,
+      receiptStatus: warehouseReceipts.status,
+      receivedAt: warehouseReceipts.receivedAt,
+      receivedQuantity: warehouseReceiptItems.receivedQuantity,
+      receivedById: warehouseReceipts.receivedById,
+      receivedByName: receiptActor.name,
+      invoiceNumber: warehouseReceipts.invoiceNumber,
+      vendorName: warehouseReceipts.vendorName,
+    })
+    .from(warehouseReceiptItems)
+    .innerJoin(warehouseReceipts, eq(warehouseReceiptItems.receiptId, warehouseReceipts.id))
+    .leftJoin(receiptActor, eq(warehouseReceipts.receivedById, receiptActor.id))
+    .where(eq(warehouseReceiptItems.purchaseOrderItemId, itemId))
+    .orderBy(asc(warehouseReceipts.receivedAt), asc(warehouseReceiptItems.id));
+
+  const currentBatchRows = item.batchId
+    ? await db.select().from(poPricingBatches).where(eq(poPricingBatches.id, item.batchId)).limit(1)
+    : [];
+  const currentBatch: any = currentBatchRows[0] || null;
+
+  const events: any[] = [{
+    id: `created:${item.id}`,
+    source: "item",
+    eventType: "created",
+    title: "إضافة الصنف إلى طلب الشراء",
+    date: item.createdAt,
+    actorUserId: item.requestedById,
+    actorName: item.requestedByName || null,
+    note: item.purchaseOrderNumber,
+  }];
+
+  for (const row of historyRows as any[]) {
+    const statusTitle = row.eventType === "status_changed"
+      ? ({
+          pending: "أصبح الصنف بانتظار التسعير",
+          estimated: "تم حفظ تسعير الصنف",
+          approved: "تم اعتماد الصنف للشراء",
+          funded: "تم تمويل الصنف",
+          purchased: "تم شراء الصنف",
+          delivered_to_warehouse: "وصل الصنف إلى المستودع",
+          delivered_to_requester: "تم تسليم الصنف للطالب",
+          needs_item_revision: "طُلبت مراجعة الصنف",
+          purchase_cancelled: "أُلغي شراء الصنف",
+          cancelled: "أُلغي الصنف نهائيًا",
+          rejected: "رُفض الصنف",
+        } as Record<string, string>)[String(row.newStatus || "")] || "تغيّرت حالة الصنف"
+      : null;
+    events.push({
+      id: `history:${row.id}`,
+      source: "history",
+      eventType: row.eventType,
+      title: statusTitle || (row.eventType === "delegate_changed" ? "تغيّر المندوب المسؤول"
+        : row.eventType === "delegate_change_requested" ? "طُلب تغيير المندوب"
+        : row.eventType === "pricing_batch_changed" ? "تغيّرت دفعة التسعير"
+        : row.eventType === "estimate_updated" ? "تم تحديث التسعير"
+        : row.eventType === "purchase_details_updated" ? "تم تحديث بيانات الشراء"
+        : row.eventType === "warehouse_received" ? "تم تحديث بيانات الاستلام"
+        : row.eventType === "delivered" ? "تم تحديث بيانات التسليم"
+        : row.eventType === "returned" ? "تم تسجيل مرتجع"
+        : "تحديث على الصنف"),
+      date: row.createdAt,
+      actorUserId: row.actorUserId,
+      actorName: row.actorNameSnapshot || row.actorNameCurrent || null,
+      previousStatus: row.previousStatus,
+      newStatus: row.newStatus,
+      previousDelegateId: row.previousDelegateId,
+      newDelegateId: row.newDelegateId,
+      note: row.note,
+      metadata: row.metadata,
+    });
+  }
+
+  for (const row of commentRows as any[]) {
+    events.push({
+      id: `comment:${row.id}`,
+      source: "comment",
+      eventType: row.actionType,
+      title: "إجراء/ملاحظة على الصنف",
+      date: row.createdAt,
+      actorUserId: row.userId,
+      actorName: row.userName,
+      actorRole: row.userRole,
+      note: row.note,
+    });
+  }
+
+  for (const row of auditRows as any[]) {
+    events.push({
+      id: `audit:${row.id}`,
+      source: "audit",
+      eventType: row.action,
+      title: "سجل تدقيق",
+      date: row.createdAt,
+      actorUserId: row.userId,
+      actorName: row.actorName || null,
+      oldValues: row.oldValues,
+      newValues: row.newValues,
+    });
+  }
+
+  // حقول زمنية تاريخية كانت موجودة قبل جدول history الجديد.
+  const legacyDates = [
+    [item.purchasedAt, "purchased", "تم شراء الصنف", item.purchasedById],
+    [item.receivedAt, "received", "تم استلام الصنف", item.receivedById],
+    [item.deliveredAt, "delivered", "تم تسليم الصنف", item.deliveredById],
+    [item.returnedAt, "returned", "تم تسجيل مرتجع", null],
+    [item.itemRevisionRequestedAt, "item_revision_requested", "طُلبت مراجعة الصنف", item.itemRevisionRequestedById],
+    [item.purchaseCancelledAt, "purchase_cancelled", "أُلغي شراء الصنف", item.purchaseCancelledById],
+    [item.delegateChangeRequestedAt, "delegate_change_requested", "طُلب تغيير المندوب", item.delegateChangeRequestedById],
+  ] as const;
+  const legacyStatusByEvent: Record<string, string | null> = {
+    purchased: "purchased",
+    received: "delivered_to_warehouse",
+    delivered: "delivered_to_requester",
+    item_revision_requested: "needs_item_revision",
+    purchase_cancelled: "purchase_cancelled",
+    delegate_change_requested: null,
+    returned: null,
+  };
+  for (const [date, eventType, title, actorUserId] of legacyDates) {
+    if (!date) continue;
+    const targetTime = new Date(date as any).getTime();
+    const expectedStatus = legacyStatusByEvent[eventType];
+    const duplicatedByUnifiedHistory = (historyRows as any[]).some((row: any) => {
+      const timeDiff = Math.abs(new Date(row.createdAt || 0).getTime() - targetTime);
+      if (timeDiff > 60_000) return false;
+      if (eventType === "delegate_change_requested") return row.eventType === "delegate_change_requested";
+      return expectedStatus ? row.eventType === "status_changed" && row.newStatus === expectedStatus : false;
+    });
+    if (duplicatedByUnifiedHistory) continue;
+
+    events.push({
+      id: `legacy:${eventType}:${String(date)}`,
+      source: "legacy_field",
+      eventType,
+      title,
+      date,
+      actorUserId,
+      note: eventType === "returned" ? item.returnReason
+        : eventType === "item_revision_requested" ? item.itemRevisionNote
+        : eventType === "purchase_cancelled" ? item.purchaseCancelReason
+        : eventType === "delegate_change_requested" ? item.delegateChangeReason
+        : null,
+    });
+  }
+
+  if (currentBatch) {
+    const batchEvents = [
+      [currentBatch.submittedAt, "pricing_submitted", "أُرسل تسعير الصنف ضمن دفعة للحسابات", currentBatch.submittedById],
+      [currentBatch.accountingApprovedAt, "accounting_approved", "اعتمدت الحسابات دفعة التسعير", currentBatch.accountingApprovedById],
+      [currentBatch.managementApprovedAt, "management_approved", "اعتمدت الإدارة دفعة التسعير", currentBatch.managementApprovedById],
+      [currentBatch.rejectedAt, "pricing_rejected", "رُفضت دفعة التسعير", currentBatch.rejectedById],
+    ] as const;
+    for (const [date, eventType, title, actorUserId] of batchEvents) {
+      if (!date) continue;
+      events.push({
+        id: `batch:${currentBatch.id}:${eventType}`,
+        source: "pricing_batch",
+        eventType,
+        title,
+        date,
+        actorUserId,
+        note: eventType === "pricing_rejected" ? currentBatch.rejectionReason : null,
+        batchNumber: currentBatch.batchNumber,
+      });
+    }
+  }
+
+  for (const row of receiptRows as any[]) {
+    events.push({
+      id: `receipt:${row.id}`,
+      source: "warehouse_receipt",
+      eventType: "warehouse_receipt",
+      title: `استلام مستودع ${row.receiptNumber || ""}`.trim(),
+      date: row.receivedAt,
+      actorUserId: row.receivedById,
+      actorName: row.receivedByName || null,
+      note: [row.vendorName, row.invoiceNumber ? `فاتورة ${row.invoiceNumber}` : null].filter(Boolean).join(" — ") || null,
+      quantity: row.receivedQuantity,
+      receiptStatus: row.receiptStatus,
+    });
+  }
+
+  // أكمل أسماء المنفذين للأحداث التاريخية التي كانت تحفظ ID فقط.
+  const actorIds = Array.from(new Set(events
+    .filter((event: any) => !event.actorName && Number(event.actorUserId) > 0)
+    .map((event: any) => Number(event.actorUserId))));
+  if (actorIds.length > 0) {
+    const actorRows = await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, actorIds));
+    const actorNameById = new Map(actorRows.map(row => [Number(row.id), row.name]));
+    for (const event of events) {
+      if (!event.actorName && Number(event.actorUserId) > 0) {
+        event.actorName = actorNameById.get(Number(event.actorUserId)) || null;
+      }
+    }
+  }
+
+  events.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
+
+  return {
+    item: {
+      id: item.id,
+      purchaseOrderId: item.purchaseOrderId,
+      purchaseOrderNumber: item.purchaseOrderNumber,
+      itemName: item.itemName,
+      status: item.status,
+      quantity: item.quantity,
+      unit: item.unit,
+      delegateId: item.delegateId,
+      delegateName: item.delegateName,
+      requestedById: item.requestedById,
+      requestedByName: item.requestedByName,
+    },
+    events,
+  };
+}
+
+export async function updatePOItem(id: number, data: any, tx?: any, historyMeta?: POItemHistoryMeta) {
   const db = tx || await getDb();
   if (!db) return;
+  const before = await readPOItemHistorySnapshot(db, id);
   await db.update(purchaseOrderItems).set(data).where(eq(purchaseOrderItems.id, id));
+  await recordPOItemMutationHistory(db, before, data, historyMeta);
 }
 
 /**
@@ -493,9 +989,10 @@ export async function updatePOItem(id: number, data: any, tx?: any) {
  * يُستخدم داخل مراجعة الأصناف لمنع سباق التزامن مع إلغاء الصنف: إذا أُلغي
  * الصنف قبل لحظة الكتابة فلن يستطيع مسار المراجعة إعادته إلى pending.
  */
-export async function updatePOItemIfNotTerminal(id: number, data: any, tx?: any): Promise<boolean> {
+export async function updatePOItemIfNotTerminal(id: number, data: any, tx?: any, historyMeta?: POItemHistoryMeta): Promise<boolean> {
   const db = tx || await getDb();
   if (!db) return false;
+  const before = await readPOItemHistorySnapshot(db, id);
   const result: any = await db
     .update(purchaseOrderItems)
     .set(data)
@@ -503,7 +1000,10 @@ export async function updatePOItemIfNotTerminal(id: number, data: any, tx?: any)
       eq(purchaseOrderItems.id, id),
       notInArray(purchaseOrderItems.status, ["cancelled", "rejected"] as any),
     ));
-  if (Number(result?.[0]?.affectedRows ?? 0) === 1) return true;
+  if (Number(result?.[0]?.affectedRows ?? 0) === 1) {
+    await recordPOItemMutationHistory(db, before, data, historyMeta);
+    return true;
+  }
 
   const row = await db
     .select({ status: purchaseOrderItems.status })
@@ -522,9 +1022,11 @@ export async function updatePOItemIfDelegateChangeUnlocked(
   id: number,
   data: any,
   expectedStatus?: string,
+  historyMeta?: POItemHistoryMeta,
 ): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
+  const before = await readPOItemHistorySnapshot(db, id);
   const conditions = [
     eq(purchaseOrderItems.id, id),
     isNull(purchaseOrderItems.delegateChangeRequestedAt),
@@ -536,7 +1038,10 @@ export async function updatePOItemIfDelegateChangeUnlocked(
     .update(purchaseOrderItems)
     .set(data)
     .where(and(...conditions));
-  if (Number(result?.[0]?.affectedRows ?? 0) === 1) return true;
+  if (Number(result?.[0]?.affectedRows ?? 0) === 1) {
+    await recordPOItemMutationHistory(db, before, data, historyMeta);
+    return true;
+  }
 
   // قد يعيد MySQL صفرًا إذا كانت القيم الجديدة مطابقة تمامًا رغم مطابقة WHERE.
   // نميّز ذلك عن حالة القفل/تغير الحالة بإعادة قراءة الحقول الحاكمة.
@@ -559,16 +1064,19 @@ export async function requestPOItemDelegateChangeAtomic(input: {
   delegateId: number;
   reason: string;
   requestedAt: Date;
+  actorName?: string | null;
 }): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
+  const before = await readPOItemHistorySnapshot(db, input.itemId);
+  const patch = {
+    delegateChangeRequestedById: input.delegateId,
+    delegateChangeReason: input.reason,
+    delegateChangeRequestedAt: input.requestedAt,
+  };
   const result: any = await db
     .update(purchaseOrderItems)
-    .set({
-      delegateChangeRequestedById: input.delegateId,
-      delegateChangeReason: input.reason,
-      delegateChangeRequestedAt: input.requestedAt,
-    })
+    .set(patch)
     .where(and(
       eq(purchaseOrderItems.id, input.itemId),
       eq(purchaseOrderItems.delegateId, input.delegateId),
@@ -577,33 +1085,55 @@ export async function requestPOItemDelegateChangeAtomic(input: {
       isNull(purchaseOrderItems.estimatedUnitCost),
       isNull(purchaseOrderItems.delegateChangeRequestedAt),
     ));
-  return Number(result?.[0]?.affectedRows ?? 0) === 1;
+  const ok = Number(result?.[0]?.affectedRows ?? 0) === 1;
+  if (ok) {
+    await recordPOItemMutationHistory(db, before, patch, {
+      actorUserId: input.delegateId,
+      actorName: input.actorName ?? null,
+      eventType: "delegate_change_requested",
+      note: input.reason,
+    });
+  }
+  return ok;
 }
 
 /** حسم طلب تغيير المندوب بصورة ذرية مع إبقاء الصنف pending وجاهزًا للتسعير. */
 export async function resolvePOItemDelegateChangeAtomic(input: {
   itemId: number;
   newDelegateId: number;
+  actorUserId?: number | null;
+  actorName?: string | null;
 }): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
+  const before = await readPOItemHistorySnapshot(db, input.itemId);
+  const patch = {
+    delegateId: input.newDelegateId,
+    status: "pending",
+    batchId: null,
+    delegateChangeRequestedById: null,
+    delegateChangeReason: null,
+    delegateChangeRequestedAt: null,
+  };
   const result: any = await db
     .update(purchaseOrderItems)
-    .set({
-      delegateId: input.newDelegateId,
-      status: "pending",
-      batchId: null,
-      delegateChangeRequestedById: null,
-      delegateChangeReason: null,
-      delegateChangeRequestedAt: null,
-    })
+    .set(patch)
     .where(and(
       eq(purchaseOrderItems.id, input.itemId),
       eq(purchaseOrderItems.status, "pending"),
       isNull(purchaseOrderItems.batchId),
       isNotNull(purchaseOrderItems.delegateChangeRequestedAt),
     ));
-  return Number(result?.[0]?.affectedRows ?? 0) === 1;
+  const ok = Number(result?.[0]?.affectedRows ?? 0) === 1;
+  if (ok) {
+    await recordPOItemMutationHistory(db, before, patch, {
+      actorUserId: input.actorUserId ?? null,
+      actorName: input.actorName ?? null,
+      eventType: "delegate_changed",
+      note: "تم حسم طلب تغيير المندوب",
+    });
+  }
+  return ok;
 }
 
 export async function getPOItemById(id: number, tx?: any) {

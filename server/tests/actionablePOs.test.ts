@@ -334,3 +334,96 @@ describe("دفعات بلا أصناف فعّالة — لا تظهر في با�
     });
   }
 });
+
+describe("المندوب — مصدر الحقيقة هو حالة أصنافه لا حالة PR العامة", () => {
+  it("partial_purchase + صنف pending للمندوب يظهر كتسعير لا كإكمال شراء", () => {
+    const result = computeActionablePOs(
+      { id: 3540173, role: "delegate" },
+      [po({ id: 497, poNumber: "PR-2026-60497", status: "partial_purchase" })],
+      [
+        { purchaseOrderId: 497, status: "delivered_to_warehouse", delegateId: 3540173 },
+        { purchaseOrderId: 497, status: "delivered_to_warehouse", delegateId: 3540173 },
+        { purchaseOrderId: 497, status: "delivered_to_warehouse", delegateId: 3540173 },
+        { purchaseOrderId: 497, status: "delivered_to_warehouse", delegateId: 3540173 },
+        { purchaseOrderId: 497, status: "delivered_to_warehouse", delegateId: 3540173 },
+        { purchaseOrderId: 497, status: "pending", delegateId: 3540173, batchId: null, delegateChangeRequestedAt: null },
+      ]
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      poNumber: "PR-2026-60497",
+      reason: "بانتظار تسعيرك",
+      actionLabel: "تسعير",
+      actionMode: "estimate",
+    });
+  });
+
+  it("partial_purchase لا يظهر للمندوب إذا كان الصنف المتبقي يخص مندوبًا آخر", () => {
+    const result = computeActionablePOs(
+      { id: 3540173, role: "delegate" },
+      [po({ id: 491, poNumber: "PR-2026-60491", status: "partial_purchase" })],
+      [
+        { purchaseOrderId: 491, status: "delivered_to_warehouse", delegateId: 3540173 },
+        { purchaseOrderId: 491, status: "delivered_to_warehouse", delegateId: 3540173 },
+        { purchaseOrderId: 491, status: "delivered_to_warehouse", delegateId: 3540173 },
+        { purchaseOrderId: 491, status: "delivered_to_warehouse", delegateId: 3540173 },
+        { purchaseOrderId: 491, status: "pending", delegateId: 18090006, batchId: null, delegateChangeRequestedAt: null },
+      ]
+    );
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("partial_purchase + صنف approved للمندوب يظهر كإكمال شراء", () => {
+    const result = computeActionablePOs(
+      { id: 3540173, role: "delegate" },
+      [po({ id: 517, poNumber: "PR-2026-0517", status: "partial_purchase" })],
+      [
+        { purchaseOrderId: 517, status: "approved", delegateId: 3540173 },
+        { purchaseOrderId: 517, status: "delivered_to_warehouse", delegateId: 3540173 },
+      ]
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      reason: "بانتظار إكمال الشراء",
+      actionLabel: "إكمال الشراء",
+      actionMode: "purchase",
+    });
+  });
+
+  it("إذا اجتمع التسعير والشراء لنفس المندوب يظهر الطلب مرة واحدة كعمل مختلط", () => {
+    const result = computeActionablePOs(
+      { id: 10, role: "delegate" },
+      [po({ status: "partial_purchase" })],
+      [
+        { purchaseOrderId: 1, status: "pending", delegateId: 10, batchId: null, delegateChangeRequestedAt: null },
+        { purchaseOrderId: 1, status: "approved", delegateId: 10 },
+      ]
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      actionLabel: "فتح",
+      actionMode: "mixed",
+    });
+  });
+
+  it("صنف pending يبقى ظاهرًا للتسعير حتى لو تقدمت حالة PR بسبب دفعة أخرى", () => {
+    const result = computeActionablePOs(
+      { id: 10, role: "delegate" },
+      [po({ status: "pending_accounting" })],
+      [
+        { purchaseOrderId: 1, status: "pending", delegateId: 10, batchId: null, delegateChangeRequestedAt: null },
+        { purchaseOrderId: 1, status: "estimated", delegateId: 20, batchId: 7, delegateChangeRequestedAt: null },
+      ]
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      reason: "بانتظار تسعيرك",
+      actionMode: "estimate",
+    });
+  });
+});

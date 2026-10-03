@@ -12,6 +12,7 @@ export const APP_ROLE = {
   OWNER: "owner",
   OPERATOR: "operator",
   TECHNICIAN: "technician",
+  IT_MANAGER: "it_manager",
   MAINTENANCE_MANAGER: "maintenance_manager",
   GENERAL_MAINTENANCE_MANAGER: "general_maintenance_manager",
   CONSTRUCTION_PROCUREMENT_MANAGER: "construction_procurement_manager",
@@ -29,6 +30,38 @@ export const APP_ROLE = {
 } as const;
 
 export type AppRole = (typeof APP_ROLE)[keyof typeof APP_ROLE];
+
+/** PM V2 scoped roles. Keep technician execution separate from management. */
+export const PMV2_MANAGEMENT_ROLES = [
+  APP_ROLE.OWNER,
+  APP_ROLE.ADMIN,
+  APP_ROLE.MAINTENANCE_MANAGER,
+  APP_ROLE.GENERAL_MAINTENANCE_MANAGER,
+] as const;
+
+export const PMV2_TECHNICIAN_EXECUTION_ROLES = [
+  APP_ROLE.TECHNICIAN,
+  APP_ROLE.IT_MANAGER,
+] as const;
+
+/** Phase 4 warehouse queue is separate from PM V2 management and technician execution. */
+export const PMV2_WAREHOUSE_ROLES = [
+  APP_ROLE.WAREHOUSE,
+  APP_ROLE.OWNER,
+  APP_ROLE.ADMIN,
+] as const;
+
+export function canRoleManagePmv2(role?: string | null): boolean {
+  return !!role && (PMV2_MANAGEMENT_ROLES as readonly string[]).includes(role);
+}
+
+export function canRoleExecutePmv2Technician(role?: string | null): boolean {
+  return !!role && (PMV2_TECHNICIAN_EXECUTION_ROLES as readonly string[]).includes(role);
+}
+
+export function canRoleAccessPmv2Warehouse(role?: string | null): boolean {
+  return !!role && (PMV2_WAREHOUSE_ROLES as readonly string[]).includes(role);
+}
 
 /** Standalone Catalog module access approved in 2B-10. */
 export const CATALOG_MODULE_ROLES = [
@@ -71,6 +104,7 @@ export function canManageCatalogItemLifecycle(role?: string | null): boolean {
 export const MAINTENANCE_RESPONSIBLE_DEPARTMENT = {
   GENERAL: "maintenance_report_department_general",
   CONSTRUCTION: "maintenance_report_department_construction",
+  IT: "maintenance_report_department_it",
 } as const;
 
 export type MaintenanceResponsibleDepartment =
@@ -177,6 +211,23 @@ export function canRoleAccessPath(role: string | null | undefined, path: string)
   const normalizedPath = path.split(/[?#]/, 1)[0] || "/";
   if (matchesPrefix(normalizedPath, "/catalog")) {
     return canRoleAccessCatalogModule(role);
+  }
+  if (matchesPrefix(normalizedPath, "/scheduled-maintenance/my-tasks")) {
+    return canRoleExecutePmv2Technician(role);
+  }
+  if (matchesPrefix(normalizedPath, "/scheduled-maintenance/warehouse-requests")) {
+    return canRoleAccessPmv2Warehouse(role);
+  }
+  if (matchesPrefix(normalizedPath, "/scheduled-maintenance")) {
+    return canRoleManagePmv2(role);
+  }
+  if (role === APP_ROLE.IT_MANAGER) {
+    // IT role: scoped ticket execution + own purchase orders; PM V2 execution is handled above.
+    // Inventory, purchase-cycle management and Catalog UI remain closed; PM V2 execution is limited to My Tasks by the route guard above.
+    if (normalizedPath === "/" || normalizedPath === "/tickets" || normalizedPath === "/tickets/inbox" || normalizedPath === "/tickets/new") return true;
+    if (/^\/tickets\/\d+$/.test(normalizedPath)) return true;
+    if (matchesPrefix(normalizedPath, "/purchase-orders")) return true;
+    return false;
   }
   if (role === APP_ROLE.GENERAL_MAINTENANCE_MANAGER) {
     return !GENERAL_MANAGER_DENIED_PREFIXES.some((prefix) => matchesPrefix(normalizedPath, prefix));

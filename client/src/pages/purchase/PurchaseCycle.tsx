@@ -14,6 +14,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { TechnicianCombobox } from "@/components/tickets/TechnicianCombobox";
 import BarcodeScanner from "@/components/common/BarcodeScanner";
 import {
+  IssueCostAllocationEditor,
+  buildIssueCostAllocationPayload,
+  createIssueCostAllocationDraft,
+  type IssueCostAllocationDraft,
+} from "@/components/inventory/IssueCostAllocationEditor";
+import {
   ShoppingCart, Package, Truck, CheckCircle2, Camera, Loader2,
   Clock, ArrowLeft, ArrowRight, Image as ImageIcon, FileText,
   AlertCircle, User, Hash, Calendar, Ban, Archive, Sparkles,
@@ -23,18 +29,23 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { printDeliveryReceipt } from "@/lib/printDeliveryDocument";
 import { sortPurchaseCycleItemsNewestFirst } from "./purchaseCycleSorting";
+import { localizeApiError } from "@/i18n/apiError";
+import { EntityTranslatedText } from "@/components/i18n/EntityTranslatedText";
+import { useBatchTranslation, getLocalizedItemField } from "@/hooks/useContentTranslation";
+import { getLocalizedCatalogUnitName } from "@/i18n/catalogMasterData";
 
 // ── مكوّنات مستقلة (خارج الـ component لمنع إعادة الإنشاء) ──────
 
 const PAGE_SIZE = 10;
 
 function Pagination({ total, page, setPage }: { total: number; page: number; setPage: (p: number) => void }) {
+  const { dir } = useTranslation();
   const pages = Math.ceil(total / PAGE_SIZE);
   if (pages <= 1) return null;
   return (
     <div className="flex items-center justify-center gap-1 mt-3">
       <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(page - 1)}>
-        ←
+        {dir === "rtl" ? "→" : "←"}
       </Button>
       {Array.from({ length: Math.min(pages, 5) }, (_, i) => {
         const p = page <= 3 ? i + 1 : page - 2 + i;
@@ -46,7 +57,7 @@ function Pagination({ total, page, setPage }: { total: number; page: number; set
         );
       })}
       <Button variant="outline" size="sm" disabled={page === pages} onClick={() => setPage(page + 1)}>
-        →
+        {dir === "rtl" ? "←" : "→"}
       </Button>
     </div>
   );
@@ -54,33 +65,36 @@ function Pagination({ total, page, setPage }: { total: number; page: number; set
 
 // ── مكوّن خانة البحث والتاريخ ───────────────────────────────
 function FilterBar({
-  search, setSearch, from, setFrom, to, setTo, placeholder = "بحث..."
+  search, setSearch, from, setFrom, to, setTo, placeholder
 }: {
   search: string; setSearch: (v: string) => void;
   from?: string; setFrom?: (v: string) => void;
   to?: string;   setTo?:   (v: string) => void;
   placeholder?: string;
 }) {
+  const { t, dir } = useTranslation();
+  const effectivePlaceholder = placeholder || t.workflow.purchase.search;
   return (
     <div className="flex flex-wrap gap-2 mb-3">
       <div className="relative flex-1 min-w-[180px]">
         <input
-          className="w-full border rounded-md px-3 py-1.5 text-sm pr-8 focus:outline-none focus:ring-1 focus:ring-primary"
-          placeholder={placeholder}
+          dir="auto"
+          className={`w-full border rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary ${dir === "rtl" ? "pr-8" : "pl-8"}`}
+          placeholder={effectivePlaceholder}
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
-        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">🔍</span>
+        <span className={`absolute top-1/2 -translate-y-1/2 text-muted-foreground text-xs ${dir === "rtl" ? "right-2.5" : "left-2.5"}`}>🔍</span>
       </div>
       {setFrom && (
-        <input type="date" className="border rounded-md px-2 py-1.5 text-sm" value={from} onChange={e => { setFrom(e.target.value); }} />
+        <input type="date" dir="ltr" className="border rounded-md px-2 py-1.5 text-sm" value={from} onChange={e => { setFrom(e.target.value); }} />
       )}
       {setTo && (
-        <input type="date" className="border rounded-md px-2 py-1.5 text-sm" value={to} onChange={e => { setTo(e.target.value); }} />
+        <input type="date" dir="ltr" className="border rounded-md px-2 py-1.5 text-sm" value={to} onChange={e => { setTo(e.target.value); }} />
       )}
       {(search || from || to) && (
         <Button variant="ghost" size="sm" className="text-xs text-muted-foreground" onClick={() => { setSearch(""); if(setFrom) setFrom(""); if(setTo) setTo(""); }}>
-          مسح
+          {t.workflow.purchase.clear}
         </Button>
       )}
     </div>
@@ -89,8 +103,37 @@ function FilterBar({
 
 
 function DeliveryDocumentsTab({ deliveryDocsQuery, returnDocsQuery, searchDocs, setSearchDocs, docRecipient, setDocRecipient, docDateFrom, setDocDateFrom, docDateTo, setDocDateTo, pageDocs, setPageDocs, incrementDocPrintMut, incrementReturnDocPrintMut }: any) {
-  const deliveryDocs = (deliveryDocsQuery.data ?? []).map((d: any) => ({ ...d, docType: "delivery" as const }));
-  const returnDocsRaw = (returnDocsQuery?.data ?? []).map((d: any) => ({ ...d, docType: "return" as const }));
+  const { t, language, dir } = useTranslation();
+  const locale = language === "ar" ? "ar-SA" : language === "ur" ? "ur-PK" : "en-US";
+  const { data: catalogUnits = [] } = trpc.catalog.units.list.useQuery();
+  const displayUnit = (value: string | null | undefined) =>
+    getLocalizedCatalogUnitName(value, catalogUnits as any[], language);
+  const rawDeliveryDocs = deliveryDocsQuery.data ?? [];
+  const rawReturnDocs = returnDocsQuery?.data ?? [];
+  const deliveryDocIds = rawDeliveryDocs.map((d: any) => Number(d.id)).filter((id: number) => Number.isFinite(id));
+  const returnDocIds = rawReturnDocs.map((d: any) => Number(d.id)).filter((id: number) => Number.isFinite(id));
+  const { translationsMap: deliveryDocTranslations } = useBatchTranslation(
+    "DELIVERY_DOCUMENT",
+    deliveryDocIds,
+    ["itemName", "notes"],
+  );
+  const { translationsMap: returnDocTranslations } = useBatchTranslation(
+    "RETURN_DOCUMENT",
+    returnDocIds,
+    ["itemName", "reason"],
+  );
+  const deliveryDocs = rawDeliveryDocs.map((d: any) => ({
+    ...d,
+    itemName: deliveryDocTranslations[Number(d.id)]?.itemName || d.itemName,
+    notes: deliveryDocTranslations[Number(d.id)]?.notes || d.notes,
+    docType: "delivery" as const,
+  }));
+  const returnDocsRaw = rawReturnDocs.map((d: any) => ({
+    ...d,
+    itemName: returnDocTranslations[Number(d.id)]?.itemName || d.itemName,
+    reason: returnDocTranslations[Number(d.id)]?.reason || d.reason,
+    docType: "return" as const,
+  }));
   const docs = sortPurchaseCycleItemsNewestFirst([...deliveryDocs, ...returnDocsRaw]);
 
   // فلتر الوثائق
@@ -125,16 +168,16 @@ function DeliveryDocumentsTab({ deliveryDocsQuery, returnDocsQuery, searchDocs, 
     } catch { /* لو فشل التوليد، نعرض الوثيقة بدون QR بدل ما نوقف الطباعة */ }
 
     const html = `<!DOCTYPE html>
-<html dir="rtl" lang="ar">
+<html dir="${dir}" lang="${language}">
 <head><meta charset="UTF-8"/><title>${doc.returnNumber}</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:32px 40px;font-size:13px}
+body{font-family:${dir === "rtl" ? "'Cairo',Arial,sans-serif" : "Arial,sans-serif"};background:#fff;color:#1a1a1a;padding:32px 40px;font-size:13px}
 .header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #7f1d1d;padding-bottom:14px;margin-bottom:20px}
 .header-title{font-size:20px;font-weight:700;color:#7f1d1d}
 .header-sub{font-size:11px;color:#555;margin-top:4px}
-.header-meta{text-align:left;font-size:11px;color:#555;line-height:2}
+.header-meta{text-align:start;font-size:11px;color:#555;line-height:2}
 .badge{display:inline-block;background:#7f1d1d;color:#fff;padding:3px 10px;border-radius:4px;font-size:13px;font-weight:700}
 .section{margin-bottom:16px}
 .section-title{font-size:12px;font-weight:700;color:#7f1d1d;background:#fef2f2;padding:5px 10px;border-radius:4px;margin-bottom:10px}
@@ -152,41 +195,41 @@ body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:
 <body>
 <div class="header">
   <div>
-    <div class="header-title">↩️ وثيقة مرتجع</div>
-    <div class="header-sub">نظام إدارة الصيانة المتكامل</div>
+    <div class="header-title">↩️ ${t.workflow.purchase.docReturnTitle}</div>
+    <div class="header-sub">${t.workflow.purchase.integratedCmms}</div>
   </div>
   <div class="header-meta">
-    <div>التاريخ: <strong>${new Date(doc.createdAt).toLocaleDateString("ar-SA",{year:"numeric",month:"long",day:"numeric"})}</strong></div>
+    <div>${t.workflow.purchase.dateWord}: <strong>${new Date(doc.createdAt).toLocaleDateString(locale,{year:"numeric",month:"long",day:"numeric"})}</strong></div>
     <div><span class="badge">${doc.returnNumber}</span></div>
-    ${doc.poNumber ? `<div>طلب شراء: <strong>${doc.poNumber}</strong></div>` : ""}
+    ${doc.poNumber ? `<div>${t.workflow.purchase.purchaseOrderWord}: <strong>${doc.poNumber}</strong></div>` : ""}
   </div>
 </div>
 ${qrDataUrl ? `<div class="item-id-row">
   <img src="${qrDataUrl}" width="90" height="90" style="border:1px solid #eee;border-radius:6px"/>
   <div>
-    <div class="field-label">رقم الصنف (باركود المصنع)</div>
+    <div class="field-label">${t.workflow.purchase.manufacturerBarcode}</div>
     <div class="field-value" style="font-size:16px;font-family:monospace">${doc.manufacturerBarcode || doc.internalCode || "—"}</div>
   </div>
 </div>` : ""}
 <div class="section">
-  <div class="section-title">بيانات المرتجع</div>
+  <div class="section-title">${t.workflow.purchase.returnData}</div>
   <div class="grid">
-    <div class="field"><span class="field-label">اسم الصنف</span><span class="field-value">${doc.itemName}</span></div>
-    <div class="field"><span class="field-label">الكمية المُرجَعة</span><span class="field-value">${doc.returnedQuantity} ${doc.unit||""}</span></div>
-    <div class="field"><span class="field-label">نفّذ الإرجاع</span><span class="field-value">${doc.returnedByName}</span></div>
-    ${doc.receiptNumber ? `<div class="field"><span class="field-label">سند الاستلام المرتبط</span><span class="field-value">${doc.receiptNumber}</span></div>` : `<div class="field"><span class="field-label">سند الاستلام</span><span class="field-value">— (إرجاع عام بلا مصدر معروف)</span></div>`}
-    ${doc.invoiceNumber ? `<div class="field"><span class="field-label">رقم فاتورة المورد</span><span class="field-value">${doc.invoiceNumber}</span></div>` : ""}
-    ${doc.vendorName ? `<div class="field"><span class="field-label">المورد</span><span class="field-value">${doc.vendorName}</span></div>` : ""}
-    <div class="field" style="grid-column:1/-1"><span class="field-label">سبب الإرجاع</span><span class="field-value">${doc.reason}</span></div>
+    <div class="field"><span class="field-label">${t.workflow.purchase.itemNameLabel}</span><span class="field-value">${doc.itemName}</span></div>
+    <div class="field"><span class="field-label">${t.workflow.purchase.returnedQuantity}</span><span class="field-value">${doc.returnedQuantity} ${doc.unit||""}</span></div>
+    <div class="field"><span class="field-label">${t.workflow.purchase.returnPerformedBy}</span><span class="field-value">${doc.returnedByName}</span></div>
+    ${doc.receiptNumber ? `<div class="field"><span class="field-label">${t.workflow.purchase.linkedReceipt}</span><span class="field-value">${doc.receiptNumber}</span></div>` : `<div class="field"><span class="field-label">${t.workflow.purchase.receiptLabel}</span><span class="field-value">${t.workflow.purchase.generalReturnNoSource}</span></div>`}
+    ${doc.invoiceNumber ? `<div class="field"><span class="field-label">${t.workflow.purchase.supplierInvoiceNumber}</span><span class="field-value">${doc.invoiceNumber}</span></div>` : ""}
+    ${doc.vendorName ? `<div class="field"><span class="field-label">${t.workflow.purchase.supplierLabel}</span><span class="field-value">${doc.vendorName}</span></div>` : ""}
+    <div class="field" style="grid-column:1/-1"><span class="field-label">${t.workflow.purchase.returnReasonLabel2}</span><span class="field-value">${doc.reason}</span></div>
   </div>
 </div>
 <div class="sig-section">
-  <div class="sig-box">توقيع منفّذ الإرجاع<br/>${doc.returnedByName}</div>
-  <div class="sig-box">توقيع المستلم<br/>${doc.recipientName || "&nbsp;"}</div>
+  <div class="sig-box">${t.workflow.purchase.returnExecutorSignature}<br/>${doc.returnedByName}</div>
+  <div class="sig-box">${t.workflow.purchase.recipientSignature}<br/>${doc.recipientName || "&nbsp;"}</div>
 </div>
 <div class="footer">
-  <span>وثيقة آلية — نظام CMMS</span>
-  <span class="print-count">عدد مرات الطباعة: <strong>${doc.printCount + 1}</strong></span>
+  <span>${t.workflow.purchase.automatedCmmsDocument}</span>
+  <span class="print-count">${t.workflow.purchase.printCountLabel}: <strong>${doc.printCount + 1}</strong></span>
 </div>
 <script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();}<\/script>
 </body></html>`;
@@ -202,20 +245,20 @@ ${qrDataUrl ? `<div class="item-id-row">
     incrementDocPrintMut.mutate({ id: doc.id });
     // توليد PDF مباشرة في المتصفح بدون سيرفر
     const imgTag = doc.warehousePhotoUrl
-      ? `<div class="photo-wrap"><p class="photo-label">صورة الصنف</p><img src="${doc.warehousePhotoUrl}" style="width:140px;height:140px;object-fit:cover;border-radius:8px;border:1px solid #dde3ea" /></div>`
+      ? `<div class="photo-wrap"><p class="photo-label">${t.workflow.purchase.itemPhoto}</p><img src="${doc.warehousePhotoUrl}" style="width:140px;height:140px;object-fit:cover;border-radius:8px;border:1px solid #dde3ea" /></div>`
       : "";
 
     const html = `<!DOCTYPE html>
-<html dir="rtl" lang="ar">
+<html dir="${dir}" lang="${language}">
 <head><meta charset="UTF-8"/><title>${doc.deliveryNumber}</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:32px 40px;font-size:13px}
+body{font-family:${dir === "rtl" ? "'Cairo',Arial,sans-serif" : "Arial,sans-serif"};background:#fff;color:#1a1a1a;padding:32px 40px;font-size:13px}
 .header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1e3a5f;padding-bottom:14px;margin-bottom:20px}
 .header-title{font-size:20px;font-weight:700;color:#1e3a5f}
 .header-sub{font-size:11px;color:#555;margin-top:4px}
-.header-meta{text-align:left;font-size:11px;color:#555;line-height:2}
+.header-meta{text-align:start;font-size:11px;color:#555;line-height:2}
 .badge{display:inline-block;background:#1e3a5f;color:#fff;padding:3px 10px;border-radius:4px;font-size:13px;font-weight:700}
 .parties{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:16px}
 .party-box{border:1px solid #dde3ea;border-radius:8px;padding:12px 14px}
@@ -236,39 +279,39 @@ body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:
 <body>
 <div class="header">
   <div>
-    <div class="header-title">🚚 وثيقة تسليم مواد</div>
-    <div class="header-sub">نظام إدارة الصيانة المتكامل</div>
+    <div class="header-title">🚚 ${t.workflow.purchase.materialDeliveryDocument}</div>
+    <div class="header-sub">${t.workflow.purchase.integratedCmms}</div>
   </div>
   <div class="header-meta">
-    <div>التاريخ: <strong>${new Date(doc.createdAt).toLocaleDateString("ar-SA",{year:"numeric",month:"long",day:"numeric"})}</strong></div>
+    <div>${t.workflow.purchase.dateWord}: <strong>${new Date(doc.createdAt).toLocaleDateString(locale,{year:"numeric",month:"long",day:"numeric"})}</strong></div>
     <div><span class="badge">${doc.deliveryNumber}</span></div>
-    ${doc.poNumber ? `<div>أمر شراء: <strong>${doc.poNumber}</strong></div>` : ""}
-    ${doc.ticketNumber ? `<div>البلاغ: <strong>${doc.ticketNumber}</strong></div>` : ""}
+    ${doc.poNumber ? `<div>${t.workflow.purchase.poWord}: <strong>${doc.poNumber}</strong></div>` : ""}
+    ${doc.ticketNumber ? `<div>${t.workflow.purchase.ticketWord}: <strong>${doc.ticketNumber}</strong></div>` : ""}
   </div>
 </div>
 <div class="parties">
-  <div class="party-box"><div class="party-role">المُسلِّم</div><div class="party-name">${doc.deliveredByName}</div></div>
-  ${doc.assignedTechnicianName ? `<div class="party-box"><div class="party-role">الفني المسند للبلاغ</div><div class="party-name">${doc.assignedTechnicianName}</div></div>` : ""}
-  <div class="party-box"><div class="party-role">الفني المستلم فعليًا</div><div class="party-name">${doc.deliveredToName}</div></div>
+  <div class="party-box"><div class="party-role">${t.workflow.purchase.delivererLabel}</div><div class="party-name">${doc.deliveredByName}</div></div>
+  ${doc.assignedTechnicianName ? `<div class="party-box"><div class="party-role">${t.workflow.purchase.assignedTicketResponsible}</div><div class="party-name">${doc.assignedTechnicianName}</div></div>` : ""}
+  <div class="party-box"><div class="party-role">${t.workflow.purchase.actualTechnicianRecipient}</div><div class="party-name">${doc.deliveredToName}</div></div>
 </div>
 <div class="section">
-  <div class="section-title">بيانات الصنف</div>
+  <div class="section-title">${t.workflow.purchase.itemData}</div>
   <div class="grid">
-    <div class="field"><span class="field-label">اسم الصنف</span><span class="field-value">${doc.itemName}</span></div>
-    <div class="field"><span class="field-label">الكمية المسلَّمة</span><span class="field-value">${doc.quantity} ${doc.unit||""}</span></div>
-    ${doc.supplierName ? `<div class="field"><span class="field-label">المورد</span><span class="field-value">${doc.supplierName}</span></div>` : ""}
-    ${doc.actualUnitCost ? `<div class="field"><span class="field-label">تكلفة الوحدة</span><span class="field-value">${parseFloat(doc.actualUnitCost).toLocaleString()} ر.س</span></div>` : ""}
-    ${doc.notes ? `<div class="field" style="grid-column:1/-1"><span class="field-label">ملاحظات</span><span class="field-value">${doc.notes}</span></div>` : ""}
+    <div class="field"><span class="field-label">${t.workflow.purchase.itemNameLabel}</span><span class="field-value">${doc.itemName}</span></div>
+    <div class="field"><span class="field-label">${t.workflow.purchase.deliveredQuantity}</span><span class="field-value">${doc.quantity} ${doc.unit||""}</span></div>
+    ${doc.supplierName ? `<div class="field"><span class="field-label">${t.workflow.purchase.supplierLabel}</span><span class="field-value">${doc.supplierName}</span></div>` : ""}
+    ${doc.actualUnitCost ? `<div class="field"><span class="field-label">${t.workflow.purchase.unitCostLabel}</span><span class="field-value">${parseFloat(doc.actualUnitCost).toLocaleString(locale)} ${t.common.currency}</span></div>` : ""}
+    ${doc.notes ? `<div class="field" style="grid-column:1/-1"><span class="field-label">${t.workflow.purchase.notesLabel2}</span><span class="field-value">${doc.notes}</span></div>` : ""}
   </div>
   ${imgTag}
 </div>
 <div class="sig-section">
-  <div class="sig-box">توقيع المُسلِّم<br/>${doc.deliveredByName}</div>
-  <div class="sig-box">توقيع المُستلِم<br/>${doc.deliveredToName}</div>
+  <div class="sig-box">${t.workflow.purchase.delivererSignature}<br/>${doc.deliveredByName}</div>
+  <div class="sig-box">${t.workflow.purchase.receiverSignature}<br/>${doc.deliveredToName}</div>
 </div>
 <div class="footer">
-  <span>وثيقة آلية — نظام CMMS</span>
-  <span class="print-count">عدد مرات الطباعة: <strong>${doc.printCount + 1}</strong></span>
+  <span>${t.workflow.purchase.automatedCmmsDocument}</span>
+  <span class="print-count">${t.workflow.purchase.printCountLabel}: <strong>${doc.printCount + 1}</strong></span>
 </div>
 <script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();}<\/script>
 </body></html>`;
@@ -278,7 +321,7 @@ body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:
   };
 
   if (deliveryDocsQuery.isLoading || returnDocsQuery?.isLoading) {
-    return <Card><CardContent className="p-8 text-center text-muted-foreground">جاري التحميل...</CardContent></Card>;
+    return <Card><CardContent className="p-8 text-center text-muted-foreground">{t.common.loading}</CardContent></Card>;
   }
 
   if (docs.length === 0) {
@@ -286,8 +329,8 @@ body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:
       <Card>
         <CardContent className="p-8 text-center text-muted-foreground">
           <FileText className="w-10 h-10 mx-auto mb-3 opacity-30" />
-          <p className="font-medium">لا توجد وثائق بعد</p>
-          <p className="text-xs mt-1">ستظهر هنا كل وثيقة عند تأكيد تسليم مادة للفني أو إتمام مرتجع</p>
+          <p className="font-medium">{t.workflow.purchase.noDocumentsYet}</p>
+          <p className="text-xs mt-1">{t.workflow.purchase.documentsAppearHint}</p>
         </CardContent>
       </Card>
     );
@@ -299,28 +342,29 @@ body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:
       <div className="flex flex-wrap gap-2 mb-3">
         <div className="relative flex-1 min-w-[180px]">
           <input
-            className="w-full border rounded-md px-3 py-1.5 text-sm pr-8 focus:outline-none focus:ring-1 focus:ring-primary"
-            placeholder="بحث في الوثائق..."
+            className={`w-full border rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary ${dir === "rtl" ? "pr-8" : "pl-8"}`}
+            dir="auto"
+            placeholder={t.workflow.purchase.searchDocuments}
             defaultValue={searchDocs}
             onInput={e => { setSearchDocs((e.target as HTMLInputElement).value); setPageDocs(1); }}
           />
-          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">🔍</span>
+          <span className={`absolute top-1/2 -translate-y-1/2 text-muted-foreground text-xs ${dir === "rtl" ? "right-2.5" : "left-2.5"}`}>🔍</span>
         </div>
         <select
           className="border rounded-md px-2 py-1.5 text-sm bg-white"
           value={docRecipient}
           onChange={e => { setDocRecipient(e.target.value); setPageDocs(1); }}
         >
-          <option value="all">كل المستلمين</option>
+          <option value="all">{t.workflow.purchase.allRecipients}</option>
           {recipients.map((r: any) => <option key={r} value={r}>{r}</option>)}
         </select>
-        <input type="date" className="border rounded-md px-2 py-1.5 text-sm" value={docDateFrom} onChange={e => { setDocDateFrom(e.target.value); setPageDocs(1); }} />
-        <input type="date" className="border rounded-md px-2 py-1.5 text-sm" value={docDateTo} onChange={e => { setDocDateTo(e.target.value); setPageDocs(1); }} />
+        <input type="date" dir="ltr" className="border rounded-md px-2 py-1.5 text-sm" value={docDateFrom} onChange={e => { setDocDateFrom(e.target.value); setPageDocs(1); }} />
+        <input type="date" dir="ltr" className="border rounded-md px-2 py-1.5 text-sm" value={docDateTo} onChange={e => { setDocDateTo(e.target.value); setPageDocs(1); }} />
         {(searchDocs || docRecipient !== "all" || docDateFrom || docDateTo) && (
-          <button className="text-xs text-muted-foreground underline" onClick={() => { setSearchDocs(""); setDocRecipient("all"); setDocDateFrom(""); setDocDateTo(""); setPageDocs(1); }}>مسح</button>
+          <button className="text-xs text-muted-foreground underline" onClick={() => { setSearchDocs(""); setDocRecipient("all"); setDocDateFrom(""); setDocDateTo(""); setPageDocs(1); }}>{t.workflow.purchase.clear}</button>
         )}
       </div>
-      <div className="text-sm text-muted-foreground">{filteredDocs.length} وثيقة{filteredDocs.length !== docs.length ? ` من ${docs.length}` : ""}</div>
+      <div className="text-sm text-muted-foreground">{filteredDocs.length} {t.workflow.purchase.documentCount}{filteredDocs.length !== docs.length ? ` ${t.workflow.purchase.ofCount} ${docs.length}` : ""}</div>
       {pagedDocs.map((doc: any) => (
         <Card
           key={`${doc.docType}-${doc.id}`}
@@ -343,24 +387,24 @@ body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:
                     {doc.docType === "return" ? doc.returnNumber : doc.deliveryNumber}
                   </span>
                   {/* التاريخ */}
-                  <span>{new Date(doc.createdAt).toLocaleDateString("ar-SA", { year: "numeric", month: "short", day: "numeric" })}</span>
+                  <span>{new Date(doc.createdAt).toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" })}</span>
                   {doc.docType === "return" ? (
                     <>
-                      <span>نفّذ الإرجاع: {doc.returnedByName}</span>
-                      <span>الكمية: {doc.returnedQuantity} {doc.unit || ""}</span>
+                      <span>{t.workflow.purchase.returnedByInline} {doc.returnedByName}</span>
+                      <span>{t.workflow.purchase.quantityColon} {doc.returnedQuantity} {displayUnit(doc.unit)}</span>
                     </>
                   ) : (
                     <>
-                      <span>المُسلِّم: {doc.deliveredByName}</span>
-                      {doc.assignedTechnicianName && <span>الفني المسند: {doc.assignedTechnicianName}</span>}
-                      <span>المستلم فعليًا: {doc.deliveredToName}</span>
-                      {doc.ticketNumber && <span>البلاغ: {doc.ticketNumber}</span>}
-                      <span>الكمية: {doc.quantity} {doc.unit || ""}</span>
+                      <span>{t.workflow.purchase.delivererInline} {doc.deliveredByName}</span>
+                      {doc.assignedTechnicianName && <span>{t.workflow.purchase.assignedTechnicianInline} {doc.assignedTechnicianName}</span>}
+                      <span>{t.workflow.purchase.actualRecipientInline} {doc.deliveredToName}</span>
+                      {doc.ticketNumber && <span>{t.workflow.purchase.ticketInline} {doc.ticketNumber}</span>}
+                      <span>{t.workflow.purchase.quantityColon} {doc.quantity} {displayUnit(doc.unit)}</span>
                     </>
                   )}
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  طُبعت {doc.printCount} {doc.printCount === 1 ? "مرة" : "مرات"}
+                  {t.workflow.purchase.printed} {doc.printCount} {doc.printCount === 1 ? t.workflow.purchase.once : t.workflow.purchase.times}
                 </div>
               </div>
               <Button
@@ -371,7 +415,7 @@ body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:
                 disabled={false}
               >
                 <FileText className="w-4 h-4" />
-                "تنزيل PDF"
+                {t.workflow.purchase.downloadPdf}
               </Button>
             </div>
           </CardContent>
@@ -406,6 +450,7 @@ export default function PurchaseCycle() {
   const [deliveryUnit, setDeliveryUnit]     = useState<string>("");
   const [deliveryNotes, setDeliveryNotes]   = useState<string>("");
   const [deliveryLotInfo, setDeliveryLotInfo] = useState<any>(null);
+  const [deliveryCostAllocations, setDeliveryCostAllocations] = useState<IssueCostAllocationDraft[]>(() => [createIssueCostAllocationDraft()]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const currentUploadTarget = useRef<string>("");
@@ -425,7 +470,7 @@ export default function PurchaseCycle() {
       else if (target === "warehouse") setWarehouseForm(p => ({ ...p, warehousePhotoUrl: data.url }));
       toast.success(t.common.upload);
     } catch (err: any) {
-      toast.error(err.message || "Upload error");
+      toast.error(localizeApiError(err.message || "Upload error"));
     } finally {
       setUploading(null);
     }
@@ -444,9 +489,15 @@ export default function PurchaseCycle() {
 
   // Step indicator component
 
-  const { t, language } = useTranslation();
+  const { t, language, dir } = useTranslation();
+  const locale = language === "ar" ? "ar-SA" : language === "ur" ? "ur-PK" : "en-US";
   const { user } = useAuth();
   const utils = trpc.useUtils();
+  const { data: catalogUnits = [] } = trpc.catalog.units.list.useQuery();
+  const displayUnit = (value: string | null | undefined) =>
+    getLocalizedCatalogUnitName(value, catalogUnits as any[], language);
+  const displayItemName = (item: any) => getLocalizedItemField(item, "itemName", language) || item?.itemName || "";
+  const displayItemDescription = (item: any) => getLocalizedItemField(item, "description", language) || item?.description || "";
   const isRTL = language === "ar" || language === "ur";
   const role = user?.role || "";
   const isAdminOrOwner = role === "admin" || role === "owner";
@@ -473,7 +524,7 @@ export default function PurchaseCycle() {
   // تجميع حسب رقم فاتورة المورد بعد ترتيب الأصناف من الأحدث إلى الأقدم.
   // وبذلك يظهر أحدث رقم فاتورة أولاً، وتظهر أحدث أصناف الفاتورة في بدايتها.
   const groupedByInvoiceNumber = newestPendingDelivery.reduce((groups: any, item: any) => {
-    const key = item.supplierInvoiceNumber || "بدون رقم فاتورة";
+    const key = item.supplierInvoiceNumber || t.workflow.purchase.withoutInvoiceNumber;
     if (!groups[key]) groups[key] = [];
     groups[key].push(item);
     return groups;
@@ -483,59 +534,59 @@ export default function PurchaseCycle() {
   const refetchAll = () => { refetchEstimate(); refetchPurchase(); refetchWarehouse(); refetchDelivery(); };
 
   // Mutations
-  const estimateCostMut = trpc.purchaseOrders.estimateCost.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.pricingSaved); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
+  const estimateCostMut = trpc.purchaseOrders.estimateCost.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.pricingSaved); refetchAll(); }, onError: (e: any) => toast.error(localizeApiError(e.message)) });
   const submitPricedBatchMut = trpc.purchaseOrders.submitPricedBatch.useMutation({
     onSuccess: (res: any) => {
-      toast.success("تم إرسال التسعير إلى الحسابات");
+      toast.success(t.workflow.purchase.pricingSentAccounting);
       if (res?.pricingDocumentArchived === false) {
-        toast.warning("تم إرسال التسعير للحسابات، لكن تعذر حفظ وثيقة التسعير في مركز المستندات");
+        toast.warning(t.workflow.purchase.pricingDocumentWarning);
       }
       utils.attachments.listByType.invalidate({ entityType: "delegate_pricing_documents" });
       refetchAll();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
   // [PB 2026-08-29] إرسال دفعة فرعية من حزمة — تنشأ دفعة تسعير مستقلة لكل
   // طلب داخل الحزمة، مرتبطة كلها برقم إرسال واحد (PB01-1، PB01-2...).
   // الفشل الجزئي طبيعي: طلب بلا أصناف جاهزة يُتجاوَز ويُبلَّغ عنه.
   const submitPackageBatchMut = trpc.purchasePackages.submitPackageBatch.useMutation({
     onSuccess: (res: any) => {
-      toast.success(`تم إرسال الدفعة ${res.submissionNumber} — ${res.sent.length} طلب`);
+      toast.success(t.workflow.purchase.packageBatchSent.replace("{number}", res.submissionNumber).replace("{count}", String(res.sent.length)));
       if (res.skipped?.length > 0) {
-        toast.info(`تم تجاوز ${res.skipped.length} طلب بلا أصناف مسعّرة جاهزة`);
+        toast.info(t.workflow.purchase.packageSkipped.replace("{count}", String(res.skipped.length)));
       }
       if (res.pricingDocumentArchived === false) {
-        toast.warning("تم إرسال دفعة الحزمة للحسابات، لكن تعذر حفظ وثيقة التسعير في مركز المستندات");
+        toast.warning(t.workflow.purchase.packagePricingDocumentWarning);
       }
       utils.attachments.listByType.invalidate({ entityType: "delegate_pricing_documents" });
       refetchAll();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
-  const confirmPurchaseMut = trpc.purchaseOrders.confirmItemPurchase.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.purchased); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
-  const cancelPurchaseMut = trpc.purchaseOrders.cancelItemPurchase.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.cancelPurchaseSuccess); refetchAll(); setCancelDialog(null); setCancelNote(""); }, onError: (e: any) => toast.error(e.message) });
-  const confirmWarehouseMut = trpc.purchaseOrders.confirmDeliveryToWarehouse.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.deliveredToWarehouse); refetchAll(); }, onError: (e: any) => toast.error(e.message) });
+  const confirmPurchaseMut = trpc.purchaseOrders.confirmItemPurchase.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.purchased); refetchAll(); }, onError: (e: any) => toast.error(localizeApiError(e.message)) });
+  const cancelPurchaseMut = trpc.purchaseOrders.cancelItemPurchase.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.cancelPurchaseSuccess); refetchAll(); setCancelDialog(null); setCancelNote(""); }, onError: (e: any) => toast.error(localizeApiError(e.message)) });
+  const confirmWarehouseMut = trpc.purchaseOrders.confirmDeliveryToWarehouse.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.deliveredToWarehouse); refetchAll(); }, onError: (e: any) => toast.error(localizeApiError(e.message)) });
   const resolveDeliveryLotMut = trpc.inventory.resolveDeliveryLot.useMutation({
     onSuccess: (data: any) => {
       setDeliveryLotInfo(data);
-      toast.success(`تم التعرف على الدفعة ${data.lotCode}`);
+      toast.success(t.workflow.purchase.lotRecognized.replace("{code}", data.lotCode));
     },
     onError: (e: any) => {
       setDeliveryLotInfo(null);
-      toast.error(e.message);
+      toast.error(localizeApiError(e.message));
     },
   });
 
   const deliverInventoryMut = trpc.purchaseOrders.deliverInventoryItem.useMutation({
     onSuccess: (data) => {
-      toast.success(t.purchaseOrders.deliveredToRequester);
+      toast.success(`${t.purchaseOrders.deliveredToRequester}${data?.allocatedCostTotal != null ? ` — ${t.workflow.purchase.allocatedLotCost.replace("{amount}", Number(data.allocatedCostTotal).toFixed(2)).replace("{currency}", t.common.currency)}` : ""}`);
       refetchInventory();
       refetchDelivery();
       deliveryDocsQuery.refetch();
       setDeliveryPrintData((prev: any) => {
         if (prev) {
           const fullData = { ...prev, deliveryNumber: data?.deliveryNumber, lotCode: data?.lotCode || undefined };
-          printDeliveryReceipt(fullData);
+          printDeliveryReceipt(fullData, language);
           // ملاحظة: لا نستدعي generateDocMut هنا — السيرفر ينشئ وثيقة التسليم
           // تلقائيًا ضمن db.issueDelivery() لعناصر المخزون المباشرة، فأي استدعاء
           // إضافي هنا يسبب وثيقة مكررة لنفس عملية التسليم.
@@ -544,24 +595,24 @@ export default function PurchaseCycle() {
       });
       setDeliveryLotInfo(null);
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
 
   const confirmDeliveryMut = trpc.purchaseOrders.confirmDeliveryToRequester.useMutation({
     onSuccess: (data) => {
-      toast.success(t.purchaseOrders.deliveredToRequester);
+      toast.success(`${t.purchaseOrders.deliveredToRequester}${data?.allocatedCostTotal != null ? ` — ${t.workflow.purchase.allocatedLotCost.replace("{amount}", Number(data.allocatedCostTotal).toFixed(2)).replace("{currency}", t.common.currency)}` : ""}`);
       refetchAll();
       refetchInventory();
       deliveryDocsQuery.refetch();
       setDeliveryPrintData((prev: any) => {
         if (prev) {
-          printDeliveryReceipt({ ...prev, deliveryNumber: data?.deliveryNumber, lotCode: data?.lotCode || undefined });
+          printDeliveryReceipt({ ...prev, deliveryNumber: data?.deliveryNumber, lotCode: data?.lotCode || undefined }, language);
         }
         return null;
       });
       setDeliveryLotInfo(null);
     },
-    onError: (e: any) => { toast.error(e.message); setDeliveryPrintData(null); },
+    onError: (e: any) => { toast.error(localizeApiError(e.message)); setDeliveryPrintData(null); },
   });
 
   // Estimate state
@@ -597,11 +648,11 @@ export default function PurchaseCycle() {
       setSearchDelivery(data.trackingToken || data.lotCode || "");
       setDeliverySearchMode("qr");
       setPageDelivery(1);
-      toast.success(`تم التعرف على الدفعة ${data.lotCode}`);
+      toast.success(t.workflow.purchase.lotRecognized.replace("{code}", data.lotCode));
     },
     onError: (e: any) => {
       setDeliveryQrInventoryIds([]);
-      toast.error(e.message);
+      toast.error(localizeApiError(e.message));
     },
   });
 
@@ -708,22 +759,22 @@ export default function PurchaseCycle() {
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0 space-y-2">
               <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="font-semibold text-sm truncate">{item.itemName}</h3>
+                <h3 className="font-semibold text-sm truncate">{displayItemName(item)}</h3>
                 <Badge variant="outline" className={`text-[10px] ${statusColors[item.status] || ""}`}>
-                  {item.isExternalMaintenance ? "تنفيذ الصيانة الخارجية" : (statusLabels[item.status] || item.status)}
+                  {item.isExternalMaintenance ? t.workflow.purchase.externalMaintenanceExecution : (statusLabels[item.status] || item.status)}
                 </Badge>
-                {item.isExternalMaintenance && <Badge className="text-[10px] bg-purple-100 text-purple-700">مسار C</Badge>}
+                {item.isExternalMaintenance && <Badge className="text-[10px] bg-purple-100 text-purple-700">{t.workflow.purchase.pathC}</Badge>}
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1"><Hash className="w-3 h-3" /> {t.purchaseOrders.quantity}: <strong className="text-foreground">{item.quantity} {item.unit}</strong></span>
-                <span className="flex items-center gap-1"><Calendar className="w-3 h-3" /> {new Date(item.createdAt).toLocaleDateString(language === "ar" ? "ar-SA" : "en-US")}</span>
-                {item.description && <span className="col-span-2 sm:col-span-1 truncate">{item.description}</span>}
+                <span className="flex items-center gap-1"><Hash className="w-3 h-3" /> {t.purchaseOrders.quantity}: <strong className="text-foreground">{item.quantity} {displayUnit(item.unit)}</strong></span>
+                <span className="flex items-center gap-1"><Calendar className="w-3 h-3" /> {new Date(item.createdAt).toLocaleDateString(locale)}</span>
+                {displayItemDescription(item) && <span className="col-span-2 sm:col-span-1 truncate">{displayItemDescription(item)}</span>}
               </div>
 
               {item.estimatedUnitCost && (
                 <div className="text-xs text-muted-foreground">
-                  {t.purchaseOrders.estimatedUnitCost}: <strong className="text-foreground">{parseFloat(item.estimatedUnitCost).toLocaleString()} ر.س</strong>
+                  {t.purchaseOrders.estimatedUnitCost}: <strong className="text-foreground">{parseFloat(item.estimatedUnitCost).toLocaleString(locale)} {t.common.currency}</strong>
                 </div>
               )}
 
@@ -742,9 +793,9 @@ export default function PurchaseCycle() {
             </div>
 
             <Button size="sm" className="shrink-0 gap-1.5" onClick={onAction}>
-              {step === 1 && <><ShoppingCart className="w-4 h-4" /> {item.isExternalMaintenance ? "تأكيد اكتمال الصيانة" : t.purchaseOrders.confirmPurchase}</>}
+              {step === 1 && <><ShoppingCart className="w-4 h-4" /> {item.isExternalMaintenance ? t.workflow.purchase.externalMaintenanceComplete : t.purchaseOrders.confirmPurchase}</>}
               {step === 2 && <><Package className="w-4 h-4" /> {t.purchaseOrders.confirmDeliveryToWarehouse}</>}
-              {step === 3 && <><Truck className="w-4 h-4" /> تسليم للفني</>}
+              {step === 3 && <><Truck className="w-4 h-4" /> {t.workflow.purchase.stageTechnicianHandover}</>}
             </Button>
           </div>
         </CardContent>
@@ -779,7 +830,7 @@ export default function PurchaseCycle() {
         <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="estimate" className="gap-1.5">
             <Clock className="w-4 h-4" />
-            <span className="hidden sm:inline">التسعير</span>
+            <span className="hidden sm:inline">{t.workflow.purchase.pricing}</span>
             {pendingEstimate.length > 0 && <Badge variant="destructive" className="text-[10px] px-1.5 py-0">{pendingEstimate.length}</Badge>}
           </TabsTrigger>
           <TabsTrigger value="purchase" className="gap-1.5">
@@ -794,7 +845,7 @@ export default function PurchaseCycle() {
           </TabsTrigger>
           <TabsTrigger value="inventory-entry" className="gap-1.5">
             <Archive className="w-4 h-4" />
-            <span className="hidden sm:inline">إدخال المخزون</span>
+            <span className="hidden sm:inline">{t.workflow.purchase.inventoryEntry}</span>
             {Object.keys(groupedByInvoiceNumber).length > 0 && <Badge variant="destructive" className="text-[10px] px-1.5 py-0">{pendingDelivery.length}</Badge>}
           </TabsTrigger>
           <TabsTrigger value="delivery" className="gap-1.5">
@@ -804,17 +855,17 @@ export default function PurchaseCycle() {
           </TabsTrigger>
           <TabsTrigger value="documents" className="gap-1.5">
             <FileText className="w-4 h-4" />
-            <span className="hidden sm:inline">الوثائق</span>
+            <span className="hidden sm:inline">{t.workflow.purchase.documents}</span>
           </TabsTrigger>
         </TabsList>
 
         {/* ==================== TAB 0: Estimate (Delegate - Revision Items) ==================== */}
         <TabsContent value="estimate" className="mt-4 space-y-4">
-          <FilterBar search={searchEstimate} setSearch={v => { setSearchEstimate(v); setPageEstimate(1); }} from={dateFrom} setFrom={v => { setDateFrom(v); setPageEstimate(1); }} to={dateTo} setTo={v => { setDateTo(v); setPageEstimate(1); }} placeholder="بحث في الأصناف..." />
+          <FilterBar search={searchEstimate} setSearch={v => { setSearchEstimate(v); setPageEstimate(1); }} from={dateFrom} setFrom={v => { setDateFrom(v); setPageEstimate(1); }} to={dateTo} setTo={v => { setDateTo(v); setPageEstimate(1); }} placeholder={t.workflow.purchase.searchItems} />
           {filterItems(sortPurchaseCycleItemsNewestFirst(pendingEstimate), searchEstimate, dateFrom, dateTo).length === 0 ? (
             <Card><CardContent className="p-8 text-center text-muted-foreground">
               <CheckCircle2 className="w-10 h-10 mx-auto mb-3 text-green-500" />
-              <p className="font-medium">لا توجد أصناف بانتظار التسعير</p>
+              <p className="font-medium">{t.workflow.purchase.noPricingItems}</p>
             </CardContent></Card>
           ) : (
             <><div className="space-y-3">
@@ -846,16 +897,16 @@ export default function PurchaseCycle() {
                   <CardContent className="p-4 space-y-3">
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
-                        <p className="font-medium text-sm truncate">{item.itemName}</p>
-                        {item.description && <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{item.description}</p>}
+                        <p className="font-medium text-sm truncate" dir="auto">{displayItemName(item)}</p>
+                        {displayItemDescription(item) && <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2" dir="auto">{displayItemDescription(item)}</p>}
                         <div className="flex flex-wrap gap-2 mt-1.5">
-                          <Badge variant="outline" className="text-[10px]">الكمية: {item.quantity} {item.unit || ""}</Badge>
+                          <Badge variant="outline" className="text-[10px]">{t.workflow.purchase.quantityColon} {item.quantity} {displayUnit(item.unit)}</Badge>
                           {item.purchaseOrderNumber && <Badge variant="outline" className="text-[10px]">{item.purchaseOrderNumber}</Badge>}
-                          {item.isExternalMaintenance && <Badge className="text-[10px] bg-purple-100 text-purple-700 border-purple-200">صيانة أصل خارجية</Badge>}
+                          {item.isExternalMaintenance && <Badge className="text-[10px] bg-purple-100 text-purple-700 border-purple-200">{t.workflow.purchase.externalAssetMaintenance}</Badge>}
                         </div>
                         {item.itemRevisionNote && (
                           <div className="mt-2 text-xs bg-red-50 border border-red-200 rounded p-2 text-red-700">
-                            <strong>سبب المراجعة السابقة:</strong> {item.itemRevisionNote}
+                            <strong>{t.workflow.purchase.previousReviewReason}</strong>{" "}<EntityTranslatedText entityType="PO_ITEM" entityId={item.id} field="itemRevisionNote" original={item.itemRevisionNote} />
                           </div>
                         )}
                       </div>
@@ -863,8 +914,8 @@ export default function PurchaseCycle() {
                     {item.status === "estimated" ? (
                       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
                         <div>
-                          <div className="text-xs text-emerald-700">تم حفظ السعر</div>
-                          <div className="font-semibold text-emerald-900">{Number(item.estimatedTotalCost || item.estimatedUnitCost || 0).toLocaleString("ar-SA")} ر.س</div>
+                          <div className="text-xs text-emerald-700">{t.workflow.purchase.savedPrice}</div>
+                          <div className="font-semibold text-emerald-900">{Number(item.estimatedTotalCost || item.estimatedUnitCost || 0).toLocaleString(locale)} {t.common.currency}</div>
                         </div>
                         {/* داخل حزمة: الإرسال يتم من زر الحزمة الموحّد أعلاه،
                             فلا يُعرض زر مستقل لكل صنف تفاديًا لإرسالين متوازيين. */}
@@ -876,14 +927,14 @@ export default function PurchaseCycle() {
                             className="gap-2 bg-emerald-600 hover:bg-emerald-700"
                           >
                             {submitPricedBatchMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
-                            إرسال للحسابات
+                            {t.workflow.purchase.sendAccounting}
                           </Button>
                         )}
                       </div>
                     ) : (
                       <div className="flex gap-2 items-end">
                         <div className="flex-1">
-                          <Label className="text-xs text-amber-700">السعر التقديري للوحدة (ر.س)</Label>
+                          <Label className="text-xs text-amber-700">{t.workflow.purchase.estimatedUnitPriceCurrency.replace("{currency}", t.common.currency)}</Label>
                           <Input
                             type="number"
                             placeholder="0.00"
@@ -894,7 +945,7 @@ export default function PurchaseCycle() {
                         </div>
                         {estimateValues[item.id] && parseFloat(estimateValues[item.id]) > 0 && (
                           <div className="text-xs text-amber-700 pb-2">
-                            = {(parseFloat(estimateValues[item.id]) * item.quantity).toLocaleString()} ر.س
+                            = {(parseFloat(estimateValues[item.id]) * item.quantity).toLocaleString(locale)} {t.common.currency}
                           </div>
                         )}
                         <Button
@@ -930,9 +981,9 @@ export default function PurchaseCycle() {
                           <div className="flex items-center gap-2">
                             <Boxes className="w-4 h-4 text-primary" />
                             <span className="font-semibold font-mono text-sm">{g.packageNumber}</span>
-                            <Badge variant="secondary" className="text-[10px]">{g.items.length} صنف</Badge>
+                            <Badge variant="secondary" className="text-[10px]">{g.items.length} {t.workflow.purchase.itemCount}</Badge>
                             {pricedCount > 0 && (
-                              <Badge className="text-[10px] bg-emerald-100 text-emerald-700">{pricedCount} مسعّر</Badge>
+                              <Badge className="text-[10px] bg-emerald-100 text-emerald-700">{t.workflow.purchase.pricedCount.replace("{count}", String(pricedCount))}</Badge>
                             )}
                           </div>
                           <Button
@@ -942,7 +993,7 @@ export default function PurchaseCycle() {
                             className="gap-2 bg-emerald-600 hover:bg-emerald-700"
                           >
                             {submitPackageBatchMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
-                            إرسال المسعّر للحسابات
+                            {t.workflow.purchase.sendPricedAccounting}
                           </Button>
                         </div>
                         <div className="space-y-3">
@@ -1003,8 +1054,8 @@ export default function PurchaseCycle() {
           {Object.keys(groupedByInvoiceNumber).length === 0 ? (
             <Card><CardContent className="p-8 text-center text-muted-foreground">
               <Archive className="w-10 h-10 mx-auto mb-3 text-muted-foreground/40" />
-              <p className="font-medium">لا توجد أصناف بانتظار إدخال المخزون</p>
-              <p className="text-xs mt-1">يجب أولاً تأكيد التوريد للمستودع</p>
+              <p className="font-medium">{t.workflow.purchase.noPendingInventoryEntry}</p>
+              <p className="text-xs mt-1">{t.workflow.purchase.confirmWarehouseFirst}</p>
             </CardContent></Card>
           ) : (
             <div className="space-y-4">
@@ -1017,7 +1068,7 @@ export default function PurchaseCycle() {
                         <Package className="w-4 h-4 text-emerald-600" />
                         <div>
                           <p className="font-semibold text-sm font-mono">{invoiceNumber}</p>
-                          <p className="text-xs text-muted-foreground">{items.length} صنف من نفس الفاتورة</p>
+                          <p className="text-xs text-muted-foreground">{t.workflow.purchase.sameInvoiceItems.replace("{count}", String(items.length))}</p>
                         </div>
                       </div>
                       <Button
@@ -1029,16 +1080,16 @@ export default function PurchaseCycle() {
                         }}
                       >
                         <Sparkles className="w-3.5 h-3.5" />
-                        رفع فاتورة المورد
+                        {t.workflow.purchase.uploadSupplierInvoice}
                       </Button>
                     </div>
                     {/* قائمة الأصناف */}
                     <div className="space-y-1.5 border-t pt-3">
                       {items.map((item: any) => (
                         <div key={item.id} className="flex items-center justify-between text-sm">
-                          <span className="text-muted-foreground truncate flex-1">{item.itemName}</span>
+                          <span className="text-muted-foreground truncate flex-1" dir="auto">{displayItemName(item)}</span>
                           <span className="font-mono text-xs text-muted-foreground mr-2">
-                            {item.receivedQuantity ?? item.quantity} {item.unit}
+                            {item.receivedQuantity ?? item.quantity} {displayUnit(item.unit)}
                           </span>
                         </div>
                       ))}
@@ -1058,10 +1109,10 @@ export default function PurchaseCycle() {
           <div className="space-y-2 p-3 border rounded-lg bg-muted/20">
             <div className="flex gap-2">
               <Button size="sm" variant={deliverySearchMode === "name" ? "default" : "outline"} onClick={() => { setDeliverySearchMode("name"); setSearchDelivery(""); setDeliveryQrInventoryIds([]); }} className="gap-1">
-                <Search className="w-3.5 h-3.5" /> بالاسم
+                <Search className="w-3.5 h-3.5" /> {t.workflow.purchase.searchByName}
               </Button>
               <Button size="sm" variant={deliverySearchMode === "code" ? "default" : "outline"} onClick={() => { setDeliverySearchMode("code"); setSearchDelivery(""); setDeliveryQrInventoryIds([]); }} className="gap-1">
-                <Package className="w-3.5 h-3.5" /> بالرقم
+                <Package className="w-3.5 h-3.5" /> {t.workflow.purchase.searchByNumber}
               </Button>
               <Button size="sm" variant={deliverySearchMode === "qr" ? "default" : "outline"} onClick={() => { setDeliverySearchMode("qr"); setSearchDelivery(""); setDeliveryQrInventoryIds([]); }} className="gap-1">
                 <QrCode className="w-3.5 h-3.5" /> QR Code
@@ -1081,17 +1132,18 @@ export default function PurchaseCycle() {
                   setPageDelivery(1);
                   resolveLotSearchMut.mutate({ code });
                 }}
-                placeholder="امسح QR الدفعة أو أدخل Lot Code..."
+                placeholder={t.workflow.purchase.scanLotPlaceholder}
               />
             ) : (
               <div className="relative">
                 <input
-                  className="w-full border rounded-md px-3 py-1.5 text-sm pr-8 focus:outline-none focus:ring-1 focus:ring-primary"
-                  placeholder={deliverySearchMode === "name" ? "ابحث باسم الصنف..." : "ابحث برقم الصنف أو الباركود..."}
+                  dir="auto"
+                  className={`w-full border rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary ${dir === "rtl" ? "pr-8" : "pl-8"}`}
+                  placeholder={deliverySearchMode === "name" ? t.workflow.purchase.searchItemByName : t.workflow.purchase.searchItemByCode}
                   value={searchDelivery}
                   onChange={e => { setSearchDelivery(e.target.value); setPageDelivery(1); }}
                 />
-                <Search className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                <Search className={`absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground ${dir === "rtl" ? "right-2.5" : "left-2.5"}`} />
               </div>
             )}
           </div>
@@ -1099,7 +1151,7 @@ export default function PurchaseCycle() {
             <Card><CardContent className="p-8 text-center text-muted-foreground">
               <CheckCircle2 className="w-10 h-10 mx-auto mb-3 text-green-500" />
               <p className="font-medium">{t.purchaseOrders.noItemsPending}</p>
-              <p className="text-xs mt-1">لا توجد أصناف في المخزون جاهزة للتسليم</p>
+              <p className="text-xs mt-1">{t.workflow.purchase.noInventoryReady}</p>
             </CardContent></Card>
           ) : (
             <><div className="space-y-3">
@@ -1109,12 +1161,12 @@ export default function PurchaseCycle() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
                         {/* اسم الصنف من OCR */}
-                        <p className="font-medium text-sm">{item.itemName}</p>
-                        {item.itemName_en && <p className="text-xs text-muted-foreground">{item.itemName_en}</p>}
+                        <p className="font-medium text-sm" dir="auto">{displayItemName(item)}</p>
+                        {displayItemDescription(item) && <p className="text-xs text-muted-foreground" dir="auto">{displayItemDescription(item)}</p>}
                         <div className="flex flex-wrap gap-2 mt-1.5 text-xs text-muted-foreground">
                           <span className="flex items-center gap-1">
                             <Package className="w-3 h-3" />
-                            {item.quantity} {item.unit}
+                            {item.quantity} {displayUnit(item.unit)}
                           </span>
                           {item.vendorName && (
                             <span className="flex items-center gap-1">
@@ -1128,11 +1180,11 @@ export default function PurchaseCycle() {
                           )}
                           {item.ticketNumber && item.ticketAssignedToName && (
                             <span className="text-[10px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">
-                              بلاغ {item.ticketNumber} — الفني المسند: {item.ticketAssignedToName}
+                              {t.workflow.purchase.ticketAssignedSummary.replace("{ticket}", item.ticketNumber).replace("{name}", item.ticketAssignedToName)}
                             </span>
                           )}
                           {item.averageCost > 0 && (
-                            <span className="font-mono">{parseFloat(item.averageCost).toFixed(2)} ر.س</span>
+                            <span className="font-mono">{parseFloat(item.averageCost).toFixed(2)} {t.common.currency}</span>
                           )}
                         </div>
                       </div>
@@ -1143,14 +1195,15 @@ export default function PurchaseCycle() {
                           // المستلم الفعلي اختيار صريح وإلزامي حتى لو كان هو نفس الفني المسند.
                           setDeliveryUserId("");
                           setDeliveryQty("");
-                          setDeliveryUnit(item.unit || "قطعة");
+                          setDeliveryUnit(item.unit || t.workflow.purchase.pieceUnit);
                           setDeliveryNotes("");
                           setDeliveryLotInfo(null);
+                          setDeliveryCostAllocations([createIssueCostAllocationDraft()]);
                           // نمرر بيانات الصنف من المخزون للـ dialog
                           setDeliveryDialog({
                             ...item,
                             id:           item.id,
-                            itemName:     item.itemName,
+                            itemName:     displayItemName(item),
                             quantity:     item.quantity,
                             unit:         item.unit,
                             supplierName: item.vendorName,
@@ -1160,7 +1213,7 @@ export default function PurchaseCycle() {
                         }}
                       >
                         <Truck className="w-3.5 h-3.5" />
-                        تسليم للفني
+                        {t.workflow.purchase.stageTechnicianHandover}
                       </Button>
                     </div>
                   </CardContent>
@@ -1184,7 +1237,7 @@ export default function PurchaseCycle() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <ShoppingCart className="w-5 h-5 text-primary" />
-              {purchaseDialog?.isExternalMaintenance ? "تأكيد اكتمال الصيانة الخارجية" : t.purchaseOrders.confirmPurchase}
+              {purchaseDialog?.isExternalMaintenance ? t.workflow.purchase.externalMaintenanceCompleteTitle : t.purchaseOrders.confirmPurchase}
             </DialogTitle>
           </DialogHeader>
 
@@ -1192,8 +1245,8 @@ export default function PurchaseCycle() {
             <div className="space-y-4">
               {/* Item info */}
               <div className="bg-muted/50 rounded-lg p-3 space-y-1">
-                <p className="font-semibold text-sm">{purchaseDialog.itemName}</p>
-                <p className="text-xs text-muted-foreground">{t.purchaseOrders.quantity}: {purchaseDialog.quantity} {purchaseDialog.unit}</p>
+                <p className="font-semibold text-sm">{displayItemName(purchaseDialog)}</p>
+                <p className="text-xs text-muted-foreground">{t.purchaseOrders.quantity}: {purchaseDialog.quantity} {displayUnit(purchaseDialog.unit)}</p>
                 {purchaseDialog.description && <p className="text-xs text-muted-foreground">{purchaseDialog.description}</p>}
               </div>
 
@@ -1202,7 +1255,7 @@ export default function PurchaseCycle() {
                 {/* Purchased item photo */}
                 <div className="space-y-2">
                   <Label className="text-xs font-medium flex items-center gap-1">
-                    <Camera className="w-3.5 h-3.5" /> {purchaseDialog?.isExternalMaintenance ? "صورة الأصل بعد الصيانة" : t.purchaseOrders.purchasedItemPhoto} *
+                    <Camera className="w-3.5 h-3.5" /> {purchaseDialog?.isExternalMaintenance ? t.workflow.purchase.assetAfterMaintenancePhoto : t.purchaseOrders.purchasedItemPhoto} *
                   </Label>
                   {purchasePhotos.purchased ? (
                     <div className="relative">
@@ -1219,7 +1272,7 @@ export default function PurchaseCycle() {
                 {/* Invoice photo */}
                 <div className="space-y-2">
                   <Label className="text-xs font-medium flex items-center gap-1">
-                    <FileText className="w-3.5 h-3.5" /> {purchaseDialog?.isExternalMaintenance ? "فاتورة أو تقرير الورشة" : t.purchaseOrders.invoicePhoto} *
+                    <FileText className="w-3.5 h-3.5" /> {purchaseDialog?.isExternalMaintenance ? t.workflow.purchase.workshopInvoiceReport : t.purchaseOrders.invoicePhoto} *
                   </Label>
                   {purchasePhotos.invoice ? (
                     <div className="relative">
@@ -1247,7 +1300,7 @@ export default function PurchaseCycle() {
               }}
             >
               <Ban className="w-4 h-4" />
-              إلغاء الشراء
+              {t.workflow.purchase.cancelPurchase}
             </Button>
             <div className="flex-1" />
             <Button variant="outline" onClick={() => setPurchaseDialog(null)}>{t.common.cancel}</Button>
@@ -1268,7 +1321,7 @@ export default function PurchaseCycle() {
               }}
             >
               {confirmPurchaseMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-              {purchaseDialog?.isExternalMaintenance ? "تأكيد اكتمال الصيانة" : t.purchaseOrders.confirmPurchase}
+              {purchaseDialog?.isExternalMaintenance ? t.workflow.purchase.externalMaintenanceComplete : t.purchaseOrders.confirmPurchase}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1280,14 +1333,14 @@ export default function PurchaseCycle() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-red-700">
               <Ban className="w-5 h-5" />
-              إلغاء شراء الصنف
+              {t.workflow.purchase.cancelItemPurchase}
             </DialogTitle>
           </DialogHeader>
           {cancelDialog && (
             <div className="space-y-4">
               <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-1">
-                <p className="font-semibold text-sm">{cancelDialog.itemName}</p>
-                <p className="text-xs text-muted-foreground">{t.purchaseOrders.quantity}: {cancelDialog.quantity} {cancelDialog.unit}</p>
+                <p className="font-semibold text-sm">{displayItemName(cancelDialog)}</p>
+                <p className="text-xs text-muted-foreground">{t.purchaseOrders.quantity}: {cancelDialog.quantity} {displayUnit(cancelDialog.unit)}</p>
               </div>
               <div className="space-y-2">
                 <Label className="text-xs font-medium">{t.purchaseOrders.revisionReason} *</Label>
@@ -1334,8 +1387,8 @@ export default function PurchaseCycle() {
             <div className="space-y-4">
               {/* Item info */}
               <div className="bg-muted/50 rounded-lg p-3 space-y-1">
-                <p className="font-semibold text-sm">{warehouseDialog.itemName}</p>
-                <p className="text-xs text-muted-foreground">{t.purchaseOrders.quantity}: {warehouseDialog.quantity} {warehouseDialog.unit}</p>
+                <p className="font-semibold text-sm">{displayItemName(warehouseDialog)}</p>
+                <p className="text-xs text-muted-foreground">{t.purchaseOrders.quantity}: {warehouseDialog.quantity} {displayUnit(warehouseDialog.unit)}</p>
               </div>
 
               {/* Show purchase photos */}
@@ -1363,9 +1416,9 @@ export default function PurchaseCycle() {
                   <Input type="number" min={1} value={warehouseForm.receivedQuantity} onChange={e => setWarehouseForm(p => ({ ...p, receivedQuantity: e.target.value }))} placeholder="0" />
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs">رقم فاتورة المورد *</Label>
-                  <Input value={warehouseForm.supplierInvoiceNumber} onChange={e => setWarehouseForm(p => ({ ...p, supplierInvoiceNumber: e.target.value }))} placeholder="رقم فاتورة المورد" dir="ltr" className="font-mono" />
-                  <p className="text-[10px] text-muted-foreground">يُستخدم لاحقاً لتجميع الأصناف من نفس الفاتورة عند إدخال المخزون</p>
+                  <Label className="text-xs">{t.workflow.purchase.supplierInvoiceRequired}</Label>
+                  <Input value={warehouseForm.supplierInvoiceNumber} onChange={e => setWarehouseForm(p => ({ ...p, supplierInvoiceNumber: e.target.value }))} placeholder={t.workflow.purchase.supplierInvoiceNumber} dir="ltr" className="font-mono" />
+                  <p className="text-[10px] text-muted-foreground">{t.workflow.purchase.supplierInvoiceGroupingHint}</p>
                 </div>
 
                 {/* Warehouse photo */}
@@ -1417,14 +1470,15 @@ export default function PurchaseCycle() {
             setDeliveryUserId("");
             setDeliveryNotes("");
             setDeliveryLotInfo(null);
+            setDeliveryCostAllocations([createIssueCostAllocationDraft()]);
           }
         }}
       >
-        <DialogContent className="max-w-md" dir={isRTL ? "rtl" : "ltr"}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto" dir={isRTL ? "rtl" : "ltr"}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Truck className="w-5 h-5 text-blue-600" />
-              تسليم مواد لفني
+              {t.workflow.purchase.deliverMaterialsTechnician}
             </DialogTitle>
           </DialogHeader>
 
@@ -1432,11 +1486,11 @@ export default function PurchaseCycle() {
             <div className="space-y-4">
               {/* Item info */}
               <div className="bg-muted/50 rounded-lg p-3 space-y-2">
-                <p className="font-semibold text-sm">{deliveryDialog.itemName}</p>
+                <p className="font-semibold text-sm">{displayItemName(deliveryDialog)}</p>
                 <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                  <span>{t.purchaseOrders.quantity}: <strong className="text-foreground">{deliveryDialog.quantity} {deliveryDialog.unit}</strong></span>
+                  <span>{t.purchaseOrders.quantity}: <strong className="text-foreground">{deliveryDialog.quantity} {displayUnit(deliveryDialog.unit)}</strong></span>
                   {deliveryDialog.supplierName && <span>{t.purchaseOrders.supplier}: <strong className="text-foreground">{deliveryDialog.supplierName}</strong></span>}
-                  {deliveryDialog.actualUnitCost && <span>{t.purchaseOrders.itemCost}: <strong className="text-foreground">{parseFloat(deliveryDialog.actualUnitCost).toLocaleString()} ر.س</strong></span>}
+                  {deliveryDialog.actualUnitCost && <span>{t.purchaseOrders.itemCost}: <strong className="text-foreground">{parseFloat(deliveryDialog.actualUnitCost).toLocaleString(locale)} {t.common.currency}</strong></span>}
                 </div>
               </div>
 
@@ -1465,21 +1519,21 @@ export default function PurchaseCycle() {
               {lotsEnabled && (
                 <div className="space-y-2 rounded-lg border border-blue-200 bg-blue-50/60 p-3">
                   <Label className="text-xs flex items-center gap-1">
-                    <QrCode className="w-3.5 h-3.5" /> QR الدفعة *
+                    <QrCode className="w-3.5 h-3.5" /> {t.workflow.purchase.lotQrRequired}
                   </Label>
                   <BarcodeScanner
                     onScan={(code) => {
                       setDeliveryLotInfo(null);
                       resolveDeliveryLotMut.mutate({ inventoryId: deliveryDialog.id, trackingToken: code });
                     }}
-                    placeholder="امسح QR الدفعة التي ستُصرف منها الكمية..."
+                    placeholder={t.workflow.purchase.scanLotForIssue}
                   />
                   {resolveDeliveryLotMut.isPending && (
-                    <p className="text-xs text-muted-foreground flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> جاري التحقق من الدفعة...</p>
+                    <p className="text-xs text-muted-foreground flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> {t.workflow.purchase.checkingLot}</p>
                   )}
                   {deliveryLotInfo && (
                     <div className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded p-2">
-                      <strong>{deliveryLotInfo.lotCode}</strong> — المتاح في هذا المستودع: {deliveryLotInfo.availableQuantity} {deliveryDialog.unit || "وحدة"}
+                      <strong>{deliveryLotInfo.lotCode}</strong> — {t.workflow.purchase.lotAvailableHere.replace("{qty}", String(deliveryLotInfo.availableQuantity)).replace("{unit}", displayUnit(deliveryDialog.unit) || t.workflow.purchase.unitGeneric)}
                     </div>
                   )}
                 </div>
@@ -1488,7 +1542,7 @@ export default function PurchaseCycle() {
               {/* الكمية والوحدة */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <Label className="text-xs">الكمية المُسلَّمة *</Label>
+                  <Label className="text-xs">{t.workflow.purchase.deliveredQtyRequired}</Label>
                   <Input
                     type="number"
                     min={0.001}
@@ -1500,24 +1554,34 @@ export default function PurchaseCycle() {
                     className="font-mono"
                   />
                   {deliveryQty && parseFloat(deliveryQty) <= 0 && (
-                    <p className="text-xs text-destructive">الكمية يجب أن تكون أكبر من صفر</p>
+                    <p className="text-xs text-destructive">{t.workflow.purchase.qtyGreaterZero}</p>
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs">الوحدة</Label>
+                  <Label className="text-xs">{t.workflow.purchase.unitLabel2}</Label>
                   <Input
                     value={deliveryUnit}
                     onChange={e => setDeliveryUnit(e.target.value)}
-                    placeholder="قطعة / كيلو / كرتون"
+                    placeholder={t.workflow.purchase.unitExamples}
                   />
                 </div>
               </div>
 
-              {/* حلقة الربط مع البلاغ: الفني المسند ثابت ولا يتغير من المستودع */}
+              {lotsEnabled && deliveryLotInfo && (
+                <IssueCostAllocationEditor
+                  value={deliveryCostAllocations}
+                  onChange={setDeliveryCostAllocations}
+                  totalQuantity={Number(deliveryQty) || 0}
+                  lotUnitCost={Number(deliveryLotInfo.issueUnitCost || 0)}
+                  unitLabel={deliveryUnit || deliveryDialog.unit || t.workflow.purchase.unitGeneric}
+                />
+              )}
+
+              {/* حلقة الربط مع البلاغ: المسؤول المسند ثابت ولا يتغير من المستودع */}
               {deliveryDialog.ticketAssignedToId && deliveryDialog.ticketAssignedToName && (
                 <div className="space-y-1.5">
                   <Label className="text-xs flex items-center gap-1">
-                    <User className="w-3.5 h-3.5" /> الفني المسند للبلاغ
+                    <User className="w-3.5 h-3.5" /> {t.workflow.purchase.assignedTicketResponsible}
                   </Label>
                   <Input
                     value={deliveryDialog.ticketAssignedToName}
@@ -1527,44 +1591,47 @@ export default function PurchaseCycle() {
                   />
                   {deliveryDialog.ticketNumber && (
                     <p className="text-xs text-muted-foreground">
-                      مرتبط بالبلاغ {deliveryDialog.ticketNumber} — هذا الحقل للقراءة فقط ولا يغيّر إسناد البلاغ.
+                      {t.workflow.purchase.ticketReadonlyHint.replace("{ticket}", deliveryDialog.ticketNumber)}
                     </p>
                   )}
                 </div>
               )}
 
-              {/* المستلم الفعلي إلزامي ويمكن أن يكون الفني المسند نفسه أو فنيًا بديلًا */}
+              {/* المستلم الفعلي إلزامي ويمكن أن يكون المسؤول المسند نفسه أو فنيًا بديلًا */}
               <div className="space-y-1.5">
                 <Label className="text-xs flex items-center gap-1">
-                  <User className="w-3.5 h-3.5" /> الفني المستلم فعليًا *
+                  <User className="w-3.5 h-3.5" /> {t.workflow.purchase.actualRecipientRequired2}
                 </Label>
                 <TechnicianCombobox
                   value={deliveryUserId}
                   onValueChange={setDeliveryUserId}
-                  placeholder="اختر الفني الذي استلم المواد فعليًا..."
+                  placeholder={t.workflow.purchase.chooseActualRecipient}
                   options={allUsers
                     .filter((u: any) =>
-                      u.role === "technician" &&
-                      u.isActive !== 0
+                      u.isActive !== 0 &&
+                      (
+                        u.role === "technician" ||
+                        (u.role === "it_manager" && String(u.id) === String(deliveryDialog.ticketAssignedToId || ""))
+                      )
                     )
                     .map((u: any) => ({
                       value: String(u.id),
-                      label: `${u.name}${String(u.id) === String(deliveryDialog.ticketAssignedToId || "") ? " — الفني المسند" : ""}`,
+                      label: `${u.name}${String(u.id) === String(deliveryDialog.ticketAssignedToId || "") ? ` — ${t.workflow.purchase.assignedResponsibleSuffix}` : ""}`,
                     }))}
                 />
                 <p className="text-xs text-muted-foreground">
-                  يجب اختيار المستلم في كل عملية تسليم، ويمكن اختيار نفس الفني المسند أو فني بديل.
+                  {t.workflow.purchase.recipientSelectionHint}
                 </p>
               </div>
 
               {/* ملاحظات — تظهر بعد اختيار الفني، كتابتها اختيارية */}
               {deliveryUserId && (
                 <div className="space-y-1.5">
-                  <Label className="text-xs">ملاحظات (اختياري)</Label>
+                  <Label className="text-xs">{t.workflow.purchase.notesOptional}</Label>
                   <Textarea
                     value={deliveryNotes}
                     onChange={e => setDeliveryNotes(e.target.value)}
-                    placeholder="أي ملاحظات إضافية على عملية التسليم..."
+                    placeholder={t.workflow.purchase.deliveryNotesPlaceholder}
                     rows={2}
                   />
                 </div>
@@ -1573,7 +1640,7 @@ export default function PurchaseCycle() {
           )}
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setDeliveryDialog(null); setDeliveryNotes(""); setDeliveryUserId(""); setDeliveryLotInfo(null); }}>{t.common.cancel}</Button>
+            <Button variant="outline" onClick={() => { setDeliveryDialog(null); setDeliveryNotes(""); setDeliveryUserId(""); setDeliveryLotInfo(null); setDeliveryCostAllocations([createIssueCostAllocationDraft()]); }}>{t.common.cancel}</Button>
             <Button
               className="gap-1.5"
               disabled={
@@ -1590,51 +1657,61 @@ export default function PurchaseCycle() {
                 // التحقق من الكمية أولاً
                 const qty = parseFloat(deliveryQty);
                 if (!deliveryQty || isNaN(qty) || qty <= 0) {
-                  toast.error("يرجى إدخال كمية صحيحة أكبر من صفر");
+                  toast.error(t.workflow.purchase.enterValidPositiveQty);
                   return;
                 }
                 if (qty > (deliveryDialog.quantity || 0)) {
-                  toast.error(`الكمية المطلوبة (${qty}) أكبر من الكمية المتاحة (${deliveryDialog.quantity})`);
+                  toast.error(t.workflow.purchase.qtyExceedsAvailable.replace("{qty}", String(qty)).replace("{available}", String(deliveryDialog.quantity)));
                   return;
                 }
                 if (!deliveryUserId) {
-                  toast.error("يجب اختيار الفني المستلم فعليًا");
+                  toast.error(t.workflow.purchase.recipientRequiredError);
                   return;
                 }
                 if (lotsEnabled && !deliveryLotInfo) {
-                  toast.error("يجب مسح QR الدفعة قبل تأكيد الصرف");
+                  toast.error(t.workflow.purchase.lotQrRequiredError);
                   return;
                 }
                 if (lotsEnabled && qty > Number(deliveryLotInfo?.availableQuantity || 0)) {
-                  toast.error(`الكمية المطلوبة (${qty}) أكبر من رصيد الدفعة الممسوحة (${deliveryLotInfo?.availableQuantity || 0})`);
+                  toast.error(t.workflow.purchase.qtyExceedsLot.replace("{qty}", String(qty)).replace("{available}", String(deliveryLotInfo?.availableQuantity || 0)));
+                  return;
+                }
+                let costAllocations;
+                try {
+                  costAllocations = lotsEnabled
+                    ? buildIssueCostAllocationPayload(deliveryCostAllocations, qty)
+                    : undefined;
+                } catch (error: any) {
+                  toast.error(error?.message ? localizeApiError(error.message) : t.workflow.purchase.verifyCostAllocation);
                   return;
                 }
                 // حفظ بيانات الطباعة مع الفصل بين الفني المسند والمستلم الفعلي.
                 const selectedUser = allUsers.find((u: any) => String(u.id) === deliveryUserId);
                 setDeliveryPrintData({
-                  itemName: deliveryDialog.itemName,
+                  itemName: displayItemName(deliveryDialog),
                   quantity: qty,
-                  unit: deliveryUnit || deliveryDialog.unit || "",
+                  unit: displayUnit(deliveryUnit || deliveryDialog.unit || ""),
                   supplierName: deliveryDialog.supplierName,
                   actualUnitCost: deliveryDialog.actualUnitCost,
                   warehousePhotoUrl: deliveryDialog.warehousePhotoUrl ? mediaUrl(deliveryDialog.warehousePhotoUrl) : undefined,
-                  deliveredByName: user?.name || "مستخدم المستودع",
-                  deliveredToName: selectedUser?.name || "الفني",
+                  deliveredByName: user?.name || t.workflow.purchase.warehouseUserFallback,
+                  deliveredToName: selectedUser?.name || t.workflow.purchase.technicianFallback,
                   assignedTechnicianName: deliveryDialog.ticketAssignedToName || undefined,
                   ticketNumber: deliveryDialog.ticketNumber || undefined,
                   poNumber: deliveryDialog.poNumber,
                   itemId: deliveryDialog.id,
                   initialPrintCount: deliveryDialog.printCount ?? 0,
                   notes: deliveryNotes || undefined,
-                  deliveredAt: new Date().toLocaleDateString("ar-SA", { year: "numeric", month: "long", day: "numeric" }),
+                  deliveredAt: new Date().toLocaleDateString(locale, { year: "numeric", month: "long", day: "numeric" }),
                 });
                 if (deliveryDialog.isInventoryItem) {
                   deliverInventoryMut.mutate({
                     inventoryId:   deliveryDialog.id,
                     deliveredToId: parseInt(deliveryUserId),
                     deliveryQty:   qty,
-                    deliveryUnit:  deliveryUnit || deliveryDialog.unit || "قطعة",
+                    deliveryUnit:  deliveryUnit || deliveryDialog.unit || t.workflow.purchase.pieceUnit,
                     lotTrackingToken: lotsEnabled ? deliveryLotInfo?.trackingToken : undefined,
+                    costAllocations,
                     notes:         deliveryNotes || undefined,
                   });
                 } else {
@@ -1642,8 +1719,9 @@ export default function PurchaseCycle() {
                     itemId:        deliveryDialog.id,
                     deliveredToId: parseInt(deliveryUserId),
                     deliveryQty:   qty,
-                    deliveryUnit:  deliveryUnit || deliveryDialog.unit || "قطعة",
+                    deliveryUnit:  deliveryUnit || deliveryDialog.unit || t.workflow.purchase.pieceUnit,
                     lotTrackingToken: lotsEnabled ? deliveryLotInfo?.trackingToken : undefined,
+                    costAllocations,
                     notes:         deliveryNotes || undefined,
                   });
                 }
@@ -1651,10 +1729,11 @@ export default function PurchaseCycle() {
                 setDeliveryNotes("");
                 setDeliveryUserId("");
                 setDeliveryLotInfo(null);
+                setDeliveryCostAllocations([createIssueCostAllocationDraft()]);
               }}
             >
               {(confirmDeliveryMut.isPending || deliverInventoryMut.isPending) ? <Loader2 className="w-4 h-4 animate-spin" /> : <Truck className="w-4 h-4" />}
-              تأكيد التسليم للفني
+              {t.workflow.purchase.confirmDeliveryTechnician}
             </Button>
           </DialogFooter>
         </DialogContent>

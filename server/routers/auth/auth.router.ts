@@ -1,4 +1,4 @@
-import { COOKIE_NAME } from "@shared/const";
+import { AUTH_TEMPORARILY_UNAVAILABLE_ERR_MSG, COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "../../_core/cookies";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -12,7 +12,15 @@ import { sdk } from "../../_core/sdk";
 import { getTwoFactorEnforcementStatus } from "../../_core/twoFactorEnforcement";
 
 export const authRouter = router({
-  me: publicProcedure.query(opts => opts.ctx.user),
+  me: publicProcedure.query(opts => {
+    if (opts.ctx.authFailure === "dependency") {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: AUTH_TEMPORARILY_UNAVAILABLE_ERR_MSG,
+      });
+    }
+    return opts.ctx.user;
+  }),
 
   logout: publicProcedure.mutation(({ ctx }) => {
     const cookieOptions = getSessionCookieOptions(ctx.req);

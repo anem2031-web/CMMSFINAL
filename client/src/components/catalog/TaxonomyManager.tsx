@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Plus, Edit2, Trash2, ChevronRight, Loader2, FolderPlus, RotateCcw, Download } from "lucide-react";
+import { Plus, Edit2, Trash2, ChevronRight, Loader2, FolderPlus, RotateCcw, Download, MoveRight, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -28,7 +28,7 @@ interface TreeNode {
   isActive: boolean;
 }
 
-type DialogMode = "addRoot" | "addChild" | "edit" | null;
+type DialogMode = "addRoot" | "addChild" | "edit" | "move" | null;
 
 // ── Main Component ─────────────────────────────────────────────────────────
 export default function TaxonomyManager() {
@@ -41,6 +41,8 @@ export default function TaxonomyManager() {
   const [dialogMode, setDialogMode] = useState<DialogMode>(null);
   const [formData, setFormData] = useState({ nameAr: "", nameEn: "", nameUr: "", code: "" });
   const [codeError, setCodeError] = useState("");
+  const [moveTarget, setMoveTarget] = useState<string>("__root__");
+  const [movePreview, setMovePreview] = useState<any | null>(null);
 
   // ── Queries ──────────────────────────────────────────────────────────────
   // جلب جميع التصنيفات ثم نفلتر الجذور في الفرونت
@@ -70,6 +72,20 @@ export default function TaxonomyManager() {
     onError: (e) => toast.error(e.message),
   });
 
+  const previewMoveMut = trpc.catalog.nodes.previewMove.useMutation({
+    onSuccess: (data) => setMovePreview(data),
+    onError: (e) => { setMovePreview(null); toast.error(e.message); },
+  });
+
+  const moveSubtreeMut = trpc.catalog.nodes.moveSubtree.useMutation({
+    onSuccess: async (data) => {
+      await refetch();
+      closeDialog();
+      toast.success(`تم نقل التصنيف وإعادة ترقيم ${data.plan.nodeChanges.length} تصنيف و${data.plan.itemChanges.length} صنف`);
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
   const exportTreeMut = trpc.catalog.importExport.exportTaxonomyTreeExcel.useMutation();
 
   const handleExportTree = async () => {
@@ -92,6 +108,8 @@ export default function TaxonomyManager() {
     setDialogMode(null);
     setFormData({ nameAr: "", nameEn: "", nameUr: "", code: "" });
     setCodeError("");
+    setMovePreview(null);
+    setMoveTarget("__root__");
   };
 
   const openAddRoot = () => {
@@ -115,6 +133,31 @@ export default function TaxonomyManager() {
       code: node.code || "",
     });
     setDialogMode("edit");
+  };
+
+  const openMove = (node: TreeNode) => {
+    setSelectedNode(node);
+    setMovePreview(null);
+    if (node.parentId != null) {
+      setMoveTarget("__root__");
+    } else {
+      const descendants = new Set<number>([node.id]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const candidate of (allNodes || []) as TreeNode[]) {
+          if (candidate.parentId != null && descendants.has(Number(candidate.parentId)) && !descendants.has(candidate.id)) {
+            descendants.add(candidate.id);
+            changed = true;
+          }
+        }
+      }
+      const firstTarget = ((allNodes || []) as TreeNode[]).find(candidate =>
+        !descendants.has(candidate.id) && Number((candidate as any).isActive) === 1 && candidate.level < 6,
+      );
+      setMoveTarget(firstTarget ? String(firstTarget.id) : "__root__");
+    }
+    setDialogMode("move");
   };
 
   const validateCode = (val: string) => {
@@ -148,7 +191,6 @@ export default function TaxonomyManager() {
         nameAr: formData.nameAr,
         nameEn: formData.nameEn,
         nameUr: formData.nameUr || undefined,
-        code: formData.code || undefined,
       });
     } else {
       const parentLevel = selectedNode?.level || 0;
@@ -167,6 +209,24 @@ export default function TaxonomyManager() {
     }
   };
 
+  const handlePreviewMove = async () => {
+    if (!selectedNode) return;
+    await previewMoveMut.mutateAsync({
+      nodeId: selectedNode.id,
+      targetParentId: moveTarget === "__root__" ? null : Number(moveTarget),
+    });
+  };
+
+  const handleExecuteMove = async () => {
+    if (!selectedNode || !movePreview || movePreview.blockers?.length) return;
+    const ok = confirm(`سيتم نقل «${selectedNode.nameAr}» وإعادة ترقيم ${movePreview.plan.nodeChanges.length} تصنيف و${movePreview.plan.itemChanges.length} صنف.\nلن تتغير IDs أو الأرصدة أو اللوتات أو الحركات السابقة.\nهل تريد المتابعة؟`);
+    if (!ok) return;
+    await moveSubtreeMut.mutateAsync({
+      nodeId: selectedNode.id,
+      targetParentId: moveTarget === "__root__" ? null : Number(moveTarget),
+    });
+  };
+
   const handleDelete = async (node: TreeNode) => {
     if (!confirm(`هل أنت متأكد من تعطيل "${node.nameAr}"؟\nلا يمكن التعطيل إذا كان فيه فروع أو أصناف نشطة مرتبطة.`)) return;
     await deleteMut.mutateAsync(node.id);
@@ -181,9 +241,33 @@ export default function TaxonomyManager() {
   const dialogTitle =
     dialogMode === "addRoot" ? "إضافة تصنيف رئيسي" :
     dialogMode === "addChild" ? `إضافة فرع تحت: ${selectedNode?.nameAr}` :
-    dialogMode === "edit" ? `تعديل: ${selectedNode?.nameAr}` : "";
+    dialogMode === "edit" ? `تعديل: ${selectedNode?.nameAr}` :
+    dialogMode === "move" ? `نقل / إعادة هيكلة: ${selectedNode?.nameAr}` : "";
 
-  const isPending = createMut.isPending || updateMut.isPending;
+  const isPending = createMut.isPending || updateMut.isPending || moveSubtreeMut.isPending;
+
+  const selectedSubtreeIds = (() => {
+    const ids = new Set<number>();
+    if (!selectedNode) return ids;
+    ids.add(selectedNode.id);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const node of (allNodes || []) as TreeNode[]) {
+        if (node.parentId != null && ids.has(Number(node.parentId)) && !ids.has(node.id)) {
+          ids.add(node.id);
+          changed = true;
+        }
+      }
+    }
+    return ids;
+  })();
+  const moveTargets = ((allNodes || []) as TreeNode[]).filter(node =>
+    !selectedSubtreeIds.has(node.id) &&
+    Number((node as any).isActive) === 1 &&
+    node.level < 6 &&
+    Number(node.id) !== Number(selectedNode?.parentId || 0),
+  );
 
   return (
     <div className="space-y-4">
@@ -232,9 +316,11 @@ export default function TaxonomyManager() {
                   onToggle={toggleExpand}
                   onAddChild={openAddChild}
                   onEdit={openEdit}
+                  onMove={openMove}
                   onDelete={handleDelete}
                   onReactivate={handleReactivate}
                   canDelete={canDelete}
+                  canMove={isCatalogAdmin}
                 />
               ))}
             </div>
@@ -252,80 +338,200 @@ export default function TaxonomyManager() {
 
       {/* Dialog */}
       <Dialog open={!!dialogMode} onOpenChange={() => closeDialog()}>
-        <DialogContent>
+        <DialogContent className={dialogMode === "move" ? "sm:max-w-3xl max-h-[90vh] overflow-y-auto" : undefined}>
           <DialogHeader>
             <DialogTitle>{dialogTitle}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 pt-2">
-
-            {/* الكود */}
-            <div className="space-y-1">
-              <label className="text-sm font-medium">
-                الكود
-                <span className="text-muted-foreground text-xs mr-2">(يُولَّد تلقائياً إذا تُرك فارغاً)</span>
-              </label>
-              <Input
-                value={formData.code}
-                onChange={e => {
-                  setFormData({ ...formData, code: e.target.value });
-                  validateCode(e.target.value);
-                }}
-                placeholder={
-                  dialogMode === "addRoot" ? "مثال: 1" :
-                  dialogMode === "addChild" ? `مثال: ${selectedNode?.code || ""}1` :
-                  selectedNode?.code || ""
-                }
-                dir="ltr"
-                className={cn(codeError && "border-red-500")}
-              />
-              {codeError && <p className="text-xs text-red-500">{codeError}</p>}
-              {dialogMode !== "edit" && (
-                <p className="text-xs text-muted-foreground">
-                  أرقام فقط — النظام سيولد الكود تلقائياً إذا تركته فارغاً
+          {dialogMode === "move" ? (
+            <div className="space-y-4 pt-2">
+              <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span>التصنيف الحالي</span>
+                  <span className="font-mono font-semibold" dir="ltr">{selectedNode?.code || "—"}</span>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  سيتم نقل نفس التصنيف ونفس التفرعات والأصناف بالـ IDs الحالية. لا يتم إنشاء أصناف جديدة ولا تعديل الأرصدة أو اللوتات أو الحركات السابقة.
                 </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">الموقع الجديد *</label>
+                <select
+                  value={moveTarget}
+                  onChange={e => { setMoveTarget(e.target.value); setMovePreview(null); }}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="__root__" disabled={selectedNode?.parentId == null}>
+                    تحويل إلى تصنيف رئيسي
+                  </option>
+                  {moveTargets.map(target => (
+                    <option key={target.id} value={String(target.id)}>
+                      {target.code || "—"} — {target.nameAr} (م{target.level})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  لا تظهر العقد الموجودة داخل الفرع نفسه، ولا الأب الحالي، ولا المستويات التي لا تسمح بإضافة مستوى جديد.
+                </p>
+              </div>
+
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={handlePreviewMove}
+                disabled={previewMoveMut.isPending || !selectedNode || (moveTarget === "__root__" && selectedNode?.parentId == null)}
+              >
+                {previewMoveMut.isPending ? <Loader2 className="w-4 h-4 animate-spin ml-2" /> : null}
+                معاينة الترقيم قبل التنفيذ
+              </Button>
+
+              {movePreview && (
+                <div className="space-y-3 rounded-lg border p-3">
+                  <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
+                    <div className="rounded bg-muted/50 p-2">
+                      <div className="text-xs text-muted-foreground">الكود القديم</div>
+                      <div className="font-mono font-semibold" dir="ltr">{movePreview.plan.oldRootCode}</div>
+                    </div>
+                    <div className="rounded bg-muted/50 p-2">
+                      <div className="text-xs text-muted-foreground">الكود الجديد</div>
+                      <div className="font-mono font-semibold" dir="ltr">{movePreview.plan.newRootCode}</div>
+                    </div>
+                    <div className="rounded bg-muted/50 p-2">
+                      <div className="text-xs text-muted-foreground">التصنيفات</div>
+                      <div className="font-semibold">{movePreview.plan.nodeChanges.length}</div>
+                    </div>
+                    <div className="rounded bg-muted/50 p-2">
+                      <div className="text-xs text-muted-foreground">الأصناف</div>
+                      <div className="font-semibold">{movePreview.plan.itemChanges.length}</div>
+                    </div>
+                  </div>
+
+                  {movePreview.blockers?.length > 0 && (
+                    <div className="space-y-1 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200">
+                      <div className="flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4" /> لا يمكن التنفيذ حالياً</div>
+                      {movePreview.blockers.map((message: string, index: number) => (
+                        <div key={index}>• {message}</div>
+                      ))}
+                    </div>
+                  )}
+
+                  {movePreview.warnings?.length > 0 && (
+                    <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+                      {movePreview.warnings.map((message: string, index: number) => (
+                        <div key={index}>• {message}</div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="max-h-56 overflow-auto rounded border">
+                    <div className="sticky top-0 grid grid-cols-[1fr_120px_120px] gap-2 border-b bg-muted px-2 py-1.5 text-xs font-medium">
+                      <span>العنصر</span><span>قبل</span><span>بعد</span>
+                    </div>
+                    {movePreview.plan.nodeChanges.slice(0, 20).map((change: any) => (
+                      <div key={`n-${change.id}`} className="grid grid-cols-[1fr_120px_120px] gap-2 border-b px-2 py-1.5 text-xs last:border-b-0">
+                        <span className="truncate">تصنيف: {change.nameAr}</span>
+                        <span className="font-mono" dir="ltr">{change.oldCode}</span>
+                        <span className="font-mono" dir="ltr">{change.newCode}</span>
+                      </div>
+                    ))}
+                    {movePreview.plan.itemChanges.slice(0, 20).map((change: any) => (
+                      <div key={`i-${change.id}`} className="grid grid-cols-[1fr_120px_120px] gap-2 border-b px-2 py-1.5 text-xs last:border-b-0">
+                        <span className="truncate">صنف: {change.nameAr}</span>
+                        <span className="font-mono" dir="ltr">{change.oldCode}</span>
+                        <span className="font-mono" dir="ltr">{change.newCode}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {(movePreview.plan.nodeChanges.length + movePreview.plan.itemChanges.length) > 40 && (
+                    <p className="text-xs text-muted-foreground">تم عرض أول 40 تغييراً فقط في المعاينة؛ التنفيذ يشمل جميع السجلات الموضحة في العدد أعلاه.</p>
+                  )}
+
+                  <Button
+                    className="w-full"
+                    onClick={handleExecuteMove}
+                    disabled={moveSubtreeMut.isPending || movePreview.blockers?.length > 0}
+                  >
+                    {moveSubtreeMut.isPending ? <Loader2 className="w-4 h-4 animate-spin ml-2" /> : <MoveRight className="w-4 h-4 ml-2" />}
+                    اعتماد النقل وإعادة الترقيم
+                  </Button>
+                </div>
               )}
             </div>
+          ) : (
+            <div className="space-y-4 pt-2">
+              <div className="space-y-1">
+                <label className="text-sm font-medium">
+                  الكود
+                  <span className="text-muted-foreground text-xs mr-2">
+                    {dialogMode === "edit" ? "(يتغير فقط من إعادة الهيكلة)" : "(يُولَّد تلقائياً إذا تُرك فارغاً)"}
+                  </span>
+                </label>
+                <Input
+                  value={formData.code}
+                  onChange={e => {
+                    setFormData({ ...formData, code: e.target.value });
+                    validateCode(e.target.value);
+                  }}
+                  readOnly={dialogMode === "edit"}
+                  placeholder={
+                    dialogMode === "addRoot" ? "مثال: 1" :
+                    dialogMode === "addChild" ? `مثال: ${selectedNode?.code || ""}1` :
+                    selectedNode?.code || ""
+                  }
+                  dir="ltr"
+                  className={cn(codeError && "border-red-500", dialogMode === "edit" && "bg-muted")}
+                />
+                {codeError && <p className="text-xs text-red-500">{codeError}</p>}
+                {dialogMode !== "edit" ? (
+                  <p className="text-xs text-muted-foreground">
+                    أرقام فقط — النظام سيولد الكود تلقائياً إذا تركته فارغاً
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    لحماية التفرعات والأصناف، لا يُعدّل الكود منفرداً. استخدم زر «نقل / إعادة هيكلة».
+                  </p>
+                )}
+              </div>
 
-            {/* الاسم بالعربية */}
-            <div className="space-y-1">
-              <label className="text-sm font-medium">{t.catalog.fields.nameAr} *</label>
-              <Input
-                value={formData.nameAr}
-                onChange={e => setFormData({ ...formData, nameAr: e.target.value })}
-                placeholder="مثال: قطع ميكانيكية"
-                dir="rtl"
-              />
+              <div className="space-y-1">
+                <label className="text-sm font-medium">{t.catalog.fields.nameAr} *</label>
+                <Input
+                  value={formData.nameAr}
+                  onChange={e => setFormData({ ...formData, nameAr: e.target.value })}
+                  placeholder="مثال: قطع ميكانيكية"
+                  dir="rtl"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-sm font-medium">{t.catalog.fields.nameEn} *</label>
+                <Input
+                  value={formData.nameEn}
+                  onChange={e => setFormData({ ...formData, nameEn: e.target.value })}
+                  placeholder="Example: Mechanical Parts"
+                  dir="ltr"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-sm font-medium">
+                  {t.catalog.fields.nameUr}
+                  <span className="text-muted-foreground text-xs mr-2">(اختياري)</span>
+                </label>
+                <Input
+                  value={formData.nameUr}
+                  onChange={e => setFormData({ ...formData, nameUr: e.target.value })}
+                  placeholder="اختياري"
+                />
+              </div>
+
+              <Button onClick={handleSubmit} disabled={isPending} className="w-full">
+                {isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                {isPending ? t.common.saving : t.common.save}
+              </Button>
             </div>
-
-            {/* الاسم بالإنجليزية */}
-            <div className="space-y-1">
-              <label className="text-sm font-medium">{t.catalog.fields.nameEn} *</label>
-              <Input
-                value={formData.nameEn}
-                onChange={e => setFormData({ ...formData, nameEn: e.target.value })}
-                placeholder="Example: Mechanical Parts"
-                dir="ltr"
-              />
-            </div>
-
-            {/* الاسم بالأردية */}
-            <div className="space-y-1">
-              <label className="text-sm font-medium">
-                {t.catalog.fields.nameUr}
-                <span className="text-muted-foreground text-xs mr-2">(اختياري)</span>
-              </label>
-              <Input
-                value={formData.nameUr}
-                onChange={e => setFormData({ ...formData, nameUr: e.target.value })}
-                placeholder="اختياري"
-              />
-            </div>
-
-            <Button onClick={handleSubmit} disabled={isPending} className="w-full">
-              {isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-              {isPending ? t.common.saving : t.common.save}
-            </Button>
-          </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
@@ -341,14 +547,16 @@ interface TreeNodeItemProps {
   onToggle: (id: number) => void;
   onAddChild: (node: TreeNode) => void;
   onEdit: (node: TreeNode) => void;
+  onMove: (node: TreeNode) => void;
   onDelete: (node: TreeNode) => void;
   onReactivate: (node: TreeNode) => void;
   canDelete: boolean;
+  canMove: boolean;
   depth?: number;
 }
 
 function TreeNodeItem({
-  node, allNodes, isExpanded, expandedNodes, onToggle, onAddChild, onEdit, onDelete, onReactivate, canDelete, depth = 0
+  node, allNodes, isExpanded, expandedNodes, onToggle, onAddChild, onEdit, onMove, onDelete, onReactivate, canDelete, canMove, depth = 0
 }: TreeNodeItemProps) {
   const children = (allNodes || []).filter(n => Number(n.parentId) === Number(node.id));
   const hasChildren = children.length > 0;
@@ -415,6 +623,15 @@ function TreeNodeItem({
           >
             <Edit2 className="w-3.5 h-3.5" />
           </button>
+          {canMove && !isInactive && (
+            <button
+              onClick={e => { e.stopPropagation(); onMove(node); }}
+              className="p-1 rounded hover:bg-amber-100 hover:text-amber-700 transition-colors"
+              title="نقل / إعادة هيكلة"
+            >
+              <MoveRight className="w-3.5 h-3.5" />
+            </button>
+          )}
           {canDelete && !isInactive && (
             <button
               onClick={e => { e.stopPropagation(); onDelete(node); }}
@@ -449,9 +666,11 @@ function TreeNodeItem({
               onToggle={onToggle}
               onAddChild={onAddChild}
               onEdit={onEdit}
+              onMove={onMove}
               onDelete={onDelete}
               onReactivate={onReactivate}
               canDelete={canDelete}
+              canMove={canMove}
               depth={depth + 1}
             />
           ))}

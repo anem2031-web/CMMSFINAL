@@ -4,6 +4,7 @@ import { router, protectedProcedure } from "../_shared/procedures";
 import * as db from "../../_core/db";
 import { assertCanAccessAttachments } from "./attachments.access";
 import { APP_ROLE } from "@shared/roles";
+import { catalogAuditRequestMeta } from "../../_core/catalog-audit";
 
 export const attachmentsRouter = router({
   /**
@@ -60,6 +61,13 @@ export const attachmentsRouter = router({
     // ✅ إصلاح IDOR: نفس الفحص المطبَّق بـlist — يمنع رفع مرفقات لكيان لا
     // يملك المستخدم صلاحية الوصول إليه، أو لنوع كيان غير مدعوم أصلًا.
     await assertCanAccessAttachments(ctx.user, input.entityType, input.entityId, "write");
+    if (input.entityType === "pmv2_item_action") {
+      const imageName = /\.(jpe?g|png|webp|gif|heic|heif|bmp|tiff?)$/i.test(input.fileName);
+      const imageMime = Boolean(input.mimeType?.toLowerCase().startsWith("image/"));
+      if (!imageName && !imageMime) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "دليل PM V2 في هذه الخطوة يجب أن يكون صورة" });
+      }
+    }
     const id = await db.createAttachment({
       entityType: input.entityType,
       entityId: input.entityId,
@@ -75,7 +83,14 @@ export const attachmentsRouter = router({
       action: "add_attachment",
       entityType: input.entityType,
       entityId: input.entityId,
-      newValues: { fileName: input.fileName, mimeType: input.mimeType },
+      newValues: {
+        attachmentId: id,
+        fileName: input.fileName,
+        fileKey: input.fileKey,
+        mimeType: input.mimeType || null,
+        fileSize: input.fileSize || null,
+      },
+      ...(input.entityType === "catalog_item" ? catalogAuditRequestMeta(ctx) : {}),
     });
     return { id };
   }),
@@ -96,7 +111,14 @@ export const attachmentsRouter = router({
       action: "delete_attachment",
       entityType: attachment.entityType,
       entityId: attachment.entityId,
-      oldValues: { fileName: attachment.fileName, mimeType: attachment.mimeType },
+      oldValues: {
+        attachmentId: attachment.id,
+        fileName: attachment.fileName,
+        fileKey: attachment.fileKey,
+        mimeType: attachment.mimeType,
+        fileSize: attachment.fileSize,
+      },
+      ...(attachment.entityType === "catalog_item" ? catalogAuditRequestMeta(ctx) : {}),
     });
     return { success: true };
   }),

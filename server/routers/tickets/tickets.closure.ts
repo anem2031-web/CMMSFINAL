@@ -1,17 +1,33 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { router, protectedProcedure, ticketProcedure, ticketManagerProcedure, supervisorProcedure } from "../_shared/procedures";
+import { router, protectedProcedure, ticketProcedure, ticketScopedWorkflowManagerProcedure, ticketScopedClosureProcedure, supervisorProcedure } from "../_shared/procedures";
 import * as db from "../../_core/db";
 import { APP_ROLE } from "@shared/roles";
 import { isPathARepairCompletionStage, isPathARepairEvidenceComplete, isPathBRepairEvidenceComplete, areAllTicketItemsComplete, getIncompleteTicketItems, summarizeSubTicketFamily } from "@shared/ticketUiRules";
 import { assertPathBMaterialsDeliveredToTechnician } from "../purchase/ticket-purchase-workflow";
 import { notifyTicketSupervisor } from "../_shared/router-helpers";
 import { assertTicketReadable, assertTicketWorkflowManageable, canManageTicketWorkflow, isAssignedTicketTechnicianForWorkflow } from "./tickets.access";
+import { pmv2TicketClosureSyncService } from "../../pmv2/tickets/closure-sync-service";
+import { detectLanguage } from "../../services/translation/translation";
+import { queueTranslation } from "../../services/translation/translationEngine";
+
+
+async function queueRepairNotesTranslation(ticketId: number, repairNotes: string, userId: number): Promise<void> {
+  const sourceLanguage = await detectLanguage(repairNotes).catch(() => "ar" as const);
+  queueTranslation({
+    entityType: "TICKET",
+    entityId: ticketId,
+    fields: [{ fieldName: "repairNotes", text: repairNotes }],
+    sourceLanguage,
+    userId,
+  }).catch(error => console.error("[TICKET] repairNotes translation queue failed:", error));
+}
 
 const executionManagerRoles = new Set<string>([
   APP_ROLE.MAINTENANCE_MANAGER,
   APP_ROLE.GENERAL_MAINTENANCE_MANAGER,
   APP_ROLE.CONSTRUCTION_PROCUREMENT_MANAGER,
+  APP_ROLE.IT_MANAGER,
   APP_ROLE.ADMIN,
   APP_ROLE.OWNER,
 ]);
@@ -69,7 +85,7 @@ export const ticketsClosureRouter = router({
    * القرار المعتمد: إغلاق **يدوي بحارس** لا تلقائي — يبقى توقيع مسؤول فعلي على
    * الإغلاق في سجل التدقيق، مع تمييز بصري بالواجهة يمنع نسيانه.
    */
-  closeParentTicket: supervisorProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+  closeParentTicket: ticketScopedClosureProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
     const parent = await db.getTicketById(input.id);
     if (!parent) throw new TRPCError({ code: "NOT_FOUND", message: "البلاغ غير موجود" });
     assertTicketWorkflowManageable(ctx.user, parent as any);
@@ -119,6 +135,10 @@ export const ticketsClosureRouter = router({
       for (const task of tasks) {
         if (task.status === "promoted") await db.updateTicketTask(task.id, { status: "completed" }, tx);
       }
+      await pmv2TicketClosureSyncService.syncClosedTicketWithDb(tx, {
+        ticketId: parent.id,
+        actorUserId: ctx.user.id,
+      });
     });
 
     await db.addTicketStatusHistory({
@@ -153,7 +173,7 @@ export const ticketsClosureRouter = router({
     };
   }),
 
-  close: ticketManagerProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+  close: ticketScopedWorkflowManagerProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
     const ticket = await db.getTicketById(input.id);
     if (!ticket) throw new TRPCError({ code: "NOT_FOUND" });
     assertTicketWorkflowManageable(ctx.user, ticket as any);
@@ -181,11 +201,17 @@ export const ticketsClosureRouter = router({
     await assertAllTicketItemsClosed(input.id);
 
     const closedAt = new Date();
-    await db.updateTicket(input.id, { status: "closed", closedAt });
-    await db.syncSingleTicketItem(input.id, { status: "closed", closedAt });
-    if (ticket.maintenancePath === "C") {
-      await db.updateExternalMaintenanceJobByTicketId(ticket.id, { status: "closed" });
-    }
+    await db.withTransaction(async (tx: any) => {
+      await db.updateTicket(input.id, { status: "closed", closedAt }, tx);
+      await db.syncSingleTicketItem(input.id, { status: "closed", closedAt }, tx);
+      if (ticket.maintenancePath === "C") {
+        await db.updateExternalMaintenanceJobByTicketId(ticket.id, { status: "closed" }, tx);
+      }
+      await pmv2TicketClosureSyncService.syncClosedTicketWithDb(tx, {
+        ticketId: input.id,
+        actorUserId: ctx.user.id,
+      });
+    });
     await db.addTicketStatusHistory({ ticketId: input.id, fromStatus: ticket.status, toStatus: "closed", changedById: ctx.user.id });
     await db.createAuditLog({ userId: ctx.user.id, action: "close_ticket", entityType: "ticket", entityId: input.id });
     // Notify reporter and assigned technician
@@ -222,6 +248,7 @@ export const ticketsClosureRouter = router({
     }
     await db.updateTicket(input.id, { status: "ready_for_closure", afterPhotoUrl: input.afterPhotoUrl, repairNotes: input.repairNotes });
     await db.syncSingleTicketItem(input.id, { status: "ready_for_closure", afterPhotoUrl: input.afterPhotoUrl, repairNotes: input.repairNotes });
+    await queueRepairNotesTranslation(input.id, input.repairNotes, ctx.user.id);
     await db.addTicketStatusHistory({ ticketId: input.id, fromStatus: ticket.status, toStatus: "ready_for_closure", changedById: ctx.user.id });
     // ✅ 2026-08-10: كان يبثّ لكل المشرفين — أصبح لمشرف هذا البلاغ وحده،
     // مع إبقاء مديري المسار كمستلمين إضافيين (بلا تكرار — الدالة تدمجهم بـMap).
@@ -235,7 +262,7 @@ export const ticketsClosureRouter = router({
     return { success: true };
   }),
 
-  closeBySupervisor: supervisorProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+  closeBySupervisor: ticketScopedClosureProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
     const ticket = await db.getTicketById(input.id);
     if (!ticket) throw new TRPCError({ code: "NOT_FOUND" });
     assertTicketWorkflowManageable(ctx.user, ticket as any);
@@ -249,8 +276,14 @@ export const ticketsClosureRouter = router({
     // ⚠️ المرحلة 6 (2026-08-10): نفس حارس close — بلاغ متعدد البنود لا يُغلق قبل اكتمالها.
     await assertAllTicketItemsClosed(input.id);
     const closedAt = new Date();
-    await db.updateTicket(input.id, { status: "closed", closedAt });
-    await db.syncSingleTicketItem(input.id, { status: "closed", closedAt });
+    await db.withTransaction(async (tx: any) => {
+      await db.updateTicket(input.id, { status: "closed", closedAt }, tx);
+      await db.syncSingleTicketItem(input.id, { status: "closed", closedAt }, tx);
+      await pmv2TicketClosureSyncService.syncClosedTicketWithDb(tx, {
+        ticketId: input.id,
+        actorUserId: ctx.user.id,
+      });
+    });
     await db.addTicketStatusHistory({ ticketId: input.id, fromStatus: ticket.status, toStatus: "closed", changedById: ctx.user.id });
     await db.createAuditLog({ userId: ctx.user.id, action: "close_ticket", entityType: "ticket", entityId: input.id });
     // Notify managers, reporter, and technician
@@ -276,8 +309,14 @@ export const ticketsClosureRouter = router({
     }
     if (ticket.status !== "verified") throw new TRPCError({ code: "BAD_REQUEST", message: "البلاغ يجب أن يكون مُتحقق منه" });
     const closedAt = new Date();
-    await db.updateTicket(input.id, { status: "closed", closedAt });
-    await db.syncSingleTicketItem(input.id, { status: "closed", closedAt });
+    await db.withTransaction(async (tx: any) => {
+      await db.updateTicket(input.id, { status: "closed", closedAt }, tx);
+      await db.syncSingleTicketItem(input.id, { status: "closed", closedAt }, tx);
+      await pmv2TicketClosureSyncService.syncClosedTicketWithDb(tx, {
+        ticketId: input.id,
+        actorUserId: ctx.user.id,
+      });
+    });
     await db.addTicketStatusHistory({ ticketId: input.id, fromStatus: "verified", toStatus: "closed", changedById: ctx.user.id });
     await db.createAuditLog({ userId: ctx.user.id, action: "close_ticket", entityType: "ticket", entityId: input.id });
     // Notify ticket creator and assigned technician
@@ -319,6 +358,7 @@ export const ticketsClosureRouter = router({
     }
     await db.updateTicket(input.id, { status: "ready_for_closure", afterPhotoUrl: input.afterPhotoUrl, repairNotes: input.repairNotes });
     await db.syncSingleTicketItem(input.id, { status: "ready_for_closure", afterPhotoUrl: input.afterPhotoUrl, repairNotes: input.repairNotes });
+    await queueRepairNotesTranslation(input.id, input.repairNotes, ctx.user.id);
     if (ticket.maintenancePath === "C") {
       await db.updateExternalMaintenanceJobByTicketId(ticket.id, { status: "ready_for_closure" });
     }

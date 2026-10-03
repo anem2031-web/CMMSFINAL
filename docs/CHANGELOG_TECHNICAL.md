@@ -4943,3 +4943,42 @@ owner/admin، توافق رجعي بلا `reviewedById`) وحُدِّث اختب
 - Live validation: PR-2026-0471 mapped to counter id 471; PR-2026-0472 was created after Railway deployment and counter id 472 confirmed sequential operation.
 - Annual sequence reset to 0001 is intentionally deferred before 2027; current global AUTO_INCREMENT remains safe for uniqueness but is not year-reset aware.
 - Reference: `docs/CMMS_PR_NUMBERING_ATOMIC_COUNTER_AND_DUPLICATE_CLEANUP_2026-09-02.md` + `docs/CMMS_PURCHASE_NUMBERING_ANNUAL_RESET_DEFERRED_2026-09-02.md`.
+
+## 2026-09-13 — Warehouse Lot Issue Cost Allocation layer
+
+- Owner approved a narrow enhancement to warehouse delivery: attribute issued material cost to beneficiary Site / optional Section / optional Asset using the exact scanned Lot's `issueUnitCost`, without changing existing inventory valuation.
+- Live DB table `inventory_issue_cost_allocations` was created manually and confirmed `Query OK` by the owner.
+- `issueDelivery()` remains the single delivery writer. With Lots enabled it now requires the full delivered quantity to be allocated across one or more beneficiary rows; validation and inserts run in the same DB transaction as Lot decrement, Aggregate Inventory decrement, inventory movement, and delivery document.
+- The existing `inventory_transactions.unitCost/totalCost` behavior remains based on `inventory.averageCost`; this enhancement does **not** revalue inventory or change `averageCost` / `totalCostValue`.
+- Cost-attribution snapshots use server-resolved `inventory_lots.issueUnitCost`; the client cannot submit or override cost.
+- Same Lot and same inventory transaction may have multiple allocation rows. Quantity allocations must total the delivery quantity exactly; cent rounding is reconciled on the final row so allocation-row totals equal the Lot-cost total for the issue.
+- Site is mandatory; Section and Asset are optional. Server validates Site/Section/Asset consistency against current Master Data and derives an Asset's Section when omitted.
+- Delivery UI now supports multiple beneficiary rows and shows Lot unit cost plus allocated/remaining quantity and per-beneficiary cost.
+- Added read-only `inventory.issueCostAllocations` query for future beneficiary-cost reporting.
+- Existing general Cost Report is intentionally unchanged in this change to avoid double-counting purchase cost versus consumption cost; report integration is a separate decision.
+- No historical backfill, no change to receipts/transfers/disposals/returns, no Posting Engine work, and no PM V2 Phase 3 work.
+- Reference: `docs/inventory/WAREHOUSE_LOT_ISSUE_COST_ALLOCATION_2026-09-13.md`.
+
+## 2026-09-13 — Warehouse issue cost attribution single-beneficiary simplification
+
+- Simplified lot issue cost attribution so each delivery operation is assigned to one beneficiary only.
+- Made beneficiary site and section mandatory; asset remains optional.
+- Removed split-allocation / “إضافة جهة أخرى” UI from delivery dialogs.
+- Reworked the attribution editor into a vertical layout suitable for narrow warehouse delivery dialogs.
+- The full delivery quantity is attributed automatically to the selected beneficiary.
+- Server validates site → section → optional asset hierarchy and enforces exactly one attribution row.
+- Lot cost snapshot continues to use the consumed lot `issueUnitCost`; existing aggregate inventory `averageCost` valuation remains unchanged.
+- No database migration required; existing `inventory_issue_cost_allocations` table is reused.
+
+
+## 2026-09-22 — Warehouse Multi-Issue WIS — runtime acceptance and official closure
+
+- Added a standalone aggregate warehouse issue document (`WIS-*`) without replacing the existing single-issue entry points.
+- WIS is intentionally multi-line only: one source warehouse, one technician recipient, minimum two lines.
+- Reuses the existing physical issue path per line while retaining line-level Lot/Inventory/Delivery references and one aggregate printable WIS document.
+- Added beneficiary Site + Section (required) and optional Asset context, WIS history, Documents Center/open/print support, and print visibility of cost target.
+- Same Lot may be issued in multiple WIS lines to the same technician only when the beneficiary target differs. Identical target duplicates are blocked, and cumulative same-Lot quantity is validated against available balance.
+- Live acceptance: `WIS-2026-000004` issued successfully; identical-target duplicate and cumulative over-balance cases were blocked; final print verification completed.
+- The four existing single-issue screens remain unchanged by explicit product decision.
+- **Status: WIS CLOSED / PASS.** PM V2 Phase 4 remains IN PROGRESS; next focus is Unlisted/non-Catalog material resolution.
+- Reference: `docs/pmv2/PHASE4_WIS_MULTI_ISSUE_CLOSURE_2026-09-22.md`.

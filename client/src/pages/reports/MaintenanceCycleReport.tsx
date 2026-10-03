@@ -68,7 +68,7 @@ function getCategoryLabel(c: string) {
   const map: Record<string, string> = {
     electrical: "كهربائي", plumbing: "سباكة", hvac: "تكييف",
     structural: "هيكلي", mechanical: "ميكانيكي", general: "عام",
-    safety: "سلامة", cleaning: "نظافة",
+    safety: "سلامة", cleaning: "نظافة", it: "تقنية المعلومات",
   };
   return map[c] || c;
 }

@@ -20,6 +20,7 @@ import {
   Zap, Search, ArrowRight, Clock, Microscope, Filter,
   X, MapPin, Tag, ChevronDown
 } from "lucide-react";
+import { localizeApiError } from "@/i18n/apiError";
 import {
   Collapsible,
   CollapsibleContent,
@@ -35,21 +36,6 @@ const PRIORITY_COLORS: Record<string, string> = {
   critical: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
 };
 
-const PRIORITY_LABELS: Record<string, string> = {
-  low: "منخفض", medium: "متوسط", high: "عالي", critical: "حرج",
-};
-
-const CATEGORY_LABELS: Record<string, string> = {
-  electrical: "⚡ كهرباء",
-  plumbing: "🔧 سباكة",
-  hvac: "❄️ تكييف",
-  structural: "🏗️ إنشائي",
-  mechanical: "⚙️ ميكانيكي",
-  general: "📋 عام",
-  safety: "🦺 سلامة",
-  cleaning: "🧹 نظافة",
-};
-
 const CATEGORY_BADGE_COLORS: Record<string, string> = {
   electrical: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
   plumbing: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
@@ -59,6 +45,7 @@ const CATEGORY_BADGE_COLORS: Record<string, string> = {
   general: "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-300",
   safety: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
   cleaning: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  it: "bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-300",
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -69,7 +56,21 @@ type ActiveView = "all_pending" | "all_inspection" | "critical_pending";
 
 export default function TriageDashboard() {
   const { getField } = useTranslatedField();
-  const { t, language } = useLanguage();
+  const { t, language, dir } = useLanguage();
+  const priorityLabels: Record<string, string> = {
+    low: t.priority.low, medium: t.priority.medium, high: t.priority.high, critical: t.priority.critical,
+  };
+  const categoryLabels: Record<string, string> = {
+    electrical: `⚡ ${t.category.electrical}`,
+    plumbing: `🔧 ${t.category.plumbing}`,
+    hvac: `❄️ ${t.category.hvac}`,
+    structural: `🏗️ ${t.category.structural}`,
+    mechanical: `⚙️ ${t.category.mechanical}`,
+    general: `📋 ${t.category.general}`,
+    safety: `🦺 ${t.category.safety}`,
+    cleaning: `🧹 ${t.category.cleaning}`,
+    it: `💻 ${t.category.it}`,
+  };
   const { user } = useAuth();
   const utils = trpc.useUtils();
 
@@ -142,7 +143,7 @@ export default function TriageDashboard() {
       toast.success(t.triage.movedToInspection);
       utils.tickets.list.invalidate();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
 
   const triageMut = trpc.tickets.triage.useMutation({
@@ -151,17 +152,17 @@ export default function TriageDashboard() {
       utils.tickets.list.invalidate();
       setTriageDialog(null);
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
 
   // الفرز المتعدد الجهات (2026-08-08) — إجراء مستقل، لا يمس triage العادي.
   const triageMultiMut = trpc.tickets.triageMulti.useMutation({
     onSuccess: (res: any) => {
-      toast.success(`تم اعتماد ${res?.departmentsCreated ?? 0} جهة — يمكن الآن تحليل البلاغ وإنشاء المهام`);
+      toast.success(t.workflow.ticket.multiDepartmentsApproved.replace("{count}", String(res?.departmentsCreated ?? 0)));
       utils.tickets.list.invalidate();
       setTriageDialog(null);
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
 
 
@@ -216,7 +217,7 @@ export default function TriageDashboard() {
       triageForm.maintenanceResponsibleDepartment === MAINTENANCE_RESPONSIBLE_DEPARTMENT.GENERAL &&
       !triageForm.assignedToId
     ) {
-      toast.error("يجب تعيين فني مسؤول لبلاغ الصيانة العامة");
+      toast.error(t.workflow.ticket.generalTechnicianRequired);
       return;
     }
     triageMut.mutate({
@@ -244,21 +245,21 @@ export default function TriageDashboard() {
   const handleMultiTriageFor = (ticket: any, onDone?: () => void) => {
     if (!ticket) return;
     if (selectedDepartments.length === 0) {
-      toast.error("يجب اختيار جهة واحدة على الأقل");
+      toast.error(t.workflow.ticket.chooseOneDepartment);
       return;
     }
     for (const [dept, v] of selectedDepartments) {
       const mgrs = managersForDepartment(dept);
       if (mgrs.length === 0) {
-        toast.error("لا يوجد مسؤول نشط لإحدى الجهات المختارة");
+        toast.error(t.workflow.ticket.noActiveDepartmentManager);
         return;
       }
       if (mgrs.length > 1 && !v.managerId) {
-        toast.error("يجب تحديد مسؤول كل جهة");
+        toast.error(t.workflow.ticket.chooseEveryDepartmentManager);
         return;
       }
       if (dept === MAINTENANCE_RESPONSIBLE_DEPARTMENT.CONSTRUCTION && !v.organizationalTitle.trim()) {
-        toast.error("يجب إدخال العنوان التنظيمي للإنشاءات");
+        toast.error(t.workflow.ticket.constructionTitleValidation);
         return;
       }
     }
@@ -353,8 +354,8 @@ export default function TriageDashboard() {
       <Card className="max-w-xl mx-auto mt-10">
         <CardContent className="p-8 text-center space-y-2">
           <AlertTriangle className="w-10 h-10 mx-auto text-amber-500" />
-          <h2 className="font-semibold text-lg">لا توجد صلاحية للفرز والتصنيف</h2>
-          <p className="text-sm text-muted-foreground">توجيه البلاغات متاح لمدير الصيانة العامة والمالك ومدير النظام فقط.</p>
+          <h2 className="font-semibold text-lg">{t.workflow.ticket.noTriagePermission}</h2>
+          <p className="text-sm text-muted-foreground">{t.workflow.ticket.triagePermissionHint}</p>
         </CardContent>
       </Card>
     );
@@ -384,21 +385,21 @@ export default function TriageDashboard() {
             <button
               key={card.id}
               onClick={() => setActiveView(card.id)}
-              className={`text-right w-full rounded-xl border-2 p-4 transition-all duration-200 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-400 ${
+              className={`text-start w-full rounded-xl border-2 p-4 transition-all duration-200 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-400 ${
                 isActive
                   ? `${card.activeBorder} ${card.activeBg} shadow-md`
                   : `${card.border} ${card.bg} hover:${card.activeBg}`
               }`}
             >
               <div className="flex items-center justify-between">
-                <div className="text-right">
+                <div className="text-start">
                   <p className="text-sm text-muted-foreground font-medium">{card.label}</p>
                   <p className={`text-3xl font-bold mt-1 ${card.countColor}`}>{card.count}</p>
                   {isActive && (
                     <p className="text-xs text-muted-foreground mt-1">
                       {filteredTickets.length !== baseTickets.length
-                        ? `${filteredTickets.length} من ${card.count} بعد الفلترة`
-                        : "انقر للعرض"}
+                        ? t.workflow.ticket.resultCountFiltered.replace("{shown}", String(filteredTickets.length)).replace("{total}", String(card.count))
+                        : t.workflow.ticket.clickToView}
                     </p>
                   )}
                 </div>
@@ -425,12 +426,12 @@ export default function TriageDashboard() {
         <div className="flex items-center gap-3">
           {/* Search */}
           <div className="relative flex-1">
-            <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Search className={`absolute top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground ${dir === "rtl" ? "right-3" : "left-3"}`} />
             <Input
-              placeholder="بحث برقم البلاغ أو العنوان..."
+              placeholder={t.workflow.ticket.searchTicketPlaceholder}
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
-              className="pr-9"
+              className={dir === "rtl" ? "pr-9" : "pl-9"}
             />
           </div>
 
@@ -438,7 +439,7 @@ export default function TriageDashboard() {
           <CollapsibleTrigger asChild>
             <Button variant="outline" className={`gap-2 shrink-0 ${hasActiveFilters ? "border-purple-400 text-purple-700 bg-purple-50 dark:bg-purple-900/20" : ""}`}>
               <Filter className="w-4 h-4" />
-              فلترة متقدمة
+              {t.workflow.ticket.advancedFilters}
               {hasActiveFilters && (
                 <Badge className="bg-purple-600 text-white text-xs px-1.5 py-0 h-4">
                   {[filterSiteId !== "all", filterCategory !== "all", filterPriority !== "all"].filter(Boolean).length}
@@ -450,7 +451,7 @@ export default function TriageDashboard() {
 
           {/* Clear filters */}
           {hasActiveFilters && (
-            <Button variant="ghost" size="icon" onClick={clearFilters} title="مسح الفلاتر">
+            <Button variant="ghost" size="icon" onClick={clearFilters} title={t.workflow.ticket.clearFilters}>
               <X className="w-4 h-4 text-muted-foreground" />
             </Button>
           )}
@@ -462,14 +463,14 @@ export default function TriageDashboard() {
             <div className="space-y-1.5">
               <Label className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
                 <MapPin className="w-3.5 h-3.5" />
-                الموقع
+                {t.workflow.ticket.siteLabel}
               </Label>
               <Select value={filterSiteId} onValueChange={setFilterSiteId}>
                 <SelectTrigger>
-                  <SelectValue placeholder="جميع المواقع" />
+                  <SelectValue placeholder={t.workflow.ticket.allSites} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">🌐 جميع المواقع</SelectItem>
+                  <SelectItem value="all">🌐 {t.workflow.ticket.allSites}</SelectItem>
                   {(sites as any[]).map((site: any) => (
                     <SelectItem key={site.id} value={site.id.toString()}>
                       📍 {getLocalizedName(site, language)}
@@ -483,14 +484,14 @@ export default function TriageDashboard() {
             <div className="space-y-1.5">
               <Label className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
                 <Tag className="w-3.5 h-3.5" />
-                التصنيف
+                {t.workflow.ticket.categoryLabel}
               </Label>
               <Select value={filterCategory} onValueChange={setFilterCategory}>
                 <SelectTrigger>
-                  <SelectValue placeholder="جميع التصنيفات" />
+                  <SelectValue placeholder={t.workflow.ticket.allCategories} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">📋 جميع التصنيفات</SelectItem>
+                  <SelectItem value="all">📋 {t.workflow.ticket.allCategories}</SelectItem>
                   {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
                     <SelectItem key={key} value={key}>{label}</SelectItem>
                   ))}
@@ -502,18 +503,18 @@ export default function TriageDashboard() {
             <div className="space-y-1.5">
               <Label className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
                 <AlertTriangle className="w-3.5 h-3.5" />
-                الأولوية
+                {t.workflow.ticket.priorityLabel}
               </Label>
               <Select value={filterPriority} onValueChange={setFilterPriority}>
                 <SelectTrigger>
-                  <SelectValue placeholder="جميع الأولويات" />
+                  <SelectValue placeholder={t.workflow.ticket.allPriorities} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">🔘 جميع الأولويات</SelectItem>
-                  <SelectItem value="critical">🔴 حرجة</SelectItem>
-                  <SelectItem value="high">🟠 عالية</SelectItem>
-                  <SelectItem value="medium">🟡 متوسطة</SelectItem>
-                  <SelectItem value="low">🟢 منخفضة</SelectItem>
+                  <SelectItem value="all">🔘 {t.workflow.ticket.allPriorities}</SelectItem>
+                  <SelectItem value="critical">🔴 {t.priority.critical}</SelectItem>
+                  <SelectItem value="high">🟠 {t.priority.high}</SelectItem>
+                  <SelectItem value="medium">🟡 {t.priority.medium}</SelectItem>
+                  <SelectItem value="low">🟢 {t.priority.low}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -540,7 +541,7 @@ export default function TriageDashboard() {
             className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
           >
             <X className="w-3 h-3" />
-            مسح الفلاتر
+            {t.workflow.ticket.clearFilters}
           </button>
         )}
       </div>
@@ -557,14 +558,14 @@ export default function TriageDashboard() {
           <CardContent className="py-16 text-center">
             <CheckCircle2 className="w-14 h-14 text-green-400 mx-auto mb-4" />
             <p className="text-base font-medium text-muted-foreground">
-              {hasActiveFilters ? "لا توجد نتائج تطابق الفلاتر المحددة" :
-               activeView === "all_pending" ? "لا توجد بلاغات بانتظار الفرز" :
-               activeView === "all_inspection" ? "لا توجد بلاغات قيد الفحص" :
-               "لا توجد بلاغات حرجة بانتظار الفرز"}
+              {hasActiveFilters ? t.workflow.ticket.noFilterResults :
+               activeView === "all_pending" ? t.workflow.ticket.noPendingTriage :
+               activeView === "all_inspection" ? t.workflow.ticket.noInspectionTickets :
+               t.workflow.ticket.noCriticalPending}
             </p>
             {hasActiveFilters && (
               <Button variant="outline" size="sm" className="mt-3" onClick={clearFilters}>
-                مسح الفلاتر
+                {t.workflow.ticket.clearFilters}
               </Button>
             )}
           </CardContent>
@@ -591,11 +592,11 @@ export default function TriageDashboard() {
                         {ticket.ticketNumber}
                       </span>
                       <Badge className={`text-xs ${PRIORITY_COLORS[ticket.priority] || "bg-gray-100 text-gray-700"}`}>
-                        {PRIORITY_LABELS[ticket.priority] || ticket.priority}
+                        {priorityLabels[ticket.priority] || ticket.priority}
                       </Badge>
                       {ticket.category && (
                         <Badge className={`text-xs ${CATEGORY_BADGE_COLORS[ticket.category] || "bg-gray-100 text-gray-700"}`}>
-                          {CATEGORY_LABELS[ticket.category] || ticket.category}
+                          {categoryLabels[ticket.category] || ticket.category}
                         </Badge>
                       )}
                     </div>
@@ -615,7 +616,7 @@ export default function TriageDashboard() {
                       />
                       <span className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />
-                        {new Date(ticket.createdAt).toLocaleString("ar-SA")}
+                        {new Date(ticket.createdAt).toLocaleString(language === "ar" ? "ar-SA" : language === "ur" ? "ur-PK" : "en-US")}
                       </span>
                       {ticket.siteName && (
                         <span className="flex items-center gap-1">
@@ -652,7 +653,7 @@ export default function TriageDashboard() {
                             setTriageMode("multi");
                             setMultiAssignments(emptyMultiAssignments());
                           }}
-                          title="نقل سريع لمرحلة الفحص مع تعيين فني — يدعم الفرز المتعدد أيضًا"
+                          title={t.workflow.ticket.quickMoveInspection}
                         >
                           <Zap className="w-4 h-4 ml-1" />
                           {t.triage.sortTicket}
@@ -680,7 +681,7 @@ export default function TriageDashboard() {
                         className="bg-blue-600 hover:bg-blue-700 text-white"
                       >
                         <Search className="w-4 h-4 ml-1" />
-                        فتح نموذج الفحص
+                        {t.workflow.ticket.openInspectionForm}
                       </Button>
                     )}
                   </div>
@@ -697,7 +698,7 @@ export default function TriageDashboard() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Zap className="w-5 h-5 text-blue-600" />
-              فرز سريع
+              {t.workflow.ticket.quickTriage}
             </DialogTitle>
           </DialogHeader>
           {quickTriageDialog && (
@@ -709,31 +710,31 @@ export default function TriageDashboard() {
 
               {/* الهيكل الجديد إلزامي للبلاغات الجديدة: جهة واحدة أو أكثر ثم المهام. */}
               <div className="rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50/60 dark:bg-purple-950/20 p-3">
-                <p className="text-sm font-medium">فرز حسب الجهات والمهام</p>
-                <p className="text-xs text-muted-foreground mt-1">اختر جهة واحدة أو عدة جهات أولًا؛ بعد الاعتماد يبدأ مسؤول كل جهة بإنشاء المهام وتوزيع الفنيين.</p>
+                <p className="text-sm font-medium">{t.workflow.ticket.multiTriageTitle}</p>
+                <p className="text-xs text-muted-foreground mt-1">{t.workflow.ticket.multiTriageHelp}</p>
               </div>
 
               {triageMode === "single" && (
               <div className="space-y-2">
-                <Label>الجهة المسؤولة *</Label>
+                <Label>{t.workflow.ticket.responsibleDepartmentRequired}</Label>
                 <Select value={quickTriageDepartment} onValueChange={(value) => {
                   setQuickTriageDepartment(value);
                   setQuickTriageAssignedTo("");
                   setQuickTriageManagerId("");
                 }}>
-                  <SelectTrigger><SelectValue placeholder="اختر الجهة المسؤولة" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t.workflow.ticket.chooseResponsibleDepartment} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={MAINTENANCE_RESPONSIBLE_DEPARTMENT.GENERAL}>الصيانة العامة</SelectItem>
-                    <SelectItem value={MAINTENANCE_RESPONSIBLE_DEPARTMENT.CONSTRUCTION}>قسم الإنشاءات</SelectItem>
+                    <SelectItem value={MAINTENANCE_RESPONSIBLE_DEPARTMENT.GENERAL}>{t.workflow.ticket.departmentGeneral}</SelectItem>
+                    <SelectItem value={MAINTENANCE_RESPONSIBLE_DEPARTMENT.CONSTRUCTION}>{t.workflow.ticket.departmentConstruction}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               )}
               {triageMode === "single" && managersForDepartment(quickTriageDepartment).length > 1 && (
                 <div className="space-y-2">
-                  <Label>المسؤول المستلم *</Label>
+                  <Label>{t.workflow.ticket.receivingManagerRequired}</Label>
                   <Select value={quickTriageManagerId} onValueChange={setQuickTriageManagerId}>
-                    <SelectTrigger><SelectValue placeholder="اختر المسؤول" /></SelectTrigger>
+                    <SelectTrigger><SelectValue placeholder={t.workflow.ticket.chooseManager} /></SelectTrigger>
                     <SelectContent>
                       {managersForDepartment(quickTriageDepartment).map((manager: any) => (
                         <SelectItem key={manager.id} value={String(manager.id)}>{manager.name || manager.username}</SelectItem>
@@ -744,11 +745,11 @@ export default function TriageDashboard() {
               )}
               {triageMode === "single" && quickTriageDepartment === MAINTENANCE_RESPONSIBLE_DEPARTMENT.GENERAL && (
                 <div className="space-y-2">
-                  <Label>تعيين الفني المسؤول *</Label>
+                  <Label>{t.workflow.ticket.assignedTechnicianRequired}</Label>
                   <TechnicianCombobox
                     value={quickTriageAssignedTo}
                     onValueChange={setQuickTriageAssignedTo}
-                    placeholder="اختر فنيًا للفحص..."
+                    placeholder={t.workflow.ticket.chooseInspectionTechnician}
                     options={technicians.map((tech: any) => ({ value: tech.id.toString(), label: tech.name }))}
                   />
                 </div>
@@ -756,8 +757,8 @@ export default function TriageDashboard() {
               {triageMode === "single" && (
               <p className="text-xs text-muted-foreground">
                 {quickTriageDepartment === MAINTENANCE_RESPONSIBLE_DEPARTMENT.CONSTRUCTION
-                  ? "سيتم توجيه البلاغ إلى مدير الإنشاءات ليختار الفني المسؤول."
-                  : "سيتم نقل البلاغ إلى مسار الصيانة العامة."}
+                  ? t.workflow.ticket.constructionWillChooseTech
+                  : t.workflow.ticket.generalRouteHint}
               </p>
               )}
 
@@ -765,11 +766,11 @@ export default function TriageDashboard() {
               {triageMode === "multi" && (
                 <div className="space-y-3 rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50/50 dark:bg-purple-950/20 p-3">
                   <p className="text-xs text-muted-foreground">
-                    اختر الجهة أو الجهات المسؤولة وحدد مسؤول كل جهة. إنشاء المهام وتوزيع الفنيين يتم لاحقًا داخل الجهة.
+                    {t.workflow.ticket.triageDepartmentsHelp}
                   </p>
                   {[
-                    { key: MAINTENANCE_RESPONSIBLE_DEPARTMENT.GENERAL, label: "الصيانة العامة" },
-                    { key: MAINTENANCE_RESPONSIBLE_DEPARTMENT.CONSTRUCTION, label: "قسم الإنشاءات" },
+                    { key: MAINTENANCE_RESPONSIBLE_DEPARTMENT.GENERAL, label: t.workflow.ticket.departmentGeneral },
+                    { key: MAINTENANCE_RESPONSIBLE_DEPARTMENT.CONSTRUCTION, label: t.workflow.ticket.departmentConstruction },
                   ].map(({ key, label }) => {
                     const a = multiAssignments[key] || { selected: false, managerId: "", organizationalTitle: "" };
                     const mgrs = managersForDepartment(key);
@@ -789,9 +790,9 @@ export default function TriageDashboard() {
                           <div className="space-y-2 pt-1">
                             {mgrs.length > 1 ? (
                               <>
-                                <Label className="text-xs">مسؤول الجهة *</Label>
+                                <Label className="text-xs">{t.workflow.ticket.departmentManagerRequired}</Label>
                                 <Select value={a.managerId} onValueChange={(v) => updateAssignment(key, { managerId: v })}>
-                                  <SelectTrigger><SelectValue placeholder="اختر المسؤول" /></SelectTrigger>
+                                  <SelectTrigger><SelectValue placeholder={t.workflow.ticket.chooseManager} /></SelectTrigger>
                                   <SelectContent>
                                     {mgrs.map((m: any) => (
                                       <SelectItem key={m.id} value={String(m.id)}>{m.name || m.username}</SelectItem>
@@ -800,21 +801,21 @@ export default function TriageDashboard() {
                                 </Select>
                               </>
                             ) : mgrs.length === 1 ? (
-                              <p className="text-xs text-muted-foreground">مسؤول الجهة: {mgrs[0].name || mgrs[0].username}</p>
+                              <p className="text-xs text-muted-foreground">{t.workflow.ticket.departmentManagerColon} {mgrs[0].name || mgrs[0].username}</p>
                             ) : null}
                             {key === MAINTENANCE_RESPONSIBLE_DEPARTMENT.CONSTRUCTION && (
                               <div className="space-y-1">
-                                <Label className="text-xs">العنوان التنظيمي للإنشاءات *</Label>
+                                <Label className="text-xs">{t.workflow.ticket.constructionTitleRequired}</Label>
                                 <Input
                                   value={a.organizationalTitle}
                                   maxLength={300}
                                   onChange={(e) => updateAssignment(key, { organizationalTitle: e.target.value })}
-                                  placeholder="مثال: إعادة تأهيل مبنى الإدارة"
+                                  placeholder={t.workflow.ticket.constructionTitlePlaceholder}
                                 />
-                                <p className="text-[11px] text-muted-foreground">عنوان تنظيمي فقط؛ مدير الإنشاءات ينشئ تحته مهمة واحدة أو عدة مهام.</p>
+                                <p className="text-[11px] text-muted-foreground">{t.workflow.ticket.constructionTitleOnly}</p>
                               </div>
                             )}
-                            <p className="text-[11px] text-muted-foreground">المهام والفنيون يتم تحديدهم بعد اعتماد الجهة.</p>
+                            <p className="text-[11px] text-muted-foreground">{t.workflow.ticket.tasksAssignedLater}</p>
 
                           </div>
                         )}
@@ -826,7 +827,7 @@ export default function TriageDashboard() {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setQuickTriageDialog(null)}>إلغاء</Button>
+            <Button variant="outline" onClick={() => setQuickTriageDialog(null)}>{t.workflow.ticket.cancel}</Button>
             <Button
               onClick={() => {
                 if (!quickTriageDialog) return;
@@ -863,8 +864,8 @@ export default function TriageDashboard() {
             >
               <Zap className="w-4 h-4 ml-1" />
               {(triageMode === "multi" ? triageMultiMut.isPending : quickTriageMut.isPending)
-                ? "جاري..."
-                : triageMode === "multi" ? `تأكيد الفرز المتعدد (${selectedDepartments.length})` : "تأكيد الفرز"}
+                ? t.workflow.ticket.working
+                : triageMode === "multi" ? t.workflow.ticket.confirmMultiTriageCount.replace("{count}", String(selectedDepartments.length)) : t.workflow.ticket.confirmTriage}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -878,7 +879,7 @@ export default function TriageDashboard() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <ClipboardList className="w-5 h-5 text-purple-600" />
-              فرز وتصنيف البلاغ
+              {t.workflow.ticket.triageAndClassify}
             </DialogTitle>
           </DialogHeader>
           {triageDialog && (
@@ -890,44 +891,44 @@ export default function TriageDashboard() {
 
               {/* الهيكل الجديد إلزامي للبلاغات الجديدة: جهة واحدة أو أكثر ثم المهام. */}
               <div className="rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50/60 dark:bg-purple-950/20 p-3">
-                <p className="text-sm font-medium">فرز حسب الجهات والمهام</p>
-                <p className="text-xs text-muted-foreground mt-1">اختر جهة واحدة أو عدة جهات أولًا؛ بعد الاعتماد يبدأ مسؤول كل جهة بإنشاء المهام وتوزيع الفنيين.</p>
+                <p className="text-sm font-medium">{t.workflow.ticket.multiTriageTitle}</p>
+                <p className="text-xs text-muted-foreground mt-1">{t.workflow.ticket.multiTriageHelp}</p>
               </div>
 
               <div className="space-y-2">
-                <Label>نوع البلاغ *</Label>
+                <Label>{t.workflow.ticket.ticketTypeRequired}</Label>
                 <Select
                   value={triageForm.ticketType}
                   onValueChange={(v: any) => setTriageForm(f => ({ ...f, ticketType: v }))}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="internal">داخلي (صيانة داخلية)</SelectItem>
-                    <SelectItem value="external">خارجي (صيانة خارجية)</SelectItem>
-                    <SelectItem value="procurement">مشتريات (يحتاج قطع غيار)</SelectItem>
+                    <SelectItem value="internal">{t.workflow.ticket.ticketTypeInternal}</SelectItem>
+                    <SelectItem value="external">{t.workflow.ticket.ticketTypeExternal}</SelectItem>
+                    <SelectItem value="procurement">{t.workflow.ticket.ticketTypeProcurement}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
               <div className="space-y-2">
-                <Label>الأولوية</Label>
+                <Label>{t.workflow.ticket.priorityLabel}</Label>
                 <Select
                   value={triageForm.priority}
                   onValueChange={(v) => setTriageForm(f => ({ ...f, priority: v }))}
                 >
-                  <SelectTrigger><SelectValue placeholder="اختر الأولوية" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t.workflow.ticket.choosePriority} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="low">🟢 منخفضة</SelectItem>
-                    <SelectItem value="medium">🟡 متوسطة</SelectItem>
-                    <SelectItem value="high">🟠 عالية</SelectItem>
-                    <SelectItem value="critical">🔴 حرجة</SelectItem>
+                    <SelectItem value="low">🟢 {t.priority.low}</SelectItem>
+                    <SelectItem value="medium">🟡 {t.priority.medium}</SelectItem>
+                    <SelectItem value="high">🟠 {t.priority.high}</SelectItem>
+                    <SelectItem value="critical">🔴 {t.priority.critical}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
               {triageMode === "single" && (
               <div className="space-y-2">
-                <Label>الجهة المسؤولة *</Label>
+                <Label>{t.workflow.ticket.responsibleDepartmentRequired}</Label>
                 <Select
                   value={triageForm.maintenanceResponsibleDepartment}
                   onValueChange={(value) => setTriageForm(f => ({
@@ -937,10 +938,10 @@ export default function TriageDashboard() {
                     assignedToId: "",
                   }))}
                 >
-                  <SelectTrigger><SelectValue placeholder="اختر الجهة المسؤولة" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t.workflow.ticket.chooseResponsibleDepartment} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={MAINTENANCE_RESPONSIBLE_DEPARTMENT.GENERAL}>الصيانة العامة</SelectItem>
-                    <SelectItem value={MAINTENANCE_RESPONSIBLE_DEPARTMENT.CONSTRUCTION}>قسم الإنشاءات</SelectItem>
+                    <SelectItem value={MAINTENANCE_RESPONSIBLE_DEPARTMENT.GENERAL}>{t.workflow.ticket.departmentGeneral}</SelectItem>
+                    <SelectItem value={MAINTENANCE_RESPONSIBLE_DEPARTMENT.CONSTRUCTION}>{t.workflow.ticket.departmentConstruction}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -950,11 +951,11 @@ export default function TriageDashboard() {
               {triageMode === "multi" && (
                 <div className="space-y-3 rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50/50 dark:bg-purple-950/20 p-3">
                   <p className="text-xs text-muted-foreground">
-                    اختر الجهة أو الجهات المسؤولة وحدد مسؤول كل جهة. إنشاء المهام وتوزيع الفنيين يتم لاحقًا داخل الجهة.
+                    {t.workflow.ticket.triageDepartmentsHelp}
                   </p>
                   {[
-                    { key: MAINTENANCE_RESPONSIBLE_DEPARTMENT.GENERAL, label: "الصيانة العامة" },
-                    { key: MAINTENANCE_RESPONSIBLE_DEPARTMENT.CONSTRUCTION, label: "قسم الإنشاءات" },
+                    { key: MAINTENANCE_RESPONSIBLE_DEPARTMENT.GENERAL, label: t.workflow.ticket.departmentGeneral },
+                    { key: MAINTENANCE_RESPONSIBLE_DEPARTMENT.CONSTRUCTION, label: t.workflow.ticket.departmentConstruction },
                   ].map(({ key, label }) => {
                     const a = multiAssignments[key] || { selected: false, managerId: "", organizationalTitle: "" };
                     const mgrs = managersForDepartment(key);
@@ -974,9 +975,9 @@ export default function TriageDashboard() {
                           <div className="space-y-2 pt-1">
                             {mgrs.length > 1 ? (
                               <>
-                                <Label className="text-xs">مسؤول الجهة *</Label>
+                                <Label className="text-xs">{t.workflow.ticket.departmentManagerRequired}</Label>
                                 <Select value={a.managerId} onValueChange={(v) => updateAssignment(key, { managerId: v })}>
-                                  <SelectTrigger><SelectValue placeholder="اختر المسؤول" /></SelectTrigger>
+                                  <SelectTrigger><SelectValue placeholder={t.workflow.ticket.chooseManager} /></SelectTrigger>
                                   <SelectContent>
                                     {mgrs.map((m: any) => (
                                       <SelectItem key={m.id} value={String(m.id)}>{m.name || m.username}</SelectItem>
@@ -985,21 +986,21 @@ export default function TriageDashboard() {
                                 </Select>
                               </>
                             ) : mgrs.length === 1 ? (
-                              <p className="text-xs text-muted-foreground">مسؤول الجهة: {mgrs[0].name || mgrs[0].username}</p>
+                              <p className="text-xs text-muted-foreground">{t.workflow.ticket.departmentManagerColon} {mgrs[0].name || mgrs[0].username}</p>
                             ) : null}
                             {key === MAINTENANCE_RESPONSIBLE_DEPARTMENT.CONSTRUCTION && (
                               <div className="space-y-1">
-                                <Label className="text-xs">العنوان التنظيمي للإنشاءات *</Label>
+                                <Label className="text-xs">{t.workflow.ticket.constructionTitleRequired}</Label>
                                 <Input
                                   value={a.organizationalTitle}
                                   maxLength={300}
                                   onChange={(e) => updateAssignment(key, { organizationalTitle: e.target.value })}
-                                  placeholder="مثال: إعادة تأهيل مبنى الإدارة"
+                                  placeholder={t.workflow.ticket.constructionTitlePlaceholder}
                                 />
-                                <p className="text-[11px] text-muted-foreground">عنوان تنظيمي فقط؛ مدير الإنشاءات ينشئ تحته مهمة واحدة أو عدة مهام.</p>
+                                <p className="text-[11px] text-muted-foreground">{t.workflow.ticket.constructionTitleOnly}</p>
                               </div>
                             )}
-                            <p className="text-[11px] text-muted-foreground">المهام والفنيون يتم تحديدهم بعد اعتماد الجهة.</p>
+                            <p className="text-[11px] text-muted-foreground">{t.workflow.ticket.tasksAssignedLater}</p>
 
                           </div>
                         )}
@@ -1011,12 +1012,12 @@ export default function TriageDashboard() {
 
               {triageMode === "single" && managersForDepartment(triageForm.maintenanceResponsibleDepartment).length > 1 && (
                 <div className="space-y-2">
-                  <Label>المسؤول المستلم *</Label>
+                  <Label>{t.workflow.ticket.receivingManagerRequired}</Label>
                   <Select
                     value={triageForm.maintenanceResponsibleManagerId}
                     onValueChange={(value) => setTriageForm(f => ({ ...f, maintenanceResponsibleManagerId: value }))}
                   >
-                    <SelectTrigger><SelectValue placeholder="اختر المسؤول" /></SelectTrigger>
+                    <SelectTrigger><SelectValue placeholder={t.workflow.ticket.chooseManager} /></SelectTrigger>
                     <SelectContent>
                       {managersForDepartment(triageForm.maintenanceResponsibleDepartment).map((manager: any) => (
                         <SelectItem key={manager.id} value={String(manager.id)}>{manager.name || manager.username}</SelectItem>
@@ -1028,32 +1029,32 @@ export default function TriageDashboard() {
 
               {triageMode === "single" && triageForm.maintenanceResponsibleDepartment === MAINTENANCE_RESPONSIBLE_DEPARTMENT.GENERAL && (
               <div className="space-y-2">
-                <Label>تعيين الفني المسؤول *</Label>
+                <Label>{t.workflow.ticket.assignedTechnicianRequired}</Label>
                 <TechnicianCombobox
                   value={triageForm.assignedToId}
                   onValueChange={(v) => setTriageForm(f => ({ ...f, assignedToId: v }))}
-                  placeholder="اختر الفني المسؤول"
+                  placeholder={t.workflow.ticket.chooseResponsibleTechnician}
                   options={technicians.map((tech: any) => ({
                     value: tech.id.toString(),
-                    label: `${tech.name} (فني)`,
+                    label: `${tech.name} (${t.roles.technician})`,
                   }))}
                 />
               </div>
               )}
 
               <div className="space-y-2">
-                <Label>ملاحظات الفرز</Label>
+                <Label>{t.workflow.ticket.triageNotesLabel}</Label>
                 <Textarea
                   value={triageForm.triageNotes}
                   onChange={(e) => setTriageForm(f => ({ ...f, triageNotes: e.target.value }))}
-                  placeholder="أي ملاحظات أو توجيهات للفحص..."
+                  placeholder={t.workflow.ticket.triageNotesPlaceholder}
                   rows={3}
                 />
               </div>
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setTriageDialog(null)}>إلغاء</Button>
+            <Button variant="outline" onClick={() => setTriageDialog(null)}>{t.workflow.ticket.cancel}</Button>
             <Button
               onClick={triageMode === "multi" ? handleMultiTriage : handleFullTriage}
               disabled={
@@ -1069,10 +1070,10 @@ export default function TriageDashboard() {
               }
               className="bg-purple-600 hover:bg-purple-700 text-white"
             >
-              <ArrowRight className="w-4 h-4 ml-1" />
+              <ArrowRight className={`w-4 h-4 ${dir === "rtl" ? "rotate-180 ms-1" : "me-1"}`} />
               {(triageMode === "multi" ? triageMultiMut.isPending : triageMut.isPending)
-                ? "جاري الحفظ..."
-                : triageMode === "multi" ? `تأكيد الفرز المتعدد (${selectedDepartments.length})` : "تأكيد الفرز"}
+                ? t.workflow.ticket.saving
+                : triageMode === "multi" ? t.workflow.ticket.confirmMultiTriageCount.replace("{count}", String(selectedDepartments.length)) : t.workflow.ticket.confirmTriage}
             </Button>
           </DialogFooter>
         </DialogContent>

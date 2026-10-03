@@ -6,7 +6,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { catalogItems, catalogSuppliers, catalogSupplierAliases, catalogSupplierItemAliases, catalogSupplierCandidates, warehouseReceipts, warehouses } from "../../../drizzle/schema";
+import { catalogAuditLogs, catalogItems, catalogSuppliers, catalogSupplierAliases, catalogSupplierItemAliases, catalogSupplierCandidates, warehouseReceipts, warehouses } from "../../../drizzle/schema";
 import { router, inventoryReadProcedure, warehouseProcedure } from "../_shared/procedures";
 import * as db from "../../_core/db";
 import { analyzeInvoiceFromUrl, analyzeInvoiceFromBase64 } from "../../services/ocr/invoiceOcr.service";
@@ -22,6 +22,10 @@ import { extractNormalizedMeasurements, normalizeCatalogItemText, normalizeSuppl
 import { validateCatalogItemDecision } from "../../_core/catalog-item-decision";
 import { ensurePendingCatalogItemCandidate } from "../../_core/catalog-item-candidate";
 import { createReceiptInventoryLot, isInventoryLotsEnabled } from "../../_core/inventory-lots";
+
+import { lockAndValidatePurchaseReceiptItems } from "../../services/inventory/purchaseReceiptEligibility";
+
+import { createPurchaseReceiptContextProcedure } from "./purchaseReceiptContext.procedure";
 
 // ─── مخطط الصنف المستلم ─────────────────────────────────────
 const receivedItemSchema = z.object({
@@ -58,6 +62,8 @@ const receivedItemSchema = z.object({
 });
 
 export const receiptsV2Router = router({
+
+  purchaseReceiptContext: createPurchaseReceiptContextProcedure(db.getDb),
 
   analyzeInvoice: warehouseProcedure
     .input(z.object({
@@ -432,7 +438,7 @@ export const receiptsV2Router = router({
       hasDiscrepancy:   z.boolean().default(false),
       discrepancyNotes: z.string().optional(),
       notes:            z.string().optional(),
-      items:            z.array(receivedItemSchema),
+      items:            z.array(receivedItemSchema).min(1, "أضف صنفاً واحداً على الأقل للاستلام"),
     }))
     .mutation(async ({ input, ctx }) => {
       const po = await db.getPurchaseOrderById(input.purchaseOrderId);
@@ -542,6 +548,7 @@ export const receiptsV2Router = router({
       //   بالكامل (rollback) — لا حالة وسطى ممزقة عند أي فشل جزئي.
       const lotsEnabled = isInventoryLotsEnabled();
       const { receiptId, receiptNumber, processedItems } = await db.withTransaction(async (tx) => {
+        await lockAndValidatePurchaseReceiptItems(tx, input.purchaseOrderId, input.items);
         const receiptNumber = await db.getNextReceiptNumber(tx);
 
         const receiptId = await db.createWarehouseReceiptV2({
@@ -584,6 +591,20 @@ export const receiptsV2Router = router({
           if (supplierCandidateId) {
             await tx.update(warehouseReceipts).set({ supplierCandidateId } as any)
               .where(eq(warehouseReceipts.id, receiptId!));
+            await tx.insert(catalogAuditLogs).values({
+              userId: ctx.user.id,
+              action: "create_supplier_candidate",
+              entityType: "supplier_candidate",
+              entityId: supplierCandidateId,
+              newValues: JSON.stringify({
+                receiptId,
+                purchaseOrderId: input.purchaseOrderId,
+                invoiceNumber: input.invoiceNumber || null,
+                extractedName: input.vendorName!.trim(),
+                taxNumber: input.vendorTaxNumber?.trim() || null,
+                status: "pending",
+              }),
+            } as any);
           }
         } else if (selectedCatalogSupplier && input.vendorName?.trim()) {
           const aliasName = input.vendorName.trim();
@@ -598,12 +619,25 @@ export const receiptsV2Router = router({
                 eq(catalogSupplierAliases.normalizedAlias, normalizedAlias),
               )).limit(1);
             if (existingAlias.length === 0) {
-              await tx.insert(catalogSupplierAliases).values({
+              const aliasResult = await tx.insert(catalogSupplierAliases).values({
                 supplierId: selectedCatalogSupplier.id,
                 aliasName,
                 normalizedAlias,
                 source: "invoice",
                 createdById: ctx.user.id,
+              } as any);
+              const aliasId = Number((aliasResult as any)[0]?.insertId || 0) || undefined;
+              await tx.insert(catalogAuditLogs).values({
+                userId: ctx.user.id,
+                action: "create_supplier_alias",
+                entityType: "supplier_alias",
+                entityId: aliasId,
+                newValues: JSON.stringify({
+                  supplierId: selectedCatalogSupplier.id,
+                  aliasName,
+                  source: "invoice",
+                  receiptId,
+                }),
               } as any);
             }
           }
@@ -959,19 +993,36 @@ async function rememberSupplierItemAlias(params: {
   );
 
   if (existing) {
+    const nextConfirmationCount = Number(existing.confirmationCount || 1) + 1;
     await tx.update(catalogSupplierItemAliases).set({
       supplierItemName: supplierItemName.trim(),
       supplierItemCode: supplierItemCode?.trim() || null,
       normalizedItemCode,
       normalizedMeasurements: measurements as any,
-      confirmationCount: Number(existing.confirmationCount || 1) + 1,
+      confirmationCount: nextConfirmationCount,
       lastConfirmedAt: new Date(),
       isActive: 1,
     } as any).where(eq(catalogSupplierItemAliases.id, existing.id));
+    await tx.insert(catalogAuditLogs).values({
+      userId: createdById,
+      action: "confirm_supplier_item_alias",
+      entityType: "supplier_item_alias",
+      entityId: existing.id,
+      oldValues: JSON.stringify({ confirmationCount: Number(existing.confirmationCount || 1) }),
+      newValues: JSON.stringify({
+        supplierId,
+        catalogItemId,
+        supplierItemName: supplierItemName.trim(),
+        supplierItemCode: supplierItemCode?.trim() || null,
+        confirmationCount: nextConfirmationCount,
+        source: "invoice",
+        isActive: true,
+      }),
+    } as any);
     return;
   }
 
-  await tx.insert(catalogSupplierItemAliases).values({
+  const aliasResult = await tx.insert(catalogSupplierItemAliases).values({
     supplierId,
     catalogItemId,
     supplierItemName: supplierItemName.trim(),
@@ -984,6 +1035,21 @@ async function rememberSupplierItemAlias(params: {
     lastConfirmedAt: new Date(),
     createdById,
     isActive: 1,
+  } as any);
+  const aliasId = Number((aliasResult as any)[0]?.insertId || 0) || undefined;
+  await tx.insert(catalogAuditLogs).values({
+    userId: createdById,
+    action: "create_supplier_item_alias",
+    entityType: "supplier_item_alias",
+    entityId: aliasId,
+    newValues: JSON.stringify({
+      supplierId,
+      catalogItemId,
+      supplierItemName: supplierItemName.trim(),
+      supplierItemCode: supplierItemCode?.trim() || null,
+      source: "invoice",
+      isActive: true,
+    }),
   } as any);
 }
 

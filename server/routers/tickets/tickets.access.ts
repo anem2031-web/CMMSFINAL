@@ -99,6 +99,20 @@ export function isTicketVisible(
   // الرؤية بدون تحديث الحراس الثلاثة معًا — راجع
   // docs/CONSTRUCTION_MANAGER_TICKET_READ_ACCESS.md.
 
+  if (user.role === APP_ROLE.IT_MANAGER) {
+    if (ticket.reportedById === user.id) return true;
+    if (ticket.assignedToId === user.id) return true;
+    if (
+      ticket.maintenanceResponsibleDepartment === MAINTENANCE_RESPONSIBLE_DEPARTMENT.IT &&
+      ticket.maintenanceResponsibleManagerId === user.id
+    ) return true;
+    if (!items) return false;
+    return items.some((i) =>
+      i.assignedToId === user.id ||
+      (i.responsibleDepartment === MAINTENANCE_RESPONSIBLE_DEPARTMENT.IT && i.responsibleManagerId === user.id)
+    );
+  }
+
   if (REPORTER_SCOPED_ROLES.includes(user.role as any)) {
     return ticket.reportedById === user.id;
   }
@@ -154,6 +168,14 @@ export async function assertTicketReadable(
     const assignedThroughTask = await db.isUserAssignedToTicketTasks(ticket.id, ticket.sourceTaskId, user.id);
     if (assignedThroughTask) return;
   }
+  if (user.role === APP_ROLE.IT_MANAGER) {
+    const routedThroughDepartmentPlan = await db.hasTicketDepartmentAssignment(
+      ticket.id, MAINTENANCE_RESPONSIBLE_DEPARTMENT.IT, user.id,
+    );
+    if (routedThroughDepartmentPlan) return;
+    const assignedThroughTask = await db.isUserAssignedToTicketTasks(ticket.id, ticket.sourceTaskId, user.id);
+    if (assignedThroughTask) return;
+  }
 
   throw new TRPCError({ code: "FORBIDDEN", message });
 }
@@ -169,9 +191,15 @@ export function canManageTicketWorkflow(
   user: TicketAccessUser,
   ticket: TicketVisibilitySubject,
 ): boolean {
-  if ([APP_ROLE.OWNER, APP_ROLE.ADMIN, APP_ROLE.MAINTENANCE_MANAGER].includes(user.role as any)) {
-    return true;
+  if ([APP_ROLE.OWNER, APP_ROLE.ADMIN].includes(user.role as any)) return true;
+
+  // IT is a separate, scoped workflow owner. Only the exact IT manager routed
+  // on this ticket may act; maintenance/construction/supervisor roles stay read-only.
+  if (ticket.maintenanceResponsibleDepartment === MAINTENANCE_RESPONSIBLE_DEPARTMENT.IT) {
+    return user.role === APP_ROLE.IT_MANAGER && ticket.maintenanceResponsibleManagerId === user.id;
   }
+
+  if (user.role === APP_ROLE.MAINTENANCE_MANAGER) return true;
 
   if (user.role === APP_ROLE.GENERAL_MAINTENANCE_MANAGER) {
     return (
@@ -211,9 +239,11 @@ export function canManageTicketItemWorkflow(
   user: TicketAccessUser,
   item: TicketItemVisibilitySubject,
 ): boolean {
-  if ([APP_ROLE.OWNER, APP_ROLE.ADMIN, APP_ROLE.MAINTENANCE_MANAGER].includes(user.role as any)) {
-    return true;
+  if ([APP_ROLE.OWNER, APP_ROLE.ADMIN].includes(user.role as any)) return true;
+  if (item.responsibleDepartment === MAINTENANCE_RESPONSIBLE_DEPARTMENT.IT) {
+    return user.role === APP_ROLE.IT_MANAGER && item.responsibleManagerId === user.id;
   }
+  if (user.role === APP_ROLE.MAINTENANCE_MANAGER) return true;
   if (user.role === APP_ROLE.GENERAL_MAINTENANCE_MANAGER) {
     return !item.responsibleDepartment || item.responsibleDepartment === MAINTENANCE_RESPONSIBLE_DEPARTMENT.GENERAL;
   }
@@ -241,6 +271,14 @@ export function isTicketReadOnlyForUser(
   user: TicketAccessUser,
   ticket: TicketVisibilitySubject,
 ): boolean {
+  if (ticket.maintenanceResponsibleDepartment === MAINTENANCE_RESPONSIBLE_DEPARTMENT.IT) {
+    if ([APP_ROLE.OWNER, APP_ROLE.ADMIN].includes(user.role as any)) return false;
+    // IT manager owns the routed ticket structurally; workflow mutations themselves
+    // remain denied by canManageTicketWorkflow until Phase 2.
+    if (user.role === APP_ROLE.IT_MANAGER && ticket.maintenanceResponsibleManagerId === user.id) return false;
+    return true;
+  }
+
   if (user.role === APP_ROLE.CONSTRUCTION_PROCUREMENT_MANAGER) {
     if (ticket.status === "pending_triage" && ticket.reportedById === user.id) return false;
     if (!isConstructionTicketAssignedToUser(user, ticket)) return true;
@@ -259,6 +297,7 @@ const INSPECTION_MANAGER_ROLES = [
   APP_ROLE.MAINTENANCE_MANAGER,
   APP_ROLE.GENERAL_MAINTENANCE_MANAGER,
   APP_ROLE.CONSTRUCTION_PROCUREMENT_MANAGER,
+  APP_ROLE.IT_MANAGER,
   APP_ROLE.ADMIN,
   APP_ROLE.OWNER,
 ] as const;

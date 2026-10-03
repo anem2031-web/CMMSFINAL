@@ -8,7 +8,7 @@ import { alias } from "drizzle-orm/mysql-core";
 import mysql from "mysql2/promise";
 import {
   InsertUser, users, tickets, purchaseOrders, purchaseOrderItems,
-  inventory, inventoryTransactions, inventoryLots, inventoryLotBalances, notifications, auditLogs,
+  inventory, inventoryTransactions, inventoryIssueCostAllocations, inventoryLots, inventoryLotBalances, notifications, auditLogs,
   ticketStatusHistory, attachments, sites, backups,
   assets, preventivePlans, pmWorkOrders, assetSpareParts, pmJobs, assetMetrics,
   pmChecklistItems, pmWorkOrderBranches,
@@ -163,7 +163,7 @@ export async function getReturnSources(inventoryId: number, tx?: any) {
 /**
  * 2B-8 — مرتجع مورد Lot-aware.
  *
- * QR الدفعة هو مصدر الحقيقة: لا نثق بـ inventoryId/receiptId/PO ids من العميل.
+ * هوية الدفعة هي مصدر الحقيقة: نقبل QR أو رقم اللوت ولا نثق بـ inventoryId/receiptId/PO ids من العميل.
  * كل تخفيضات الكمية (Lot balance + lot remaining + aggregate Inventory) وإنشاء
  * warehouse_return وحركة المخزون ووثيقة المرتجع تتم في Transaction واحدة.
  */
@@ -1161,6 +1161,86 @@ export async function incrementReturnDocPrintCount(id: number) {
   return newCount;
 }
 
+export type IssueCostAllocationInput = {
+  beneficiarySiteId: number;
+  beneficiarySectionId: number;
+  beneficiaryAssetId?: number | null;
+  quantity: number;
+};
+
+type NormalizedIssueCostAllocation = {
+  beneficiarySiteId: number;
+  beneficiarySectionId: number;
+  beneficiaryAssetId: number | null;
+  quantity: number;
+};
+
+async function normalizeIssueCostAllocations(params: {
+  tx: any;
+  allocations?: IssueCostAllocationInput[];
+  deliveryQuantity: number;
+}): Promise<NormalizedIssueCostAllocation[]> {
+  const allocations = Array.isArray(params.allocations) ? params.allocations : [];
+  if (allocations.length !== 1) {
+    throw new Error("كل عملية صرف يجب أن تُحمّل على جهة مستفيدة واحدة فقط");
+  }
+
+  const input = allocations[0];
+  const siteId = Number(input.beneficiarySiteId);
+  const sectionId = Number(input.beneficiarySectionId);
+  const assetId = input.beneficiaryAssetId == null ? null : Number(input.beneficiaryAssetId);
+  const quantity = normalizeInventoryQuantity(Number(input.quantity));
+  const deliveryQuantity = normalizeInventoryQuantity(params.deliveryQuantity);
+
+  if (!Number.isInteger(siteId) || siteId <= 0) {
+    throw new Error("الموقع المستفيد مطلوب");
+  }
+  if (!Number.isInteger(sectionId) || sectionId <= 0) {
+    throw new Error("القسم المستفيد مطلوب");
+  }
+  if (assetId != null && (!Number.isInteger(assetId) || assetId <= 0)) {
+    throw new Error("الأصل المستفيد غير صالح");
+  }
+  if (!(quantity >= 0.001)) {
+    throw new Error("كمية تحميل التكلفة يجب أن تكون 0.001 أو أكثر");
+  }
+  if (quantity !== deliveryQuantity) {
+    throw new Error(`كمية تحميل التكلفة يجب أن تساوي كامل كمية الصرف (${deliveryQuantity})`);
+  }
+
+  const [siteRows, sectionRows, assetRows] = await Promise.all([
+    params.tx.select({ id: sites.id, isActive: sites.isActive }).from(sites).where(eq(sites.id, siteId)).limit(1),
+    params.tx.select({ id: sections.id, siteId: sections.siteId, isActive: sections.isActive }).from(sections).where(eq(sections.id, sectionId)).limit(1),
+    assetId == null
+      ? Promise.resolve([])
+      : params.tx.select({ id: assets.id, siteId: assets.siteId, sectionId: assets.sectionId, status: assets.status }).from(assets).where(eq(assets.id, assetId)).limit(1),
+  ]);
+
+  const site = (siteRows as any[])[0];
+  if (!site) throw new Error("الموقع المستفيد غير موجود");
+  if (Number(site.isActive ?? 1) === 0) throw new Error("الموقع المستفيد غير نشط");
+
+  const section = (sectionRows as any[])[0];
+  if (!section) throw new Error("القسم المستفيد غير موجود");
+  if (Number(section.isActive ?? 1) === 0) throw new Error("القسم المستفيد غير نشط");
+  if (Number(section.siteId) !== siteId) throw new Error("القسم المستفيد لا يتبع الموقع المحدد");
+
+  if (assetId != null) {
+    const asset = (assetRows as any[])[0];
+    if (!asset) throw new Error("الأصل المستفيد غير موجود");
+    if (asset.status === "disposed") throw new Error("لا يمكن تحميل تكلفة الصرف على أصل مستبعد");
+    if (Number(asset.siteId) !== siteId) throw new Error("الأصل المستفيد لا يتبع الموقع المحدد");
+    if (Number(asset.sectionId) !== sectionId) throw new Error("الأصل المستفيد لا يتبع القسم المحدد");
+  }
+
+  return [{
+    beneficiarySiteId: siteId,
+    beneficiarySectionId: sectionId,
+    beneficiaryAssetId: assetId,
+    quantity,
+  }];
+}
+
 // ═══════════════════════════════════════════════════════════════
 // خدمة موحّدة لدورة سند الصرف (Delivery Document Flow)
 // كل مسار صرف (سواء من دورة الشراء أو من المخزون مباشرة) يستدعي
@@ -1182,10 +1262,14 @@ export async function issueDelivery(params: {
   notes?:               string;
   warehousePhotoUrl?:   string;
   markPurchaseOrderItemDelivered?: boolean;
-  // 2B-8: عند تفعيل Lots يصبح QR الدفعة إلزامياً، ولا نقبل lotId من العميل.
+  // 2B-8: عند تفعيل Lots تصبح هوية الدفعة (QR أو رقم اللوت) إلزامية، ولا نقبل lotId من العميل.
   // الخادم يحل trackingToken إلى lotId ويتحقق من رصيد نفس Inventory/المستودع.
   lotTrackingToken?:    string;
-}) {
+  // طبقة تحميل تكلفة الصرف: كل حركة صرف تُحمّل على جهة مستفيدة واحدة
+  // (موقع + قسم إلزاميان، أصل اختياري). التكلفة لا تغيّر averageCost؛
+  // تؤخذ Snapshot من issueUnitCost للـLot المصروف.
+  costAllocations?:      IssueCostAllocationInput[];
+}, existingTx?: any) {
   const db = await getDb();
   if (!db) throw new Error("تعذر الاتصال بقاعدة البيانات");
 
@@ -1194,7 +1278,10 @@ export async function issueDelivery(params: {
   const lotsEnabled = isInventoryLotsEnabled();
   const lotTrackingToken = String(params.lotTrackingToken || "").trim();
   if (lotsEnabled && !lotTrackingToken) {
-    throw new Error("يجب مسح QR الدفعة قبل تأكيد الصرف");
+    throw new Error("يجب مسح QR الدفعة أو إدخال رقم اللوت قبل تأكيد الصرف");
+  }
+  if (!lotsEnabled && (params.costAllocations?.length || 0) > 0) {
+    throw new Error("توزيع تكلفة الصرف حسب اللوت يتطلب تفعيل تتبع الدفعات");
   }
 
   const performer = await getUserById(params.performedById);
@@ -1215,7 +1302,7 @@ export async function issueDelivery(params: {
     }
   }
 
-  const result = await db.transaction(async (tx: any) => {
+  const executeIssue = async (tx: any) => {
     // Phase 5.3: lock Aggregate Inventory before reading quantity/cost so the
     // delivery quantity and valuation are based on the same current state.
     await tx.execute(sql`SELECT id FROM inventory WHERE id = ${params.inventoryId} FOR UPDATE`);
@@ -1238,6 +1325,18 @@ export async function issueDelivery(params: {
           quantity: deliveryQuantity,
         })
       : null;
+
+    const normalizedCostAllocations = lotsEnabled
+      ? await normalizeIssueCostAllocations({
+          tx,
+          allocations: params.costAllocations,
+          deliveryQuantity,
+        })
+      : [];
+
+    const lotIssueUnitCostSnapshot = lotsEnabled
+      ? Number(consumedLot?.issueUnitCost ?? 0)
+      : 0;
 
     const deliveryNumber = await getNextDeliveryNumber(tx);
 
@@ -1299,6 +1398,34 @@ export async function issueDelivery(params: {
       throw new Error("تعذر تسجيل حركة الصرف في سجل المخزون");
     }
 
+    if (normalizedCostAllocations.length > 0) {
+      const targetAllocatedCost = calculateMovementTotal(deliveryQuantity, lotIssueUnitCostSnapshot);
+      const rowCosts = normalizedCostAllocations.map(allocation =>
+        calculateMovementTotal(allocation.quantity, lotIssueUnitCostSnapshot),
+      );
+      const rowCostSum = roundTo(rowCosts.reduce((sum, value) => sum + value, 0), 2);
+      const roundingRemainder = roundTo(targetAllocatedCost - rowCostSum, 2);
+      if (roundingRemainder !== 0) {
+        rowCosts[rowCosts.length - 1] = roundTo(rowCosts[rowCosts.length - 1] + roundingRemainder, 2);
+      }
+
+      await tx.insert(inventoryIssueCostAllocations).values(
+        normalizedCostAllocations.map((allocation, index) => ({
+          inventoryTransactionId,
+          inventoryId: params.inventoryId,
+          lotId: consumedLot!.lotId,
+          deliveryNumber,
+          beneficiarySiteId: allocation.beneficiarySiteId,
+          beneficiarySectionId: allocation.beneficiarySectionId,
+          beneficiaryAssetId: allocation.beneficiaryAssetId,
+          quantity: allocation.quantity.toFixed(3),
+          lotIssueUnitCostSnapshot: lotIssueUnitCostSnapshot.toFixed(4),
+          allocatedCostTotal: rowCosts[index].toFixed(2),
+          createdById: params.performedById,
+        } as any)),
+      );
+    }
+
     if (params.markPurchaseOrderItemDelivered && params.purchaseOrderItemId && purchaseOrderId) {
       const allItems = await getPOItems(purchaseOrderId, tx);
       const activeItems = allItems.filter((poItem: any) =>
@@ -1309,7 +1436,7 @@ export async function issueDelivery(params: {
       }
     }
 
-    await createDeliveryDocument({
+    const deliveryDocumentInsert = await createDeliveryDocument({
       deliveryNumber,
       poItemId: params.purchaseOrderItemId ?? 0,
       inventoryId: params.inventoryId,
@@ -1331,9 +1458,11 @@ export async function issueDelivery(params: {
       warehousePhotoUrl: params.warehousePhotoUrl,
       notes: params.notes,
     }, tx);
+    const deliveryDocumentId = Number((deliveryDocumentInsert as any)?.insertId || 0) || null;
 
     return {
       deliveryNumber,
+      deliveryDocumentId,
       itemName: consumedLot?.supplierItemName || item.itemName,
       quantity: deliveryQuantity,
       unit: params.unit || item.unit || "",
@@ -1343,8 +1472,20 @@ export async function issueDelivery(params: {
       lotTrackingToken: consumedLot?.trackingToken ?? null,
       lotRemainingInWarehouse: consumedLot?.balanceQuantity ?? null,
       lotRemainingTotal: consumedLot?.remainingQuantity ?? null,
+      lotIssueUnitCostSnapshot: lotsEnabled ? lotIssueUnitCostSnapshot : null,
+      allocatedCostTotal: normalizedCostAllocations.length > 0
+        ? calculateMovementTotal(deliveryQuantity, lotIssueUnitCostSnapshot)
+        : null,
+      costAllocationCount: normalizedCostAllocations.length,
     };
-  });
+  };
+
+  // المسار التاريخي يبقى كما هو: كل استدعاء منفرد ينشئ Transaction خاصة به.
+  // شاشة الصرف المخزني الجديدة فقط تمرر Transaction خارجية حتى تصبح جميع
+  // بنود سند WIS ذرية كوحدة واحدة، دون تغيير سلوك أي مستدعٍ حالي.
+  const result = existingTx
+    ? await executeIssue(existingTx)
+    : await db.transaction(executeIssue);
 
   return {
     ...result,
@@ -1359,6 +1500,53 @@ export async function issueDelivery(params: {
   };
 }
 
+
+export async function getIssueCostAllocations(filters?: {
+  siteId?: number;
+  sectionId?: number;
+  assetId?: number;
+  dateFrom?: Date;
+  dateTo?: Date;
+  limit?: number;
+}) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const conditions: any[] = [];
+  if (filters?.siteId) conditions.push(eq(inventoryIssueCostAllocations.beneficiarySiteId, filters.siteId));
+  if (filters?.sectionId) conditions.push(eq(inventoryIssueCostAllocations.beneficiarySectionId, filters.sectionId));
+  if (filters?.assetId) conditions.push(eq(inventoryIssueCostAllocations.beneficiaryAssetId, filters.assetId));
+  if (filters?.dateFrom) conditions.push(gte(inventoryIssueCostAllocations.createdAt, filters.dateFrom));
+  if (filters?.dateTo) conditions.push(lte(inventoryIssueCostAllocations.createdAt, filters.dateTo));
+
+  const base = db.select({
+    id: inventoryIssueCostAllocations.id,
+    inventoryTransactionId: inventoryIssueCostAllocations.inventoryTransactionId,
+    inventoryId: inventoryIssueCostAllocations.inventoryId,
+    lotId: inventoryIssueCostAllocations.lotId,
+    deliveryNumber: inventoryIssueCostAllocations.deliveryNumber,
+    beneficiarySiteId: inventoryIssueCostAllocations.beneficiarySiteId,
+    beneficiarySiteName: sites.name,
+    beneficiarySectionId: inventoryIssueCostAllocations.beneficiarySectionId,
+    beneficiarySectionName: sections.name,
+    beneficiaryAssetId: inventoryIssueCostAllocations.beneficiaryAssetId,
+    beneficiaryAssetName: assets.name,
+    beneficiaryAssetNumber: assets.assetNumber,
+    quantity: inventoryIssueCostAllocations.quantity,
+    lotIssueUnitCostSnapshot: inventoryIssueCostAllocations.lotIssueUnitCostSnapshot,
+    allocatedCostTotal: inventoryIssueCostAllocations.allocatedCostTotal,
+    createdById: inventoryIssueCostAllocations.createdById,
+    createdAt: inventoryIssueCostAllocations.createdAt,
+  })
+    .from(inventoryIssueCostAllocations)
+    .leftJoin(sites, eq(sites.id, inventoryIssueCostAllocations.beneficiarySiteId))
+    .leftJoin(sections, eq(sections.id, inventoryIssueCostAllocations.beneficiarySectionId))
+    .leftJoin(assets, eq(assets.id, inventoryIssueCostAllocations.beneficiaryAssetId));
+
+  const query = conditions.length > 0 ? base.where(and(...conditions)) : base;
+  return query.orderBy(desc(inventoryIssueCostAllocations.createdAt), desc(inventoryIssueCostAllocations.id))
+    .limit(Math.min(Math.max(filters?.limit ?? 500, 1), 2000));
+}
 
 export async function updateDeliveryDocumentPdf(id: number, pdfKey: string, pdfUrl: string) {
   const db = await getDb();

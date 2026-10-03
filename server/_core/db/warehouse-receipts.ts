@@ -311,7 +311,7 @@ export async function createDisposal(params: {
       const qty = normalizeInventoryQuantity(item.quantity);
       if (!(qty > 0)) throw new Error("كمية الاستبعاد يجب أن تكون أكبر من صفر");
       const trackingToken = String(item.lotTrackingToken || "").trim();
-      if (!trackingToken) throw new Error("يجب مسح QR الدفعة قبل الاستبعاد");
+      if (!trackingToken) throw new Error("يجب مسح QR الدفعة أو إدخال رقم اللوت قبل الاستبعاد");
 
       // Warehouse Context + QR هما مصدر الحقيقة. نعيد حل الدفعة داخل نفس
       // Transaction، ثم نرفض أي inventoryId قديم/متلاعب به من العميل.

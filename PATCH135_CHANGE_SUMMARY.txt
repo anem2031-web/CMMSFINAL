@@ -1,0 +1,31 @@
+PATCH135 — PM V2 Material Shortage Integrity
+Baseline: eggt5.zip (confirmed to contain PATCH134 byte-for-byte)
+
+Changed files:
+1) client/src/pages/pmv2/Pmv2MyTasks.tsx
+   - Blocks duplicate catalog selection using both direct catalog identity and warehouse-resolved identity.
+   - Shows original shortage vs remaining shortage.
+   - Shows quantities received into Main Warehouse and issued into Team Warehouse.
+
+2) server/pmv2/materials/technician-attention-service.ts
+   - Derives remaining shortage from initial shortage minus quantity actually issued to Team Warehouse.
+   - Exposes initialShortageQuantity, warehouseRequestedQuantity, warehouseReceivedQuantity, warehouseIssuedToTeamQuantity.
+
+3) server/tests/pmv2-patch135-material-shortage-integrity.node.mjs
+   - Protects full-stock no-request behavior.
+   - Protects partial-stock true-shortage behavior.
+   - Protects identity-resolution live-stock recalculation.
+   - Protects server duplicate guard, resolved-identity UI guard, and technician remaining-shortage display.
+
+Verification:
+- Focused PM V2 regression (Patches 114, 115, 131, 134, 135): 39/39 PASS.
+- Broad PM V2 Node suite after PATCH135: 322/341 PASS, 19 FAIL.
+- Baseline eggt5.zip broad PM V2 Node suite: 315/334 PASS, 19 FAIL.
+- The same 19 pre-existing failures remain; PATCH135 introduced no additional broad-suite failure.
+- npm run check/build not verified because dependencies are absent and npm ci timed out in the execution environment.
+- No SQL/schema change.
+
+Documentation integrated (2026-09-24):
+- PATCH134 and PATCH135 are documented inside docs/pmv2.
+- Updated: README.md, PATCH_MANIFEST.md, 04_WORKFLOWS.md, 05_SCREENS.md, 06_IMPLEMENTATION_STATUS.md, 07_ISSUES_AND_FIXES.md, 08_DECISIONS.md, 09_TESTING.md, 10_RELEASE_NOTES.md.
+- Added: PATCH134_TECHNICIAN_MATERIAL_ATTENTION_2026-09-24.md and PATCH135_MATERIAL_SHORTAGE_INTEGRITY_2026-09-24.md.

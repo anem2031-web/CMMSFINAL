@@ -55,23 +55,64 @@ export interface TranslationResult {
 
 // Entity field mapping - defines which fields are translatable for each entity type
 export const ENTITY_FIELD_MAP: Record<string, string[]> = {
-  // tickets table: title_ar/en/ur, description_ar/en/ur, repairNotes_ar/en/ur موجودة في الـ schema
-  TICKET: ["title", "description", "repairNotes"],
-  // purchaseOrders table: لا أعمدة ترجمة مباشرة - يُخزَّن في entity_translations فقط
+  // Ticket root + workflow child entities. Direct columns are used where they
+  // already exist; the rest live safely in entity_translations.
+  TICKET: [
+    "title", "description", "repairNotes", "inspectionNotes",
+    "inspectionReturnReason", "justification", "triageNotes",
+    "materialsUsed", "maintenanceRoutingNote",
+  ],
+  TICKET_ITEM: [
+    "title", "description", "routingNote", "justification",
+    "repairNotes", "materialsUsed",
+  ],
+  TICKET_TASK: ["title", "description"],
+  TICKET_STATUS_HISTORY: ["notes"],
+  TICKET_DEPARTMENT: ["routingNote", "organizationalTitle"],
+  INSPECTION_RESULT: [
+    "rootCause", "findings", "recommendedAction", "inspectionNotes", "returnReason",
+  ],
+
+  // Purchase workflow content.
   PO: ["notes", "accountingNotes", "managementNotes", "rejectionReason"],
-  // purchaseOrderItems: specifications غير موجود في الـ schema
-  PO_ITEM: ["itemName", "description", "notes"],
-  // inventory: لا أعمدة ترجمة في الـ schema حالياً - يُخزَّن في entity_translations فقط
+  PO_ITEM: [
+    "itemName", "description", "notes", "delegateChangeReason",
+    "managementRejectionReason", "itemRevisionNote", "purchaseCancelReason",
+    "returnReason",
+  ],
+  PO_BATCH: ["accountingNotes", "managementNotes", "rejectionReason"],
+  PO_PACKAGE: ["notes"],
+  PO_COMMENT: ["note"],
+  PO_ITEM_HISTORY: ["note"],
+  EXTERNAL_MAINTENANCE_JOB: [
+    "assetName", "assetBeforeCondition", "warehouseNotes",
+    "gateExitNotes", "gateEntryNotes", "returnCondition",
+    "warehouseReturnNotes", "handoverNotes",
+  ],
+  DELIVERY_DOCUMENT: ["itemName", "notes"],
+  RETURN_DOCUMENT: ["itemName", "reason"],
+
+  // Inventory / shared entities.
   INVENTORY: ["itemName", "description"],
-  // sites: name فقط - address وdescription غير مترجمَين في الـ schema
   SITE: ["name"],
-  // notifications: لا أعمدة ترجمة في الـ schema حالياً
   NOTIFICATION: ["title", "message"],
+
+  // Legacy PM translation entities.
   PM_PLAN: ["title", "description"],
   PM_WORK_ORDER: ["title", "technicianNotes"],
   PM_RESULT: ["fixNotes"],
   PM_SESSION: ["generalNotes"],
   PM_CHECKLIST: ["text"],
+
+  // PM V2 entities.
+  PMV2_SPECIALTY: ["name", "description"],
+  PMV2_CHECKLIST: ["name", "description"],
+  PMV2_CHECKLIST_ITEM: ["title"],
+  PMV2_PROGRAM: ["title"],
+  PMV2_TASK_ITEM: ["titleSnapshot"],
+  PMV2_ITEM_ACTION: ["note"],
+  PMV2_MATERIAL_REQUEST_ITEM: ["itemNameSnapshot"],
+  PMV2_DAILY_REPORT_REVIEW: ["note"],
 };
 
 // ============================================================

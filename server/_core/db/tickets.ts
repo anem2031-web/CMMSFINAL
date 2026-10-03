@@ -90,7 +90,7 @@ export async function createTicket(data: any, tx?: any) {
   return result[0].insertId;
 }
 
-type TicketListFilters = { status?: string; priority?: string; siteId?: number; sectionId?: number; assetId?: number; assignedToId?: number; assignedTechnicianId?: number; reportedById?: number; search?: string; category?: string; maintenanceResponsibleDepartment?: string; maintenanceResponsibleManagerId?: number; constructionManagerScopeUserId?: number };
+type TicketListFilters = { status?: string; priority?: string; siteId?: number; sectionId?: number; assetId?: number; assignedToId?: number; assignedTechnicianId?: number; reportedById?: number; search?: string; category?: string; maintenanceResponsibleDepartment?: string; maintenanceResponsibleManagerId?: number; constructionManagerScopeUserId?: number; itManagerScopeUserId?: number };
 
 // شرط الفلترة المشترك بين getTickets وgetTicketsInboxCounts وgetTicketsPaginated
 function buildTicketsWhere(filters?: TicketListFilters) {
@@ -124,6 +124,33 @@ function buildTicketsWhere(filters?: TicketListFilters) {
   }
 
   if (filters?.reportedById) conditions.push(eq(tickets.reportedById, filters.reportedById));
+
+  // مدير تقنية المعلومات: بلاغاته الشخصية + ما وُجه إليه كجهة IT بأي طبقة
+  // + البلاغ الفرعي/المهمة المسندة إليه. لا يسقط الدور الجديد إلى رؤية كل البلاغات.
+  if (filters?.itManagerScopeUserId) {
+    const uid = filters.itManagerScopeUserId;
+    const routedAtTicket = and(
+      eq(tickets.maintenanceResponsibleDepartment, MAINTENANCE_RESPONSIBLE_DEPARTMENT.IT as any),
+      eq(tickets.maintenanceResponsibleManagerId, uid),
+    );
+    const assignedAtTicket = eq(tickets.assignedToId, uid);
+    const routedAtItem = sql`EXISTS (SELECT 1 FROM \`ticket_items\` WHERE \`ticket_items\`.\`ticketId\` = ${tickets.id}
+      AND \`ticket_items\`.\`responsibleDepartment\` = ${MAINTENANCE_RESPONSIBLE_DEPARTMENT.IT}
+      AND \`ticket_items\`.\`responsibleManagerId\` = ${uid})`;
+    const assignedAtItem = sql`EXISTS (SELECT 1 FROM \`ticket_items\` WHERE \`ticket_items\`.\`ticketId\` = ${tickets.id}
+      AND \`ticket_items\`.\`assignedToId\` = ${uid})`;
+    const routedAtDepartment = sql`EXISTS (SELECT 1 FROM \`ticket_departments\` WHERE \`ticket_departments\`.\`ticketId\` = ${tickets.id}
+      AND \`ticket_departments\`.\`department\` = ${MAINTENANCE_RESPONSIBLE_DEPARTMENT.IT}
+      AND \`ticket_departments\`.\`responsibleManagerId\` = ${uid})`;
+    const assignedAtTask = sql`EXISTS (
+      SELECT 1 FROM \`ticket_task_assignees\` tta
+      INNER JOIN \`ticket_tasks\` tt ON tt.\`id\` = tta.\`taskId\`
+      WHERE tta.\`userId\` = ${uid}
+        AND (tt.\`ticketId\` = ${tickets.id} OR ${tickets.sourceTaskId} = tt.\`id\`)
+    )`;
+    const ownTicket = eq(tickets.reportedById, uid);
+    conditions.push(or(routedAtTicket, assignedAtTicket, routedAtItem, assignedAtItem, routedAtDepartment, assignedAtTask, ownTicket));
+  }
 
   // مدير الإنشاءات: ما وُجه إليه بأي طبقة + بلاغه الشخصي قبل الفرز فقط.
   if (filters?.constructionManagerScopeUserId) {

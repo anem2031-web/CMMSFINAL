@@ -2,6 +2,7 @@ import ExcelJS from "exceljs";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   catalogItems,
+  catalogCodeAliases,
   inventory,
   inventoryCountItems,
   inventoryCountOperations,
@@ -251,7 +252,39 @@ async function validateParsedRows(writer: any, operationId: number, parsedRows: 
     catalogByCode.set(code, list);
   }
 
-  const catalogIds = Array.from(new Set(catalogRows.map((r: any) => Number(r.id))));
+  // Historical codes produced by taxonomy restructuring remain valid for old
+  // Excel files. Direct current codes always win; aliases are only a fallback.
+  const missingCodes = codes.filter(code => !catalogByCode.has(code));
+  const aliasRows = missingCodes.length
+    ? await selectInChunks<any>(missingCodes, chunk => writer.select({
+        oldCode: catalogCodeAliases.oldCode,
+        entityId: catalogCodeAliases.entityId,
+      }).from(catalogCodeAliases).where(and(
+        eq(catalogCodeAliases.entityType, "item"),
+        inArray(catalogCodeAliases.oldCode, chunk),
+      )))
+    : [];
+  const aliasItemIds = Array.from(new Set(aliasRows.map((row: any) => Number(row.entityId)).filter(Boolean)));
+  const aliasCatalogRows = aliasItemIds.length
+    ? await selectInChunks<any>(aliasItemIds, chunk => writer.select({
+        id: catalogItems.id,
+        code: catalogItems.code,
+        nameAr: catalogItems.nameAr,
+        unit: catalogItems.unit,
+      }).from(catalogItems).where(and(inArray(catalogItems.id, chunk), eq(catalogItems.isActive, 1))))
+    : [];
+  const aliasItemById = new Map(aliasCatalogRows.map((row: any) => [Number(row.id), row]));
+  for (const alias of aliasRows) {
+    const oldCode = String(alias.oldCode || "").trim();
+    if (!oldCode || catalogByCode.has(oldCode)) continue;
+    const item = aliasItemById.get(Number(alias.entityId));
+    if (item) catalogByCode.set(oldCode, [item]);
+  }
+
+  const catalogIds = Array.from(new Set([
+    ...catalogRows.map((r: any) => Number(r.id)),
+    ...aliasCatalogRows.map((r: any) => Number(r.id)),
+  ]));
   const inventoryRows = catalogIds.length
     ? await selectInChunks<any>(catalogIds, chunk => writer.select({
         id: inventory.id,

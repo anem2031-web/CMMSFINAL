@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { router, protectedProcedure, ticketProcedure, ticketManagerProcedure, ticketTriageProcedure } from "../_shared/procedures";
+import { router, protectedProcedure, ticketProcedure, ticketManagerProcedure, ticketScopedWorkflowManagerProcedure, ticketTriageProcedure } from "../_shared/procedures";
 import { translateFields, detectLanguage } from "../../services/translation/translation";
 import * as db from "../../_core/db";
 import { APP_ROLE, MAINTENANCE_INSPECTION_WORKFLOW_STATUS } from "@shared/roles";
@@ -13,6 +13,7 @@ const executionManagerRoles = new Set<string>([
   APP_ROLE.MAINTENANCE_MANAGER,
   APP_ROLE.GENERAL_MAINTENANCE_MANAGER,
   APP_ROLE.CONSTRUCTION_PROCUREMENT_MANAGER,
+  APP_ROLE.IT_MANAGER,
   APP_ROLE.ADMIN,
   APP_ROLE.OWNER,
 ]);
@@ -343,7 +344,7 @@ export const ticketsApprovalsRouter = router({
    * كل بند يُعتمَد ويُغلق مستقلًا، والبلاغ لا يُغلق إلا بعد اكتمالها جميعًا
    * (يفرضه assertAllTicketItemsClosed بـtickets.closure.ts).
    */
-  closeTicketItem: ticketManagerProcedure.input(z.object({ ticketItemId: z.number() })).mutation(async ({ input, ctx }) => {
+  closeTicketItem: ticketScopedWorkflowManagerProcedure.input(z.object({ ticketItemId: z.number() })).mutation(async ({ input, ctx }) => {
     const item = await db.getTicketItemById(input.ticketItemId);
     if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "بند البلاغ غير موجود" });
     const ticket = await db.getTicketById(item.ticketId);

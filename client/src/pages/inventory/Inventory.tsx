@@ -1,6 +1,12 @@
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { InventoryItemCard } from "@/components/inventory/InventoryItemCard";
+import {
+  IssueCostAllocationEditor,
+  buildIssueCostAllocationPayload,
+  createIssueCostAllocationDraft,
+  type IssueCostAllocationDraft,
+} from "@/components/inventory/IssueCostAllocationEditor";
 import LotLabelsPrintScreen, { type LotLabelItem } from "@/components/inventory/LotLabelsPrintScreen";
 import BarcodeScanner from "@/components/common/BarcodeScanner";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -294,6 +300,7 @@ export default function Inventory() {
   const [deliverToId, setDeliverToId] = useState("");
   const [deliverNotes, setDeliverNotes] = useState("");
   const [deliverLotInfo, setDeliverLotInfo] = useState<any>(null);
+  const [deliverCostAllocations, setDeliverCostAllocations] = useState<IssueCostAllocationDraft[]>(() => [createIssueCostAllocationDraft()]);
   const [lotCodeSearch, setLotCodeSearch] = useState("");
   const [lotDialogItem, setLotDialogItem] = useState<any>(null);
   const [printLotQr, setPrintLotQr] = useState<LotLabelItem | null>(null);
@@ -432,13 +439,14 @@ export default function Inventory() {
   });
   const deliverMut = trpc.purchaseOrders.deliverInventoryItem.useMutation({
     onSuccess: (data: any) => {
-      toast.success(`تم التسليم بنجاح — سند ${data.deliveryNumber}`);
+      toast.success(`تم التسليم بنجاح — سند ${data.deliveryNumber}${data.allocatedCostTotal != null ? ` — تكلفة اللوت المحملة ${Number(data.allocatedCostTotal).toFixed(2)} ر.س` : ""}`);
       utils.inventory.list.invalidate();
       setDeliverItem(null);
       setDeliverQty("");
       setDeliverToId("");
       setDeliverNotes("");
       setDeliverLotInfo(null);
+      setDeliverCostAllocations([createIssueCostAllocationDraft()]);
     },
     onError: (err: any) => toast.error(err.message),
   });
@@ -794,7 +802,7 @@ export default function Inventory() {
                         {isWarehouse && (
                           <>
                             {item.quantity > 0 && (
-                              <Button variant="ghost" size="icon" className="h-7 w-7 text-blue-600 hover:text-blue-700" onClick={() => { setDeliverItem(item); setDeliverQty(""); setDeliverToId(""); setDeliverNotes(""); setDeliverLotInfo(null); setLotCodeSearch(""); }} title="تسليم للفني">
+                              <Button variant="ghost" size="icon" className="h-7 w-7 text-blue-600 hover:text-blue-700" onClick={() => { setDeliverItem(item); setDeliverQty(""); setDeliverToId(""); setDeliverNotes(""); setDeliverLotInfo(null); setDeliverCostAllocations([createIssueCostAllocationDraft()]); setLotCodeSearch(""); }} title="تسليم للفني">
                                 <Truck className="w-3.5 h-3.5" />
                               </Button>
                             )}
@@ -958,8 +966,8 @@ export default function Inventory() {
       </Dialog>
 
       {/* ── نافذة تسليم للفني ── */}
-      <Dialog open={!!deliverItem} onOpenChange={(open) => { if (!open) { setDeliverItem(null); setDeliverLotInfo(null); setLotCodeSearch(""); } }}>
-        <DialogContent className="max-w-md" dir="rtl">
+      <Dialog open={!!deliverItem} onOpenChange={(open) => { if (!open) { setDeliverItem(null); setDeliverLotInfo(null); setDeliverCostAllocations([createIssueCostAllocationDraft()]); setLotCodeSearch(""); } }}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto" dir="rtl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Truck className="w-5 h-5 text-blue-600" />
@@ -1051,6 +1059,16 @@ export default function Inventory() {
                 )}
               </div>
 
+              {lotsEnabled && deliverLotInfo && (
+                <IssueCostAllocationEditor
+                  value={deliverCostAllocations}
+                  onChange={setDeliverCostAllocations}
+                  totalQuantity={Number(deliverQty) || 0}
+                  lotUnitCost={Number(deliverLotInfo.issueUnitCost || 0)}
+                  unitLabel={deliverItem.unit || "وحدة"}
+                />
+              )}
+
               <div className="space-y-1.5">
                 <Label className="text-xs">الفني المُسلَّم إليه</Label>
                 <TechnicianCombobox
@@ -1078,7 +1096,7 @@ export default function Inventory() {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setDeliverItem(null); setDeliverLotInfo(null); setLotCodeSearch(""); }}>إلغاء</Button>
+            <Button variant="outline" onClick={() => { setDeliverItem(null); setDeliverLotInfo(null); setDeliverCostAllocations([createIssueCostAllocationDraft()]); setLotCodeSearch(""); }}>إلغاء</Button>
             <Button
               className="gap-1.5"
               disabled={deliverMut.isPending || resolveDeliveryLotMut.isPending || (lotsEnabled && !deliverLotInfo)}
@@ -1100,12 +1118,22 @@ export default function Inventory() {
                   toast.error(`الكمية (${qty}) أكبر من رصيد الدفعة الممسوحة (${deliverLotInfo?.availableQuantity || 0})`);
                   return;
                 }
+                let costAllocations;
+                try {
+                  costAllocations = lotsEnabled
+                    ? buildIssueCostAllocationPayload(deliverCostAllocations, qty)
+                    : undefined;
+                } catch (error: any) {
+                  toast.error(error?.message || "تحقق من توزيع تكلفة الصرف");
+                  return;
+                }
                 deliverMut.mutate({
                   inventoryId:   deliverItem.id,
                   deliveredToId: deliverToId ? parseInt(deliverToId) : undefined,
                   deliveryQty:   qty,
                   deliveryUnit:  deliverItem.unit || "قطعة",
                   lotTrackingToken: lotsEnabled ? deliverLotInfo?.trackingToken : undefined,
+                  costAllocations,
                   notes:         deliverNotes || undefined,
                 });
               }}

@@ -313,6 +313,7 @@ export default function Home() {
       construction_procurement_manager: "/tickets?tab=construction",
       supervisor: "/tickets",
       technician: "/tickets",
+      it_manager: "/tickets",
       accountant: "/purchase-orders",
       warehouse: "/inventory",
       delegate: "/purchase-orders",

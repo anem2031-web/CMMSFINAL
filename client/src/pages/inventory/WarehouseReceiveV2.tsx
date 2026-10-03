@@ -167,7 +167,6 @@ const createManualItemsFromPoCandidates = (candidates: any[]): ReceiveItem[] =>
 
 // ─────────────────────────────────────────────────────────────
 export default function WarehouseReceiveV2() {
-  const [, navigate] = useLocation();
   const search = useSearch();
   const params = new URLSearchParams(search);
   const poId = params.get("poId") ? parseInt(params.get("poId")!) : null;
@@ -175,6 +174,11 @@ export default function WarehouseReceiveV2() {
   // من الطلب سيتم استلامها في هذه الجلسة (طلب واحد قد يحتوي عدة فواتير موردين)
   const invoiceNumberParam = params.get("invoiceNumber") || null;
 
+  return <WarehouseReceiveForm key={`${poId}:${invoiceNumberParam}`} poId={poId} invoiceNumberParam={invoiceNumberParam} />;
+}
+
+function WarehouseReceiveForm({ poId, invoiceNumberParam }: { poId: number | null; invoiceNumberParam: string | null }) {
+  const [, navigate] = useLocation();
   // ── State ──────────────────────────────────────────────────
   const [step, setStep] = useState<Step>("upload");
   const [invoiceFile, setInvoiceFile]   = useState<UploadedFile | null>(null);
@@ -211,9 +215,11 @@ export default function WarehouseReceiveV2() {
   const [showCatalogDecisionErrors, setShowCatalogDecisionErrors] = useState(false);
 
   // ── Queries ────────────────────────────────────────────────
-  const { data: po, isLoading: isPoLoading } = trpc.purchaseOrders.getById.useQuery(
-    { id: poId! }, { enabled: !!poId }
-  );
+  const { data: po, isLoading: isPoLoading, isError: isPoError, error: poError, refetch: refetchPo } =
+    trpc.warehouseReceiptsV2.purchaseReceiptContext.useQuery(
+      { purchaseOrderId: poId!, invoiceNumber: invoiceNumberParam || undefined },
+      { enabled: Number.isInteger(poId) && Number(poId) > 0, retry: false, refetchOnWindowFocus: false },
+    );
 
   const supplierSearchName = (invoiceData.vendorName || invoiceData.vendorNameEn || "").trim();
   const { data: supplierMatches = [], isFetching: isMatchingSuppliers } = trpc.catalog.suppliers.match.useQuery(
@@ -231,11 +237,8 @@ export default function WarehouseReceiveV2() {
   // — لا تُعرض كأصناف جاهزة، فقط قائمة نربط بها أصناف الفاتورة الحقيقية لاحقاً.
   useEffect(() => {
     if (!initialized && (po as any)?.items) {
-      const deliveredItems = (po as any).items.filter((i: any) =>
-        i.status === "delivered_to_warehouse" &&
-        (!invoiceNumberParam || i.supplierInvoiceNumber === invoiceNumberParam)
-      );
-      setPoCandidates(deliveredItems);
+      // Server scopes by PO/invoice and excludes confirmed receipt items.
+      setPoCandidates(po!.items);
       setInitialized(true);
     }
   }, [po, initialized, invoiceNumberParam]);
@@ -815,17 +818,34 @@ export default function WarehouseReceiveV2() {
     });
   };
 
-  if (!poId) return (
+  if (!Number.isInteger(poId) || Number(poId) <= 0) return (
     <div className="p-8 text-center text-muted-foreground">لم يتم تحديد طلب الشراء</div>
+  );
+
+  if (isPoError) return (
+    <div className="p-8 text-center space-y-3" role="alert">
+      <AlertTriangle className="w-8 h-8 mx-auto text-red-500" />
+      <p className="font-medium">تعذر تحميل أصناف الاستلام</p>
+      <p className="text-sm text-muted-foreground">{poError?.message || "تعذر الاتصال بالسيرفر"}</p>
+      <Button variant="outline" onClick={() => void refetchPo()}>إعادة المحاولة</Button>
+      <Button variant="ghost" onClick={() => navigate("/purchase-cycle")}>العودة لدورة الشراء</Button>
+    </div>
+  );
+
+  if (isPoLoading || !initialized) return (
+    <div className="p-8 text-center text-muted-foreground" role="status">
+      <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin" />
+      جاري تحميل أصناف الاستلام…
+    </div>
   );
 
   if (initialized && poCandidates.length === 0) return (
     <div className="p-8 text-center text-muted-foreground space-y-2">
       <AlertTriangle className="w-8 h-8 mx-auto text-amber-500" />
-      <p className="font-medium">لا توجد أصناف بحالة "توريد للمستودع" مطابقة لهذه الفاتورة</p>
+      <p className="font-medium">لا توجد أصناف متاحة لإدخال المخزون لهذه الفاتورة</p>
       <p className="text-xs">
         {invoiceNumberParam
-          ? `رقم الفاتورة: ${invoiceNumberParam} — تأكد من تأكيد التوريد للمستودع لهذا الرقم أولاً`
+          ? `رقم الفاتورة: ${invoiceNumberParam} — تحقق من التوريد، أو ربما اكتمل إدخال الأصناف للمخزون مسبقاً`
           : "تأكد من تأكيد التوريد للمستودع أولاً من تبويب \"توريد للمستودع\""}
       </p>
       <Button variant="outline" size="sm" onClick={() => navigate("/purchase-cycle")}>

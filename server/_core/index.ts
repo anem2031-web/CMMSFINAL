@@ -21,6 +21,7 @@ import { exportTicketsToExcel, exportPurchaseOrdersToExcel, exportTechnicianPerf
 import { generateWorkflowGuidePDF } from "../services/pdf/workflowPdfService";
 import { runTechnicianOverdueJob } from "../jobs/technician-overdue";
 import { runPMAutomationJob } from "../jobs/pm-automation";
+import { runPmv2SchedulerJob } from "../jobs/pmv2-scheduler";
 import { runPMWorkOrderReminderJob } from "../jobs/pm-reminder";
 import { runSlaOverduePushJob } from "../jobs/sla-overdue-push";
 import { runBackupCleanupJob } from "../jobs/backup-cleanup";
@@ -31,7 +32,7 @@ import { generateTicketPDF, type TicketPdfDocumentType } from "../services/pdf/t
 import { assertTicketReadable } from "../routers/tickets/tickets.access";
 import { canDownloadTicketArchive, canPrintTicketTask } from "@shared/ticketUiRules";
 import { htmlToPdf } from "../services/pdf/htmlToPdfService";
-import { sdk } from "./sdk";
+import { isSessionAuthenticationError, sdk } from "./sdk";
 import {
   buildReportsCenterPreviewExcel,
   buildReportsCenterPreviewPdf,
@@ -107,7 +108,11 @@ async function requireAuthMiddleware(req: any, res: any, next: any) {
     }
     req.authenticatedUser = user;
     next();
-  } catch {
+  } catch (error) {
+    if (!isSessionAuthenticationError(error)) {
+      console.error("[Auth] Protected HTTP route authentication unavailable", error);
+      return res.status(503).json({ error: "تعذر التحقق من الجلسة مؤقتًا" });
+    }
     return res.status(401).json({ error: "غير مصرح — يجب تسجيل الدخول أولاً" });
   }
 }
@@ -124,7 +129,11 @@ function makeRequireExportRole(allowedRoles: Set<string>) {
       }
       req.authenticatedUser = user;
       next();
-    } catch {
+    } catch (error) {
+      if (!isSessionAuthenticationError(error)) {
+        console.error("[Auth] Export authentication unavailable", error);
+        return res.status(503).json({ error: "تعذر التحقق من الجلسة مؤقتًا" });
+      }
       return res.status(401).json({ error: "غير مصرح — يجب تسجيل الدخول أولاً" });
     }
   };
@@ -993,7 +1002,7 @@ async function startServer() {
         return res.status(403).json({ error: "طباعة المهمة متاحة بعد تصنيف البلاغ وفق الصلاحيات المحددة" });
       }
 
-      const buffer = await generateTicketPDF(ticketId, documentType);
+      const buffer = await generateTicketPDF(ticketId, documentType, req.authenticatedUser?.preferredLanguage);
       res.setHeader("Content-Type", "application/pdf");
       const disposition = documentType === "archive" ? "attachment" : "inline";
       res.setHeader(
@@ -1161,6 +1170,13 @@ async function startServer() {
     runPMAutomationJob();
     setInterval(runPMAutomationJob, SIX_HOURS);
   }, 10000);
+
+  // PM V2 Scheduler: independent from Legacy PM automation; idempotent date-only generation.
+  const PMV2_ONE_HOUR = 60 * 60 * 1000;
+  setTimeout(() => {
+    runPmv2SchedulerJob();
+    setInterval(runPmv2SchedulerJob, PMV2_ONE_HOUR);
+  }, 12000);
 
   // PM Reminder Job: يفحص كل ساعتين أوامر العمل التي تجاوزت 24 ساعة بدون تحديث
    const TWO_HOURS = 2 * 60 * 60 * 1000;

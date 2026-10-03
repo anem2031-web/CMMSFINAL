@@ -2,236 +2,97 @@
 
 ## 1. القرار المعماري
 
-PM V2 هي **Bounded Module مستقلة معماريًا داخل نفس البرنامج الحالي**.
+PM V2 = **Bounded Module / Modular Monolith داخل نفس CMMS**.
 
-التصنيف الأنسب حاليًا:
+لها Domain/DB/Backend/Frontend واضح، لكنها تستخدم الخدمات والبيانات الحالية عبر Adapters بدل نسخها.
 
-**Modular Monolith**
+## 2. ما تملكه PM V2
 
-وليس:
-
-- تطبيقًا منفصلًا.
-- Microservice منفصلة.
-- أو مجموعة تغييرات مبعثرة داخل الوحدات الحالية.
-
-## 2. الهدف من هذا القرار
-
-تحقيق ثلاثة أمور معًا:
-
-1. استقلال منطق PM V2 وقابليته للاختبار والصيانة.
-2. إعادة استخدام بيانات وخدمات البرنامج الحالية بدل تكرارها.
-3. منع PM V2 من فرض تغييرات على Workflows النظام الحالي.
-
-## 3. حدود الملكية
-
-### داخل PM V2
-
-- Specialties.
-- Teams.
-- Team Membership.
-- Specialty Manager assignment.
-- Checklists / Checklist Items.
-- Recurrence rules.
-- Maintenance Programs.
-- Program Targets references.
+- Specialties / Teams / Team Members.
+- Checklists / Recurrence.
+- Programs / Program Targets.
 - Tasks / Task Items.
-- Visits / Visit Members.
-- Item Actions / operational audit.
-- Material Requests state.
-- Follow-up / Closure rules.
+- Visits / Members / Item Actions.
+- Material Requests / Items.
+- Purchase Source Links.
+- Ticket Source Links.
+- Material Usage trace.
+- Reminders/Audit الخاص بالوحدة.
 
-### خارج PM V2 — Source of Truth مشترك
+## 3. ما لا تملكه
 
-- Users.
-- Sites.
-- Sections.
-- Assets.
-- Warehouses.
-- Catalog.
-- Inventory / Lots / Transactions.
-- Tickets.
-- Path B.
-- Purchase Orders.
+- Users/Auth.
+- Sites/Sections/Assets.
+- Warehouses/Catalog.
+- Inventory/Lots/Transactions/QR.
+- Ticket Workflow/A-B-C.
+- Purchase Orders/Packages/Receiving/Delivery workflow.
 
-PM V2 لا تنسخ هذه الكيانات كـMaster Data.
+## 4. Organization
 
-## 4. Maintenance Targets
+`Specialty → Team → Members`
 
-البرنامج الحالي يملك بالفعل:
+- `users.department` Metadata فقط.
+- `sections` مكانية.
+- Specialty/Team مملوكان لـPM V2.
+- Members references إلى Users الحاليين.
 
-`sites → sections → assets`
+## 5. Maintenance Targets
 
-لذلك التصميم الجديد لا يعتبر `pmv2_locations` مصدر حقيقة مستقلًا.
+Program Target = نوع واحد فقط من:
 
-PM V2 ستربط برنامج الصيانة بأحد أهداف النظام الحالي حسب الحاجة:
+- Site
+- Section
+- Asset
 
-- Site.
-- Section.
-- Asset.
+Target يحدد **مكان/موضوع الصيانة**، وTeam/Specialty يحدد **من ينفذ العمل**.
 
-الشكل النهائي لعلاقات DB يثبت في Phase 0 بعد فحص البيانات الفعلية وأنواع IDs.
+## 6. Adapters
 
-## 5. الفرق بين المسميات المتشابهة
+### UsersAdapter
+قراءة المستخدمين النشطين والتحقق من IDs.
 
-### Site
-موقع رئيسي موجود في `sites`.
+### MaintenanceTargetAdapter
+قراءة/Validation لـSite/Section/Asset وعلاقاتها.
 
-### Section
-قسم مكاني داخل Site موجود في `sections`.
+### WarehouseAdapter
+قراءة المخازن وتنفيذ Warehouse Transfer عبر الخدمة الحالية.
 
-### Department
-القسم الوظيفي/التنظيمي الموجود أصلًا في البرنامج، ومصدره النهائي يثبت في Phase 0.
+### InventoryAdapter
+الصرف/QR/Lot/Transactions عبر الخدمات الحالية؛ لا Stock mutation مباشر من PM V2.
 
-### Specialty
-تخصص صيانة جديد داخل PM V2 مثل كهرباء/سباكة.
+### TicketAdapter
+فتح نفس Ticket creation flow، حفظ/قراءة Ticket ID/status/closure؛ لا إدارة A/B/C داخل PM V2.
 
-### Team
-فريق صيانة تابع للتخصص.
+### PurchaseAdapter
+إنشاء PO عادي من PM V2 source، ثم قراءة PO/PO Item state من Purchase Workflow الحالي.
 
-### Team Members
-Users حاليون مرتبطون بالفريق.
+### NotificationAdapter / FileImageAdapter
+إعادة استخدام الخدمات الحالية المناسبة.
 
-## 6. الهيكل التنظيمي
+## 7. Purchase integration
 
-**القسم الحالي → التخصص → الفريق → الأعضاء**
+`Task Item → Material Request Item → pmv2_material_purchase_links → Purchase Order / Purchase Order Item`
 
-مع أدوار منفصلة:
+- لا Source IDs داخل `ticketId/ticketItemId/packageId`.
+- PO يصبح PO عاديًا بكل وظائف النظام الحالي.
 
-- Specialty Manager.
-- Team Member.
-- Visit/Task Leader.
+## 8. Ticket integration
 
-Task Leader مرتبط بزيارة، ولا يحل محل Specialty Manager.
+`Task Item → pmv2_task_ticket_links → Ticket`
 
-## 7. Integration Adapters
+- نفس نافذة إنشاء البلاغ الحالية.
+- Ticket Workflow الحالي يحدد A/B/C.
+- PM V2 تعرض الرابط والحالة ولا تنسخ State Machine البلاغ.
 
-### Users Adapter
+## 9. External Reference Policy
 
-المسؤولية:
-
-- قراءة المستخدمين الحاليين.
-- التحقق من الفعالية والدور حسب القاعدة المعتمدة.
-- توفير بيانات العرض اللازمة لـPM V2.
-
-لا ينشئ PM V2 مستخدمين جدد.
-
-### Organization Adapter
-
-عند الحاجة لعرض/ربط القسم الحالي دون نسخ Master Data.
-
-لا يعتمد التصميم على اسم `department` فقط قبل تثبيت Source of Truth الفعلي.
-
-### Maintenance Target Adapter
-
-قراءة وتوحيد أهداف الصيانة من:
-
-- `sites`
-- `sections`
-- `assets`
-
-بحيث تتعامل طبقة PM V2 مع Contract موحد دون نسخ السجلات.
-
-### Warehouse Adapter
-
-- قراءة المخازن الفرعية الحالية.
-- التحقق من المخزن المرتبط بالفريق.
-- نقل المادة إلى مخزن الفريق عبر الخدمات الحالية `createWarehouseTransfer` / `createWarehouseTransferBatch`.
-- لا ينشئ PM V2 منطق Transfer موازيًا.
-
-### Inventory Adapter
-
-- قراءة الأصناف والأرصدة المناسبة.
-- تمرير الصرف/الاستخدام الفعلي إلى خدمة `issueDelivery` الحالية.
-- احترام QR/Lot/Token/Validation الحالية.
-- إعادة مراجع Delivery / Inventory Transaction / Lot اللازمة إلى PM V2.
-- عند وجود شراء خارجي يحتفظ Contract بمرجع Purchase Order Item اللازم لاستمرار التتبع.
-
-PM V2 لا تعدل الرصيد مباشرة ولا تنشئ Inventory Transaction بنفسها.
-
-### Path B Adapter
-
-- إنشاء/ربط Bridge Ticket/Item عند الحاجة.
-- متابعة الربط مع Purchase Order.
-- قراءة الحالة المطلوبة لعرضها داخل PM V2.
-
-لا يغير Workflow أو Roles الخاصة بـPath B.
-
-### Notification Adapter
-
-إعادة استخدام البنية الحالية للإشعارات عندما تكون مناسبة، مع إبقاء منطق "متى نرسل" داخل PM V2.
-
-### File/Image Adapter
-
-إعادة استخدام خدمة الرفع/Offline Upload أو المكونات المشتركة المناسبة، مع عدم تعديل Allowlist/Workflow قائم دون حاجة معتمدة.
-
-## 8. قاعدة الاتصال بين الوحدات
-
-القاعدة:
-
-> PM V2 Domain لا يعرف تفاصيل جداول أو Routers النظام الحالي أكثر مما يحتاجه Contract الـAdapter.
-
-مثال:
-
-```text
-Technician Workflow
-        ↓
-PM V2 Inventory Port
-        ↓
-Inventory Adapter
-        ↓
-Current Inventory/Warehouse Services
-        ↓
-Inventory Transaction
-```
-
-## 9. تنظيم الكود المبدئي
-
-المسارات النهائية تثبت بعد مطابقة Structure المشروع، لكن المبدأ:
-
-```text
-client/src/.../pmv2/
-server/.../pmv2/
-  domain/
-  services/
-  repositories/
-  adapters/
-  routers/
-  jobs/
-docs/pmv2/
-```
-
-إذا كان Structure الحالي يفرض Naming مختلفًا، نتكيف معه مع الحفاظ على Boundary.
+- العلاقات داخل `pmv2_*` تستخدم Physical FKs.
+- المراجع إلى الجداول الحالية تحفظ كIDs وتتحقق عبر Adapters عند الكتابة/التعديل.
+- External IDs المفهرسة يمكن استخدامها في JOIN مباشر عند القراءة داخل نفس قاعدة البيانات؛ FK ليس شرطًا للـJOIN.
+- لا يفرض PM V2 FK خارجيًا إذا قد يغير Delete/Workflow للوحدة المالكة.
+- Snapshot fields للتاريخ/العرض فقط، وليست Master Data موازية.
 
 ## 10. قاعدة عدم التغيير خارج الوحدة
 
-التغييرات خارج PM V2 تكون فقط Additive/Registration عند الحاجة، مثل:
-
-- تسجيل Router.
-- Menu entry.
-- route registration.
-- import محدود.
-
-إذا تطلب التكامل تغيير سلوك نظام قائم:
-
-1. نتوقف.
-2. نوثق المشكلة.
-3. نبحث عن Adapter-side solution.
-4. نناقش المستخدم قبل أي قرار خارج PM V2.
-
-## 11. Department Integration Limitation
-
-الفحص الحالي لا يظهر Department Master عام ثابت؛ `users.department` ظاهر كنص، بينما `sections` مفهوم مكاني و`ticket_departments` خاص بالبلاغات.
-
-لذلك لا تنشئ PM V2 جدول Departments موازٍ. Organization Adapter هو المسؤول عن تقديم/التحقق من مرجع القسم الحالي، والتصميم النهائي للربط ينتظر DB Reality Check في Phase 0.
-
-## 12. Core First, Integration by Contract
-
-نحدد Contracts من البداية، لكن نؤجل التكامل الحساس حتى يستقر قلب PM V2.
-
-الترتيب:
-
-- Phase 0: Contracts.
-- Phases 1–8: Foundation/Core/Stabilization.
-- Phase 9+: Inventory/Warehouse/Path B integrations.
-
-هذا يمنع بناء وحدة عمياء عن البرنامج، ويمنع كذلك تشابكها معه قبل استقرارها.
+أي تغيير خارج PM V2 يجب أن يكون Additive ومحدودًا (registration/menu/adapter hook أو صلاحية Scoped معتمدة)، ولا يغير Workflow أو State ownership القائم.

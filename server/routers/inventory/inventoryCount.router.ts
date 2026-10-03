@@ -96,7 +96,7 @@ export const inventoryCountRouter = router({
       });
     }),
 
-  // ── 2B-8: مسح QR للـLot أثناء الجرد الدوري ──
+  // ── 2B-8: مسح QR أو إدخال رقم Lot أثناء الجرد الدوري ──
   scanLot: warehouseProcedure
     .input(z.object({
       operationId: z.number(),

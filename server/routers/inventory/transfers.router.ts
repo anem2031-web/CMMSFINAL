@@ -13,12 +13,12 @@ import { isInventoryLotsEnabled, resolveInventoryLotForWarehouseTransfer } from 
 // docs/CHANGELOG_TECHNICAL.md لتفاصيل الإصلاح الكامل قبل أي تعديل هنا.
 // ============================================================
 export const transfersRouter = router({
-  // 2B-8 — QR الدفعة هو مصدر الحقيقة عند التحويل. يمكن المسح مباشرة بعد
+  // 2B-8 — هوية الدفعة هي مصدر الحقيقة عند التحويل. يمكن مسح QR أو إدخال رقم اللوت بعد
   // اختيار المخزن المصدر، أو التحقق من أنه يخص صنفاً تم اختياره يدوياً.
   resolveLot: warehouseProcedure
     .input(z.object({
       fromWarehouseId: z.number(),
-      trackingToken: z.string().trim().min(1, "QR الدفعة مطلوب"),
+      trackingToken: z.string().trim().min(1, "QR الدفعة أو رقم اللوت مطلوب"),
       fromInventoryId: z.number().optional(),
     }))
     .mutation(async ({ input }) => {
@@ -50,7 +50,7 @@ export const transfersRouter = router({
           remainingQuantity: lot.remainingQuantity,
         };
       } catch (err: any) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: err?.message || "QR الدفعة غير صالح للتحويل" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: err?.message || "QR الدفعة أو رقم اللوت غير صالح للتحويل" });
       }
     }),
 
@@ -72,7 +72,7 @@ export const transfersRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن التحويل لنفس المخزن" });
       }
       if (isInventoryLotsEnabled() && input.items.some(item => !String(item.lotTrackingToken || "").trim())) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "يجب مسح QR دفعة لكل بند تحويل قبل تنفيذ العملية" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: "يجب مسح QR أو إدخال رقم اللوت لكل بند تحويل قبل تنفيذ العملية" });
       }
       try {
         const result = await db.createWarehouseTransferBatch({

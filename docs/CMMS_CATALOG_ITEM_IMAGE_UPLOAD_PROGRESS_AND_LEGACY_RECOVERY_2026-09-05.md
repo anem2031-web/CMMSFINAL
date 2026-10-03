@@ -93,3 +93,86 @@ After applying this patch, test both **Add item** and **Edit item** with a `ware
 None in this patch.
 
 Legacy recovery remains in read-only audit until the user executes the requested SQL and returns the results.
+
+## Legacy recovery audit — Step 2 (live DB counts)
+
+Live read-only audit returned:
+
+- Catalog items total: **2007**
+- Current `attachments` rows for `catalog_item`: **276**
+- Distinct current attachment `entityId` values: **265**
+- Legacy `catalog_item_images` rows: **0**
+- Legacy items with images: **0**
+- Items present in both sources: **0**
+- Existing items with current attachments only: **261**
+- Orphan current attachment rows whose `entityId` no longer exists in `catalog_items`: **8**
+- Orphan legacy rows: **0**
+- Existing items with no image in either DB source: **1746**
+
+### Interpretation
+
+The legacy table is empty in the live `cmms` database, so there is no legacy-table migration to perform.
+
+The previous upload sequence stored the binary object in S3 first and created the `attachments` relationship afterwards. Therefore an upload that succeeded at `/api/upload` but failed at `attachments.add` can leave an object in S3 with no Catalog item relationship in the database.
+
+Those storage-only objects cannot be safely mapped to a Catalog item from the database alone because the current upload key format is `cmms/uploads/<timestamp>-<random>.<ext>` and does not contain the Catalog item id or original file name.
+
+No automatic recovery SQL will be issued for such objects without a deterministic mapping. Guessing based on timestamps is explicitly prohibited because it can attach the wrong image to an item.
+
+### Next safe step
+
+Inspect the 8 orphan `attachments` rows first. They still retain `entityId`, file name/key, uploader, and timestamp, so they are the only currently known DB-level candidates that can be investigated deterministically before any storage-level orphan audit.
+
+## Legacy recovery audit — Step 3 (orphan attachment inspection)
+
+Read-only inspection of the 8 orphan Catalog attachment rows returned the following missing Catalog `entityId` values:
+
+- `60001` — 2 rows
+- `60002` — 2 rows
+- `90001` — 3 rows
+- `120001` — 1 row
+
+All 8 rows were uploaded by user `60723` on 2026-06-01. Seven rows point to normal `/api/media?key=cmms/uploads/...webp` storage objects; one older row for `entityId = 60002` points to `/placeholder-image.png` while retaining a historical `fileKey` under `catalog/...jpg`.
+
+### Safety conclusion
+
+None of the four referenced `entityId` values currently exists in `cmms.catalog_items`. Therefore these 8 rows cannot be reattached to a current Catalog item merely by updating the relationship: there is no live target row with the original id.
+
+The rows are consistent with attachments that belonged to Catalog items which were later deleted/recreated, or with historical test/import records. The evidence available so far does **not** establish which current item, if any, replaces each missing id.
+
+Automatic reassignment by image filename, uploader, or timestamp is prohibited. Multiple rows use generic names such as `0.jpg`, `1.png`, and screenshots, so these fields are not deterministic item identifiers.
+
+### Next safe step
+
+Inspect the schema of the system audit/activity logs, then search them for the missing Catalog ids (`60001`, `60002`, `90001`, `120001`). If deletion/update history preserves the old Catalog code/name, it may provide a deterministic mapping to a current item. No Catalog or attachment data should be modified before that evidence is available.
+
+## Legacy recovery audit — Step 4 (audit log capability)
+
+Live schema inspection confirmed that `cmms.audit_logs` exists with the fields required for historical tracing:
+
+- `id` — primary key
+- `userId`
+- `action`
+- `entityType`
+- `entityId`
+- `oldValues` — JSON
+- `newValues` — JSON
+- `ipAddress`
+- `userAgent`
+- `createdAt`
+
+No `activity_logs` table was returned by the live schema inspection.
+
+### Interpretation
+
+The audit table is a suitable read-only source for attempting to identify the historical Catalog records referenced by orphan attachment entity ids `60001`, `60002`, `90001`, and `120001`.
+
+No assumption will be made about the exact `entityType` value before inspecting the actual rows. The first trace query must therefore search by the known integer `entityId` values across all entity types/actions and return the stored JSON snapshots.
+
+### Safety rule
+
+Audit data is evidence only. No attachment will be reassigned to a current Catalog item unless the audit history establishes a deterministic identity match (for example, the old item code/name can be matched uniquely to one current item). Timestamps, uploader identity, and generic image file names alone are insufficient.
+
+### Next safe step
+
+Run a read-only query against `cmms.audit_logs` for the four missing ids and review `action`, `entityType`, `oldValues`, `newValues`, and timestamps before considering any recovery mapping.

@@ -1,5 +1,4 @@
 import { AXIOS_TIMEOUT_MS, COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
-import { ForbiddenError } from "@shared/_core/errors";
 import axios, { type AxiosInstance } from "axios";
 import { parse as parseCookieHeader } from "cookie";
 import type { Request } from "express";
@@ -23,6 +22,22 @@ export type SessionPayload = {
   appId: string;
   name: string;
 };
+
+/**
+ * A definitive authentication failure (missing/invalid session or no user).
+ * Dependency/DB failures must NOT use this error; callers need to distinguish
+ * them from a real expired/invalid login.
+ */
+export class SessionAuthenticationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionAuthenticationError";
+  }
+}
+
+export const isSessionAuthenticationError = (
+  error: unknown
+): error is SessionAuthenticationError => error instanceof SessionAuthenticationError;
 
 const EXCHANGE_TOKEN_PATH = `/webdev.v1.WebDevAuthPublicService/ExchangeToken`;
 const GET_USER_INFO_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserInfo`;
@@ -263,7 +278,7 @@ class SDKServer {
     const session = await this.verifySession(sessionCookie);
 
     if (!session) {
-      throw ForbiddenError("Invalid session cookie");
+      throw new SessionAuthenticationError("Invalid session cookie");
     }
 
     const sessionUserId = session.openId;
@@ -283,18 +298,20 @@ class SDKServer {
         });
         user = await db.getUserByOpenId(userInfo.openId);
       } catch (error) {
+        // The local session already verified. A DB/OAuth sync failure is an
+        // infrastructure problem, not proof that the user was logged out.
         console.error("[Auth] Failed to sync user from OAuth:", error);
-        throw ForbiddenError("Failed to sync user info");
+        throw error;
       }
     }
 
     if (!user) {
-      throw ForbiddenError("User not found");
+      throw new SessionAuthenticationError("User not found");
     }
 
-await db.updateLastSignedIn(user.openId);
-
-return user;
+    // lastSignedIn is a sign-in audit field. It is updated by the actual login
+    // and OAuth callback flows, not by every authenticated API request.
+    return user;
   }
 }
 

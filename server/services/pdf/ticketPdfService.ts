@@ -5,6 +5,14 @@
  */
 
 import { htmlToPdf } from "./htmlToPdfService";
+import { getEntityTranslations } from "../translation/translationEngine";
+import {
+  normalizeTicketPdfLanguage,
+  ticketPdfDir,
+  ticketPdfLocale,
+  ticketPdfText,
+  type TicketPdfLanguage,
+} from "./ticketPdfI18n";
 import { storageGetStream } from "../../_core/storage";
 import {
   getAttachments,
@@ -64,6 +72,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   general: "عام",
   safety: "سلامة",
   cleaning: "نظافة",
+  it: "تقنية المعلومات",
   elevator: "مصاعد",
   fire_safety: "سلامة وحريق",
   other: "أخرى",
@@ -80,6 +89,7 @@ const INSPECTION_STATUS_LABELS: Record<string, string> = {
 const DEPARTMENT_LABELS: Record<string, string> = {
   maintenance_report_department_general: "الصيانة العامة",
   maintenance_report_department_construction: "قسم الإنشاءات",
+  maintenance_report_department_it: "تقنية المعلومات",
 };
 
 function escapeHtml(value: unknown): string {
@@ -92,20 +102,20 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, "&#39;");
 }
 
-function fmtDate(value: unknown, withTime = false): string {
+function fmtDate(value: unknown, language: TicketPdfLanguage, withTime = false): string {
   if (!value) return "—";
   const date = new Date(value as any);
   if (Number.isNaN(date.getTime())) return "—";
   return withTime
-    ? date.toLocaleString("ar-SA", { dateStyle: "medium", timeStyle: "short" })
-    : date.toLocaleDateString("ar-SA", { year: "numeric", month: "long", day: "numeric" });
+    ? date.toLocaleString(ticketPdfLocale(language), { dateStyle: "medium", timeStyle: "short" })
+    : date.toLocaleDateString(ticketPdfLocale(language), { year: "numeric", month: "long", day: "numeric" });
 }
 
-function fmtMoney(value: unknown): string {
+function fmtMoney(value: unknown, language: TicketPdfLanguage): string {
   if (value === null || value === undefined || value === "") return "—";
   const number = Number(value);
   if (!Number.isFinite(number)) return escapeHtml(value);
-  return `${number.toLocaleString("ar-SA", { maximumFractionDigits: 2 })} ر.س`;
+  return new Intl.NumberFormat(ticketPdfLocale(language), { style: "currency", currency: "SAR", maximumFractionDigits: 2 }).format(number);
 }
 
 function resolveFileKey(value: any): string | null {
@@ -134,14 +144,14 @@ async function fileKeyToBase64(fileKey: string): Promise<string | null> {
   }
 }
 
-async function loadImageData(items: any[], limit: number): Promise<Array<{ src: string; label: string }>> {
+async function loadImageData(items: any[], limit: number, language: TicketPdfLanguage): Promise<Array<{ src: string; label: string }>> {
   const seen = new Set<string>();
   const candidates: Array<{ key: string; label: string }> = [];
   for (const item of items) {
     const key = resolveFileKey(item);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    candidates.push({ key, label: item?.fileName || item?.label || "صورة البلاغ" });
+    candidates.push({ key, label: item?.fileName || item?.label || ticketPdfText(language, "صورة البلاغ") });
     if (candidates.length >= limit) break;
   }
   const loaded = await Promise.all(candidates.map(async item => ({ ...item, src: await fileKeyToBase64(item.key) })));
@@ -149,9 +159,9 @@ async function loadImageData(items: any[], limit: number): Promise<Array<{ src: 
     .map(({ src, label }) => ({ src, label }));
 }
 
-async function loadTicketContext(ticketId: number) {
+async function loadTicketContext(ticketId: number, language: TicketPdfLanguage) {
   const ticket: any = await getTicketById(ticketId);
-  if (!ticket) throw new Error("البلاغ غير موجود");
+  if (!ticket) throw new Error(ticketPdfText(language, "البلاغ غير موجود"));
 
   const [site, sections, attachments, history, auditLogs, inspectionResults, allPurchaseOrders, confirmation, externalTechnician, externalMaintenanceJob] = await Promise.all([
     ticket.siteId ? getSiteById(ticket.siteId) : null,
@@ -220,31 +230,87 @@ async function loadTicketContext(ticketId: number) {
   const userMap = new Map<number, any>(users);
   const userName = (id: unknown) => {
     const user = userMap.get(Number(id));
-    return user?.name || user?.username || user?.email || (id ? `مستخدم #${id}` : "—");
+    return user?.name || user?.username || user?.email || (id ? ticketPdfText(language, "مستخدم #{id}", { id: Number(id) }) : "—");
   };
 
   const imageItems = [
-    ...(ticket.beforePhotoUrl ? [{ fileUrl: ticket.beforePhotoUrl, label: "صورة قبل التنفيذ" }] : []),
-    ...(ticket.afterPhotoUrl ? [{ fileUrl: ticket.afterPhotoUrl, label: "صورة بعد التنفيذ" }] : []),
-    ...(externalMaintenanceJob?.assetBeforePhotoUrl ? [{ fileUrl: externalMaintenanceJob.assetBeforePhotoUrl, label: "الأصل قبل خروجه للصيانة الخارجية" }] : []),
-    ...(externalMaintenanceJob?.assetAfterReturnPhotoUrl ? [{ fileUrl: externalMaintenanceJob.assetAfterReturnPhotoUrl, label: "الأصل بعد عودته من الصيانة الخارجية" }] : []),
+    ...(ticket.beforePhotoUrl ? [{ fileUrl: ticket.beforePhotoUrl, label: ticketPdfText(language, "صورة قبل التنفيذ") }] : []),
+    ...(ticket.afterPhotoUrl ? [{ fileUrl: ticket.afterPhotoUrl, label: ticketPdfText(language, "صورة بعد التنفيذ") }] : []),
+    ...(externalMaintenanceJob?.assetBeforePhotoUrl ? [{ fileUrl: externalMaintenanceJob.assetBeforePhotoUrl, label: ticketPdfText(language, "الأصل قبل خروجه للصيانة الخارجية") }] : []),
+    ...(externalMaintenanceJob?.assetAfterReturnPhotoUrl ? [{ fileUrl: externalMaintenanceJob.assetAfterReturnPhotoUrl, label: ticketPdfText(language, "الأصل بعد عودته من الصيانة الخارجية") }] : []),
     ...(attachments as any[]).filter(a => a.mimeType?.startsWith("image/")),
   ];
 
+  const ticketTranslations = await getEntityTranslations(
+    "TICKET",
+    ticketId,
+    language,
+    ["title", "description", "repairNotes", "inspectionNotes", "inspectionReturnReason", "justification", "triageNotes", "materialsUsed", "maintenanceRoutingNote"],
+  );
+  const translatedTicket = {
+    ...ticket,
+    title: ticketTranslations.title?.text || ticket.title,
+    description: ticketTranslations.description?.text || ticket.description,
+    repairNotes: ticketTranslations.repairNotes?.text || ticket.repairNotes,
+    inspectionNotes: ticketTranslations.inspectionNotes?.text || ticket.inspectionNotes,
+    inspectionReturnReason: ticketTranslations.inspectionReturnReason?.text || ticket.inspectionReturnReason,
+    justification: ticketTranslations.justification?.text || ticket.justification,
+    triageNotes: ticketTranslations.triageNotes?.text || ticket.triageNotes,
+    materialsUsed: ticketTranslations.materialsUsed?.text || ticket.materialsUsed,
+    maintenanceRoutingNote: ticketTranslations.maintenanceRoutingNote?.text || ticket.maintenanceRoutingNote,
+  };
+  const translatedInspectionResults = await Promise.all((inspectionResults as any[]).map(async (result) => {
+    const tr = await getEntityTranslations(
+      "INSPECTION_RESULT",
+      result.id,
+      language,
+      ["rootCause", "findings", "recommendedAction", "inspectionNotes", "returnReason"],
+    );
+    return {
+      ...result,
+      rootCause: tr.rootCause?.text || result.rootCause,
+      findings: tr.findings?.text || result.findings,
+      recommendedAction: tr.recommendedAction?.text || result.recommendedAction,
+      inspectionNotes: tr.inspectionNotes?.text || result.inspectionNotes,
+      returnReason: tr.returnReason?.text || result.returnReason,
+    };
+  }));
+  let translatedExternalMaintenanceJob = externalMaintenanceJob;
+  if (externalMaintenanceJob?.id) {
+    const tr = await getEntityTranslations(
+      "EXTERNAL_MAINTENANCE_JOB",
+      externalMaintenanceJob.id,
+      language,
+      ["assetName", "assetBeforeCondition", "warehouseNotes", "gateExitNotes", "gateEntryNotes", "returnCondition", "warehouseReturnNotes", "handoverNotes"],
+    );
+    translatedExternalMaintenanceJob = {
+      ...externalMaintenanceJob,
+      assetName: tr.assetName?.text || externalMaintenanceJob.assetName,
+      assetBeforeCondition: tr.assetBeforeCondition?.text || externalMaintenanceJob.assetBeforeCondition,
+      warehouseNotes: tr.warehouseNotes?.text || externalMaintenanceJob.warehouseNotes,
+      gateExitNotes: tr.gateExitNotes?.text || externalMaintenanceJob.gateExitNotes,
+      gateEntryNotes: tr.gateEntryNotes?.text || externalMaintenanceJob.gateEntryNotes,
+      returnCondition: tr.returnCondition?.text || externalMaintenanceJob.returnCondition,
+      warehouseReturnNotes: tr.warehouseReturnNotes?.text || externalMaintenanceJob.warehouseReturnNotes,
+      handoverNotes: tr.handoverNotes?.text || externalMaintenanceJob.handoverNotes,
+    };
+  }
+
   return {
-    ticket,
+    language,
+    ticket: translatedTicket,
     site,
     section,
     attachments: attachments as any[],
     history: history as any[],
     auditLogs: auditLogs as any[],
-    inspectionResults: inspectionResults as any[],
+    inspectionResults: translatedInspectionResults,
     purchaseOrders,
     confirmation,
     externalTechnician,
-    externalMaintenanceJob,
+    externalMaintenanceJob: translatedExternalMaintenanceJob,
     userName,
-    images: await loadImageData(imageItems, 12),
+    images: await loadImageData(imageItems, 12, language),
   };
 }
 
@@ -252,152 +318,186 @@ function infoRow(label: string, value: unknown): string {
   return `<div class="info-row"><span class="info-label">${escapeHtml(label)}</span><span class="info-value">${escapeHtml(value)}</span></div>`;
 }
 
+function localizedLabel(language: TicketPdfLanguage, labels: Record<string, string>, value: unknown): string {
+  const key = value == null ? "" : String(value);
+  return ticketPdfText(language, labels[key] || key || "—");
+}
+
+const PURCHASE_STATUS_AR: Record<string, string> = {
+  draft: "مسودة",
+  pending_review: "بانتظار المراجعة",
+  pending_estimate: "بانتظار التسعير",
+  pending_accounting: "بانتظار اعتماد الحسابات",
+  pending_management: "بانتظار اعتماد الإدارة",
+  approved: "معتمد",
+  partial_purchase: "شراء جزئي",
+  purchased: "تم الشراء بالكامل",
+  received: "تم الاستلام",
+  cancelled: "ملغي",
+  closed: "مغلق",
+  rejected: "مرفوض",
+  revision_needed: "يحتاج مراجعة",
+};
+
 function renderTaskPdf(ctx: Awaited<ReturnType<typeof loadTicketContext>>): string {
-  const { ticket, site, section, externalTechnician, userName, images } = ctx;
-  const assignedName = ticket.assignedToId ? userName(ticket.assignedToId) : externalTechnician?.name || "غير معين";
+  const { language, ticket, site, section, externalTechnician, userName, images } = ctx;
+  const L = (text: string, vars: Record<string, string | number> = {}) => ticketPdfText(language, text, vars);
+  const date = (value: unknown, withTime = false) => fmtDate(value, language, withTime);
+  const assignedName = ticket.assignedToId ? userName(ticket.assignedToId) : externalTechnician?.name || L("غير معين");
   const taskImages = images.slice(0, 4);
   const photos = taskImages.length
-    ? `<section><h2>صور البلاغ</h2><div class="photo-grid">${taskImages.map(image => `<figure><img src="${image.src}"/><figcaption>${escapeHtml(image.label)}</figcaption></figure>`).join("")}</div></section>`
+    ? `<section><h2>${L("صور البلاغ")}</h2><div class="photo-grid">${taskImages.map(image => `<figure><img src="${image.src}"/><figcaption>${escapeHtml(image.label)}</figcaption></figure>`).join("")}</div></section>`
     : "";
+  const dir = ticketPdfDir(language);
+  const textAlign = dir === "rtl" ? "right" : "left";
+  const oppositeAlign = dir === "rtl" ? "left" : "right";
 
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"/><style>
-    @page{size:A4;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;font-size:12px;line-height:1.55;margin:0}
-    .header{background:#1e3a8a;color:#fff;padding:14px 16px;border-radius:10px;display:flex;justify-content:space-between;align-items:center}.header h1{margin:0;font-size:20px}.num{font-size:18px;font-weight:800}
+  return `<!doctype html><html lang="${language}" dir="${dir}"><head><meta charset="utf-8"/><style>
+    @page{size:A4;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;font-size:12px;line-height:1.55;margin:0;text-align:${textAlign}}
+    .header{background:#1e3a8a;color:#fff;padding:14px 16px;border-radius:10px;display:flex;justify-content:space-between;align-items:center}.header h1{margin:0;font-size:20px}.num{font-size:18px;font-weight:800;direction:ltr}
     .badges{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.badge{padding:4px 10px;border-radius:999px;background:#eef2ff;font-weight:700}
     section{margin:10px 0;break-inside:avoid}h2{font-size:15px;color:#1e3a8a;border-bottom:2px solid #dbeafe;padding-bottom:5px;margin:0 0 7px}
-    .grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;border:1px solid #d9e2f2;border-radius:8px;padding:10px}.info-row{display:flex;justify-content:space-between;gap:12px;border-bottom:1px dashed #e5e7eb;padding:3px 0}.info-label{color:#64748b;font-weight:700}.info-value{font-weight:600;text-align:left}
-    .description{border:1px solid #d9e2f2;border-radius:8px;padding:10px;background:#f8fafc;white-space:pre-wrap}.photo-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.photo-grid figure{margin:0;border:1px solid #d9e2f2;border-radius:8px;overflow:hidden}.photo-grid img{width:100%;height:130px;object-fit:contain;background:#f8fafc}.photo-grid figcaption{text-align:center;padding:3px;color:#64748b;font-size:10px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;border:1px solid #d9e2f2;border-radius:8px;padding:10px}.info-row{display:flex;justify-content:space-between;gap:12px;border-bottom:1px dashed #e5e7eb;padding:3px 0}.info-label{color:#64748b;font-weight:700}.info-value{font-weight:600;text-align:${oppositeAlign};unicode-bidi:plaintext}
+    .description{border:1px solid #d9e2f2;border-radius:8px;padding:10px;background:#f8fafc;white-space:pre-wrap;unicode-bidi:plaintext}.photo-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.photo-grid figure{margin:0;border:1px solid #d9e2f2;border-radius:8px;overflow:hidden}.photo-grid img{width:100%;height:130px;object-fit:contain;background:#f8fafc}.photo-grid figcaption{text-align:center;padding:3px;color:#64748b;font-size:10px}
     .field{border:2px solid #1e3a8a;border-radius:10px;padding:12px;min-height:170px}.lines div{height:22px;border-bottom:1px dashed #94a3b8}.signatures{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:15px}.signature{text-align:center}.signature span{display:block;margin-bottom:22px;font-size:10px;color:#64748b}.signature i{display:block;border-bottom:1px solid #334155}
     .footer{margin-top:10px;border-top:1px solid #e5e7eb;padding-top:6px;color:#94a3b8;font-size:9px;display:flex;justify-content:space-between}
   </style></head><body>
-    <div class="header"><div><h1>نموذج مهمة صيانة</h1><div>وثيقة عمل ميدانية بعد تصنيف البلاغ</div></div><div class="num">${escapeHtml(ticket.ticketNumber)}</div></div>
-    <div class="badges"><span class="badge">${escapeHtml(STATUS_LABELS[ticket.status] || ticket.status)}</span><span class="badge">الأولوية: ${escapeHtml(PRIORITY_LABELS[ticket.priority] || ticket.priority)}</span><span class="badge">التصنيف: ${escapeHtml(CATEGORY_LABELS[ticket.category] || ticket.category)}</span></div>
-    <section><h2>بيانات المهمة</h2><div class="grid">
-      ${infoRow("العنوان", ticket.title)}${infoRow("الموقع", site?.name || ticket.locationDetail)}${infoRow("القسم", section?.name)}${infoRow("مقدم البلاغ", userName(ticket.reportedById))}
-      ${infoRow("الجهة المسؤولة", DEPARTMENT_LABELS[ticket.maintenanceResponsibleDepartment] || ticket.maintenanceResponsibleDepartment)}${infoRow("مدير الجهة", userName(ticket.maintenanceResponsibleManagerId))}${infoRow("الفني المسند", assignedName)}${infoRow("تاريخ الإسناد", fmtDate(ticket.assignedAt, true))}
+    <div class="header"><div><h1>${L("نموذج مهمة صيانة")}</h1><div>${L("وثيقة عمل ميدانية بعد تصنيف البلاغ")}</div></div><div class="num">${escapeHtml(ticket.ticketNumber)}</div></div>
+    <div class="badges"><span class="badge">${escapeHtml(localizedLabel(language, STATUS_LABELS, ticket.status))}</span><span class="badge">${L("الأولوية")}: ${escapeHtml(localizedLabel(language, PRIORITY_LABELS, ticket.priority))}</span><span class="badge">${L("التصنيف")}: ${escapeHtml(localizedLabel(language, CATEGORY_LABELS, ticket.category))}</span></div>
+    <section><h2>${L("بيانات المهمة")}</h2><div class="grid">
+      ${infoRow(L("العنوان"), ticket.title)}${infoRow(L("الموقع"), site?.name || ticket.locationDetail)}${infoRow(L("القسم"), section?.name)}${infoRow(L("مقدم البلاغ"), userName(ticket.reportedById))}
+      ${infoRow(L("الجهة المسؤولة"), localizedLabel(language, DEPARTMENT_LABELS, ticket.maintenanceResponsibleDepartment))}${infoRow(L("مدير الجهة"), userName(ticket.maintenanceResponsibleManagerId))}${infoRow(L("الفني المسند"), assignedName)}${infoRow(L("تاريخ الإسناد"), date(ticket.assignedAt, true))}
     </div></section>
-    <section><h2>وصف البلاغ</h2><div class="description"><strong>${escapeHtml(ticket.title)}</strong><br/>${escapeHtml(ticket.description || "لا يوجد وصف إضافي")}</div></section>
+    <section><h2>${L("وصف البلاغ")}</h2><div class="description"><strong>${escapeHtml(ticket.title)}</strong><br/>${escapeHtml(ticket.description || L("لا يوجد وصف إضافي"))}</div></section>
     ${photos}
-    <section><h2>تسجيل العمل الميداني</h2><div class="field"><strong>الملاحظات والإجراءات المنفذة</strong><div class="lines"><div></div><div></div><div></div><div></div><div></div></div><div class="signatures"><div class="signature"><span>اسم الفني</span><i></i></div><div class="signature"><span>التوقيع</span><i></i></div><div class="signature"><span>التاريخ</span><i></i></div><div class="signature"><span>اعتماد المسؤول</span><i></i></div></div></div></section>
-    <div class="footer"><span>طُبعت بتاريخ ${fmtDate(new Date(), true)}</span><span>نظام الحارس المركزي</span></div>
+    <section><h2>${L("تسجيل العمل الميداني")}</h2><div class="field"><strong>${L("الملاحظات والإجراءات المنفذة")}</strong><div class="lines"><div></div><div></div><div></div><div></div><div></div></div><div class="signatures"><div class="signature"><span>${L("اسم الفني")}</span><i></i></div><div class="signature"><span>${L("التوقيع")}</span><i></i></div><div class="signature"><span>${L("التاريخ")}</span><i></i></div><div class="signature"><span>${L("اعتماد المسؤول")}</span><i></i></div></div></div></section>
+    <div class="footer"><span>${L("طُبعت بتاريخ {date}", { date: date(new Date(), true) })}</span><span>${L("نظام الحارس المركزي")}</span></div>
   </body></html>`;
 }
 
 function renderArchivePdf(ctx: Awaited<ReturnType<typeof loadTicketContext>>): string {
-  const { ticket, site, section, attachments, history, auditLogs, inspectionResults, purchaseOrders, confirmation, externalTechnician, externalMaintenanceJob, userName, images } = ctx;
-  const assignedName = ticket.assignedToId ? userName(ticket.assignedToId) : externalTechnician?.name || "غير معين";
+  const { language, ticket, site, section, attachments, history, auditLogs, inspectionResults, purchaseOrders, confirmation, externalTechnician, externalMaintenanceJob, userName, images } = ctx;
+  const L = (text: string, vars: Record<string, string | number> = {}) => ticketPdfText(language, text, vars);
+  const date = (value: unknown, withTime = false) => fmtDate(value, language, withTime);
+  const money = (value: unknown) => fmtMoney(value, language);
+  const assignedName = ticket.assignedToId ? userName(ticket.assignedToId) : externalTechnician?.name || L("غير معين");
   const timeline = [...history].reverse();
   const nonImageAttachments = attachments.filter(a => !a.mimeType?.startsWith("image/"));
+  const dir = ticketPdfDir(language);
+  const textAlign = dir === "rtl" ? "right" : "left";
+  const oppositeAlign = dir === "rtl" ? "left" : "right";
 
   const inspectionHtml = inspectionResults.length
     ? inspectionResults.map(result => `
       <article class="record">
-        <div class="record-head"><strong>نسخة نتيجة الفحص رقم ${escapeHtml(result.revisionNumber || 1)}</strong><span class="status-chip">${escapeHtml(INSPECTION_STATUS_LABELS[result.workflowStatus] || result.workflowStatus)}</span></div>
+        <div class="record-head"><strong>${L("نسخة نتيجة الفحص رقم {num}", { num: result.revisionNumber || 1 })}</strong><span class="status-chip">${escapeHtml(localizedLabel(language, INSPECTION_STATUS_LABELS, result.workflowStatus))}</span></div>
         <div class="two-col">
-          ${infoRow("من قام بالفحص ميدانيًا", userName(result.performedById || result.inspectorId))}
-          ${infoRow("من أدخل النتيجة في النظام", userName(result.recordedById || result.inspectorId))}
-          ${infoRow("مستوى الخطورة", PRIORITY_LABELS[result.severity] || result.severity)}
-          ${infoRow("تاريخ الإنشاء", fmtDate(result.createdAt, true))}
-          ${infoRow("تاريخ الإرسال", fmtDate(result.submittedAt, true))}
-          ${infoRow("تاريخ الاعتماد", fmtDate(result.approvedAt, true))}
+          ${infoRow(L("من قام بالفحص ميدانيًا"), userName(result.performedById || result.inspectorId))}
+          ${infoRow(L("من أدخل النتيجة في النظام"), userName(result.recordedById || result.inspectorId))}
+          ${infoRow(L("مستوى الخطورة"), localizedLabel(language, PRIORITY_LABELS, result.severity))}
+          ${infoRow(L("تاريخ الإنشاء"), date(result.createdAt, true))}
+          ${infoRow(L("تاريخ الإرسال"), date(result.submittedAt, true))}
+          ${infoRow(L("تاريخ الاعتماد"), date(result.approvedAt, true))}
         </div>
-        ${result.inspectionNotes ? `<div class="text-block"><b>الملاحظات الفنية:</b> ${escapeHtml(result.inspectionNotes)}</div>` : ""}
-        ${result.rootCause ? `<div class="text-block"><b>السبب الجذري:</b> ${escapeHtml(result.rootCause)}</div>` : ""}
-        ${result.findings ? `<div class="text-block"><b>النتائج:</b> ${escapeHtml(result.findings)}</div>` : ""}
-        ${result.recommendedAction ? `<div class="text-block"><b>الإجراء الموصى به:</b> ${escapeHtml(result.recommendedAction)}</div>` : ""}
-        ${result.returnReason ? `<div class="text-block warning"><b>سبب الإعادة للتصحيح:</b> ${escapeHtml(result.returnReason)}</div>` : ""}
+        ${result.inspectionNotes ? `<div class="text-block"><b>${L("الملاحظات الفنية")}:</b> ${escapeHtml(result.inspectionNotes)}</div>` : ""}
+        ${result.rootCause ? `<div class="text-block"><b>${L("السبب الجذري")}:</b> ${escapeHtml(result.rootCause)}</div>` : ""}
+        ${result.findings ? `<div class="text-block"><b>${L("النتائج")}:</b> ${escapeHtml(result.findings)}</div>` : ""}
+        ${result.recommendedAction ? `<div class="text-block"><b>${L("الإجراء الموصى به")}:</b> ${escapeHtml(result.recommendedAction)}</div>` : ""}
+        ${result.returnReason ? `<div class="text-block warning"><b>${L("سبب الإعادة للتصحيح")}:</b> ${escapeHtml(result.returnReason)}</div>` : ""}
       </article>`).join("")
-    : `<p class="empty">لا توجد نتائج فحص مسجلة.</p>`;
+    : `<p class="empty">${L("لا توجد نتائج فحص مسجلة.")}</p>`;
 
   const purchaseHtml = purchaseOrders.length
-    ? `<table><thead><tr><th>رقم الطلب</th><th>الحالة</th><th>المنشئ</th><th>التقديري</th><th>الفعلي</th><th>تاريخ الإنشاء</th></tr></thead><tbody>${purchaseOrders.map(po => `<tr><td>${escapeHtml(po.poNumber)}</td><td>${escapeHtml(po.status)}</td><td>${escapeHtml(po.requestedByName || userName(po.requestedById))}</td><td>${fmtMoney(po.totalEstimatedCost)}</td><td>${fmtMoney(po.totalActualCost)}</td><td>${fmtDate(po.createdAt, true)}</td></tr>`).join("")}</tbody></table>`
-    : `<p class="empty">لا توجد طلبات شراء مرتبطة.</p>`;
-
+    ? `<table><thead><tr><th>${L("رقم الطلب")}</th><th>${L("الحالة")}</th><th>${L("المنشئ")}</th><th>${L("التقديري")}</th><th>${L("الفعلي")}</th><th>${L("تاريخ الإنشاء")}</th></tr></thead><tbody>${purchaseOrders.map(po => `<tr><td>${escapeHtml(po.poNumber)}</td><td>${escapeHtml(localizedLabel(language, PURCHASE_STATUS_AR, po.status))}</td><td>${escapeHtml(po.requestedByName || userName(po.requestedById))}</td><td>${money(po.totalEstimatedCost)}</td><td>${money(po.totalActualCost)}</td><td>${date(po.createdAt, true)}</td></tr>`).join("")}</tbody></table>`
+    : `<p class="empty">${L("لا توجد طلبات شراء مرتبطة.")}</p>`;
 
   const externalMaintenanceHtml = externalMaintenanceJob
     ? `<div class="two-col">
-        ${infoRow("حالة دورة الصيانة الخارجية", externalMaintenanceJob.status)}
-        ${infoRow("اسم الأصل", externalMaintenanceJob.assetName)}
-        ${infoRow("المندوب المسؤول", userName(externalMaintenanceJob.delegateId))}
-        ${infoRow("وثيقة الخروج", externalMaintenanceJob.exitDocumentNumber)}
-        ${infoRow("جهزه المستودع", userName(externalMaintenanceJob.warehousePreparedById))}
-        ${infoRow("وقت تجهيز المستودع", fmtDate(externalMaintenanceJob.warehousePreparedAt, true))}
-        ${infoRow("اعتمد الخروج", userName(externalMaintenanceJob.gateExitApprovedById))}
-        ${infoRow("وقت الخروج", fmtDate(externalMaintenanceJob.gateExitApprovedAt, true))}
-        ${infoRow("حامل الأصل عند الخروج", externalMaintenanceJob.gateExitCarrierName)}
-        ${infoRow("اعتمد الدخول", userName(externalMaintenanceJob.gateEntryApprovedById))}
-        ${infoRow("وقت الدخول", fmtDate(externalMaintenanceJob.gateEntryApprovedAt, true))}
-        ${infoRow("معيد الأصل", externalMaintenanceJob.gateEntryCarrierName)}
-        ${infoRow("وثيقة استلام العودة", externalMaintenanceJob.returnDocumentNumber)}
-        ${infoRow("استلمه في المستودع", userName(externalMaintenanceJob.warehouseReceivedById))}
-        ${infoRow("وقت استلام المستودع", fmtDate(externalMaintenanceJob.warehouseReceivedAt, true))}
-        ${infoRow("حالة الأصل عند العودة", externalMaintenanceJob.returnCondition)}
-        ${infoRow("تقرير/فاتورة الورشة", externalMaintenanceJob.workshopReportUrl)}
-        ${infoRow("وثيقة التسليم للتركيب", externalMaintenanceJob.handoverDocumentNumber)}
-        ${infoRow("الفني المسند", userName(externalMaintenanceJob.assignedTechnicianId))}
-        ${infoRow("المستلم الفعلي", userName(externalMaintenanceJob.actualRecipientId))}
-        ${infoRow("سلّمه من المستودع", userName(externalMaintenanceJob.handoverById))}
-        ${infoRow("وقت التسليم للتركيب", fmtDate(externalMaintenanceJob.handoverAt, true))}
+        ${infoRow(L("حالة دورة الصيانة الخارجية"), externalMaintenanceJob.status)}
+        ${infoRow(L("اسم الأصل"), externalMaintenanceJob.assetName)}
+        ${infoRow(L("المندوب المسؤول"), userName(externalMaintenanceJob.delegateId))}
+        ${infoRow(L("وثيقة الخروج"), externalMaintenanceJob.exitDocumentNumber)}
+        ${infoRow(L("جهزه المستودع"), userName(externalMaintenanceJob.warehousePreparedById))}
+        ${infoRow(L("وقت تجهيز المستودع"), date(externalMaintenanceJob.warehousePreparedAt, true))}
+        ${infoRow(L("اعتمد الخروج"), userName(externalMaintenanceJob.gateExitApprovedById))}
+        ${infoRow(L("وقت الخروج"), date(externalMaintenanceJob.gateExitApprovedAt, true))}
+        ${infoRow(L("حامل الأصل عند الخروج"), externalMaintenanceJob.gateExitCarrierName)}
+        ${infoRow(L("اعتمد الدخول"), userName(externalMaintenanceJob.gateEntryApprovedById))}
+        ${infoRow(L("وقت الدخول"), date(externalMaintenanceJob.gateEntryApprovedAt, true))}
+        ${infoRow(L("معيد الأصل"), externalMaintenanceJob.gateEntryCarrierName)}
+        ${infoRow(L("وثيقة استلام العودة"), externalMaintenanceJob.returnDocumentNumber)}
+        ${infoRow(L("استلمه في المستودع"), userName(externalMaintenanceJob.warehouseReceivedById))}
+        ${infoRow(L("وقت استلام المستودع"), date(externalMaintenanceJob.warehouseReceivedAt, true))}
+        ${infoRow(L("حالة الأصل عند العودة"), externalMaintenanceJob.returnCondition)}
+        ${infoRow(L("تقرير/فاتورة الورشة"), externalMaintenanceJob.workshopReportUrl)}
+        ${infoRow(L("وثيقة التسليم للتركيب"), externalMaintenanceJob.handoverDocumentNumber)}
+        ${infoRow(L("الفني المسند"), userName(externalMaintenanceJob.assignedTechnicianId))}
+        ${infoRow(L("المستلم الفعلي"), userName(externalMaintenanceJob.actualRecipientId))}
+        ${infoRow(L("سلّمه من المستودع"), userName(externalMaintenanceJob.handoverById))}
+        ${infoRow(L("وقت التسليم للتركيب"), date(externalMaintenanceJob.handoverAt, true))}
       </div>
-      ${externalMaintenanceJob.assetBeforeCondition ? `<div class="text-block"><b>حالة الأصل قبل الخروج:</b> ${escapeHtml(externalMaintenanceJob.assetBeforeCondition)}</div>` : ""}
-      ${externalMaintenanceJob.warehouseReturnNotes ? `<div class="text-block"><b>ملاحظات استلام العودة:</b> ${escapeHtml(externalMaintenanceJob.warehouseReturnNotes)}</div>` : ""}
-      ${externalMaintenanceJob.handoverNotes ? `<div class="text-block"><b>ملاحظات التسليم للتركيب:</b> ${escapeHtml(externalMaintenanceJob.handoverNotes)}</div>` : ""}`
-    : `<p class="empty">لا توجد دورة صيانة خارجية مرتبطة.</p>`;
+      ${externalMaintenanceJob.assetBeforeCondition ? `<div class="text-block"><b>${L("حالة الأصل قبل الخروج")}:</b> ${escapeHtml(externalMaintenanceJob.assetBeforeCondition)}</div>` : ""}
+      ${externalMaintenanceJob.warehouseReturnNotes ? `<div class="text-block"><b>${L("ملاحظات استلام العودة")}:</b> ${escapeHtml(externalMaintenanceJob.warehouseReturnNotes)}</div>` : ""}
+      ${externalMaintenanceJob.handoverNotes ? `<div class="text-block"><b>${L("ملاحظات التسليم للتركيب")}:</b> ${escapeHtml(externalMaintenanceJob.handoverNotes)}</div>` : ""}`
+    : `<p class="empty">${L("لا توجد دورة صيانة خارجية مرتبطة.")}</p>`;
 
   const timelineHtml = timeline.length
-    ? timeline.map((event, index) => `<div class="timeline-item"><div class="timeline-dot">${index + 1}</div><div><div class="timeline-title">${escapeHtml(STATUS_LABELS[event.fromStatus] || event.fromStatus || "إنشاء البلاغ")} ← ${escapeHtml(STATUS_LABELS[event.toStatus] || event.toStatus)}</div><div class="muted">${fmtDate(event.createdAt, true)} — بواسطة ${escapeHtml(userName(event.changedById))}</div>${event.notes ? `<div class="timeline-notes">${escapeHtml(event.notes)}</div>` : ""}</div></div>`).join("")
-    : `<p class="empty">لا يوجد سجل انتقالات.</p>`;
+    ? timeline.map((event, index) => `<div class="timeline-item"><div class="timeline-dot">${index + 1}</div><div><div class="timeline-title">${escapeHtml(event.fromStatus ? localizedLabel(language, STATUS_LABELS, event.fromStatus) : L("إنشاء البلاغ"))} ← ${escapeHtml(localizedLabel(language, STATUS_LABELS, event.toStatus))}</div><div class="muted">${date(event.createdAt, true)} — ${L("بواسطة {name}", { name: userName(event.changedById) })}</div>${event.notes ? `<div class="timeline-notes">${escapeHtml(event.notes)}</div>` : ""}</div></div>`).join("")
+    : `<p class="empty">${L("لا يوجد سجل انتقالات.")}</p>`;
 
   const auditHtml = auditLogs.length
-    ? [...auditLogs].reverse().map((entry, index) => `<div class="audit-item"><div><b>${index + 1}. ${escapeHtml(entry.action)}</b> — ${fmtDate(entry.createdAt, true)} — ${escapeHtml(userName(entry.userId))}</div>${entry.oldValues ? `<pre><b>القيم السابقة:</b> ${escapeHtml(JSON.stringify(entry.oldValues, null, 2))}</pre>` : ""}${entry.newValues ? `<pre><b>القيم الجديدة:</b> ${escapeHtml(JSON.stringify(entry.newValues, null, 2))}</pre>` : ""}</div>`).join("")
-    : `<p class="empty">لا توجد عمليات تدقيق إضافية.</p>`;
+    ? [...auditLogs].reverse().map((entry, index) => `<div class="audit-item"><div><b>${index + 1}. ${escapeHtml(entry.action)}</b> — ${date(entry.createdAt, true)} — ${escapeHtml(userName(entry.userId))}</div>${entry.oldValues ? `<pre><b>${L("القيم السابقة")}:</b> ${escapeHtml(JSON.stringify(entry.oldValues, null, 2))}</pre>` : ""}${entry.newValues ? `<pre><b>${L("القيم الجديدة")}:</b> ${escapeHtml(JSON.stringify(entry.newValues, null, 2))}</pre>` : ""}</div>`).join("")
+    : `<p class="empty">${L("لا توجد عمليات تدقيق إضافية.")}</p>`;
 
   const photosHtml = images.length
     ? `<div class="photo-grid">${images.map(image => `<figure><img src="${image.src}"/><figcaption>${escapeHtml(image.label)}</figcaption></figure>`).join("")}</div>`
-    : `<p class="empty">لا توجد صور محفوظة.</p>`;
+    : `<p class="empty">${L("لا توجد صور محفوظة.")}</p>`;
 
   const attachmentsHtml = nonImageAttachments.length
-    ? `<ul>${nonImageAttachments.map(file => `<li>${escapeHtml(file.fileName || file.fileKey)} — ${escapeHtml(file.mimeType || "ملف")}</li>`).join("")}</ul>`
-    : `<p class="empty">لا توجد مرفقات إضافية.</p>`;
+    ? `<ul>${nonImageAttachments.map(file => `<li>${escapeHtml(file.fileName || file.fileKey)} — ${escapeHtml(file.mimeType || L("ملف"))}</li>`).join("")}</ul>`
+    : `<p class="empty">${L("لا توجد مرفقات إضافية.")}</p>`;
 
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"/><style>
-    @page{size:A4;margin:14mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;font-size:11px;line-height:1.6;margin:0}.header{background:#0f3a67;color:#fff;padding:16px;border-radius:10px;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.header h1{font-size:21px;margin:0}.header p{margin:3px 0 0;color:#dbeafe}.ticket-number{font-size:18px;font-weight:900;border:1px solid #93c5fd;border-radius:8px;padding:8px 14px}
+  const shift = ticket.maintenancePath === "C" ? 1 : 0;
+  return `<!doctype html><html lang="${language}" dir="${dir}"><head><meta charset="utf-8"/><style>
+    @page{size:A4;margin:14mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;font-size:11px;line-height:1.6;margin:0;text-align:${textAlign}}.header{background:#0f3a67;color:#fff;padding:16px;border-radius:10px;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.header h1{font-size:21px;margin:0}.header p{margin:3px 0 0;color:#dbeafe}.ticket-number{font-size:18px;font-weight:900;border:1px solid #93c5fd;border-radius:8px;padding:8px 14px;direction:ltr}
     .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:12px}.summary div{background:#f1f5f9;border:1px solid #dbe4ef;border-radius:7px;padding:7px}.summary b{display:block;color:#64748b;font-size:9px}.summary span{font-weight:800}
-    section{margin:12px 0;break-inside:auto}h2{font-size:15px;color:#0f3a67;border-bottom:2px solid #bfdbfe;padding-bottom:5px;margin:0 0 8px}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:3px 16px}.info-row{display:flex;justify-content:space-between;gap:10px;border-bottom:1px dashed #e2e8f0;padding:4px 0}.info-label{color:#64748b;font-weight:700}.info-value{text-align:left;font-weight:600}.text-block{background:#f8fafc;border-right:3px solid #3b82f6;border-radius:5px;padding:7px;margin-top:6px;white-space:pre-wrap}.warning{background:#fff7ed;border-color:#f97316}.record{border:1px solid #dbe4ef;border-radius:8px;padding:9px;margin-bottom:8px;break-inside:avoid}.record-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:5px}.status-chip{background:#e0e7ff;color:#3730a3;padding:2px 7px;border-radius:999px;font-size:9px;font-weight:700}
-    table{width:100%;border-collapse:collapse;font-size:9.5px}th,td{border:1px solid #dbe4ef;padding:5px;text-align:right}th{background:#eaf2fb;color:#0f3a67}.timeline-item{display:grid;grid-template-columns:25px 1fr;gap:8px;margin-bottom:8px;break-inside:avoid}.audit-item{border:1px solid #e2e8f0;border-radius:6px;padding:6px;margin-bottom:6px;break-inside:avoid}.audit-item pre{white-space:pre-wrap;word-break:break-word;background:#f8fafc;border-radius:4px;padding:5px;margin:4px 0 0;font-family:Arial,sans-serif;font-size:8.5px}.timeline-dot{width:22px;height:22px;background:#0f3a67;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px}.timeline-title{font-weight:800}.timeline-notes{background:#f8fafc;border-radius:4px;padding:4px;margin-top:3px}.muted,.empty{color:#64748b}.photo-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.photo-grid figure{margin:0;border:1px solid #dbe4ef;border-radius:7px;overflow:hidden;break-inside:avoid}.photo-grid img{width:100%;height:170px;object-fit:contain;background:#f8fafc}.photo-grid figcaption{text-align:center;padding:4px;color:#64748b}.footer{margin-top:16px;border-top:1px solid #cbd5e1;padding-top:7px;color:#64748b;font-size:9px;display:flex;justify-content:space-between}ul{padding-right:20px}
+    section{margin:12px 0;break-inside:auto}h2{font-size:15px;color:#0f3a67;border-bottom:2px solid #bfdbfe;padding-bottom:5px;margin:0 0 8px}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:3px 16px}.info-row{display:flex;justify-content:space-between;gap:10px;border-bottom:1px dashed #e2e8f0;padding:4px 0}.info-label{color:#64748b;font-weight:700}.info-value{text-align:${oppositeAlign};font-weight:600;unicode-bidi:plaintext}.text-block{background:#f8fafc;border-inline-start:3px solid #3b82f6;border-radius:5px;padding:7px;margin-top:6px;white-space:pre-wrap;unicode-bidi:plaintext}.warning{background:#fff7ed;border-color:#f97316}.record{border:1px solid #dbe4ef;border-radius:8px;padding:9px;margin-bottom:8px;break-inside:avoid}.record-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:5px}.status-chip{background:#e0e7ff;color:#3730a3;padding:2px 7px;border-radius:999px;font-size:9px;font-weight:700}
+    table{width:100%;border-collapse:collapse;font-size:9.5px}th,td{border:1px solid #dbe4ef;padding:5px;text-align:${textAlign}}th{background:#eaf2fb;color:#0f3a67}.timeline-item{display:grid;grid-template-columns:25px 1fr;gap:8px;margin-bottom:8px;break-inside:avoid}.audit-item{border:1px solid #e2e8f0;border-radius:6px;padding:6px;margin-bottom:6px;break-inside:avoid}.audit-item pre{white-space:pre-wrap;word-break:break-word;background:#f8fafc;border-radius:4px;padding:5px;margin:4px 0 0;font-family:Arial,sans-serif;font-size:8.5px}.timeline-dot{width:22px;height:22px;background:#0f3a67;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px}.timeline-title{font-weight:800}.timeline-notes{background:#f8fafc;border-radius:4px;padding:4px;margin-top:3px;unicode-bidi:plaintext}.muted,.empty{color:#64748b}.photo-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.photo-grid figure{margin:0;border:1px solid #dbe4ef;border-radius:7px;overflow:hidden;break-inside:avoid}.photo-grid img{width:100%;height:170px;object-fit:contain;background:#f8fafc}.photo-grid figcaption{text-align:center;padding:4px;color:#64748b}.footer{margin-top:16px;border-top:1px solid #cbd5e1;padding-top:7px;color:#64748b;font-size:9px;display:flex;justify-content:space-between}ul{padding-inline-start:20px}
   </style></head><body>
-    <div class="header"><div><h1>التقرير الأرشيفي الكامل للبلاغ</h1><p>وثيقة نهائية تشمل بيانات البلاغ وإجراءاته من الإنشاء حتى الإغلاق</p></div><div class="ticket-number">${escapeHtml(ticket.ticketNumber)}</div></div>
-    <div class="summary"><div><b>الحالة النهائية</b><span>${escapeHtml(STATUS_LABELS[ticket.status] || ticket.status)}</span></div><div><b>الأولوية</b><span>${escapeHtml(PRIORITY_LABELS[ticket.priority] || ticket.priority)}</span></div><div><b>تاريخ الإنشاء</b><span>${fmtDate(ticket.createdAt)}</span></div><div><b>تاريخ الإغلاق</b><span>${fmtDate(ticket.closedAt)}</span></div></div>
+    <div class="header"><div><h1>${L("التقرير الأرشيفي الكامل للبلاغ")}</h1><p>${L("وثيقة نهائية تشمل بيانات البلاغ وإجراءاته من الإنشاء حتى الإغلاق")}</p></div><div class="ticket-number">${escapeHtml(ticket.ticketNumber)}</div></div>
+    <div class="summary"><div><b>${L("الحالة النهائية")}</b><span>${escapeHtml(localizedLabel(language, STATUS_LABELS, ticket.status))}</span></div><div><b>${L("الأولوية")}</b><span>${escapeHtml(localizedLabel(language, PRIORITY_LABELS, ticket.priority))}</span></div><div><b>${L("تاريخ الإنشاء")}</b><span>${date(ticket.createdAt)}</span></div><div><b>${L("تاريخ الإغلاق")}</b><span>${date(ticket.closedAt)}</span></div></div>
 
-    <section><h2>1. بيانات البلاغ الأساسية</h2><div class="two-col">
-      ${infoRow("العنوان", ticket.title)}${infoRow("التصنيف الفني", CATEGORY_LABELS[ticket.category] || ticket.category)}${infoRow("الموقع", site?.name || ticket.locationDetail)}${infoRow("القسم", section?.name)}${infoRow("مقدم البلاغ", userName(ticket.reportedById))}${infoRow("نوع البلاغ", ticket.ticketType)}${infoRow("اللغة الأصلية", ticket.originalLanguage)}${infoRow("رقم الأصل", ticket.assetId)}
-    </div><div class="text-block"><b>الوصف:</b> ${escapeHtml(ticket.description || "لا يوجد وصف")}</div></section>
+    <section><h2>1. ${L("بيانات البلاغ الأساسية")}</h2><div class="two-col">
+      ${infoRow(L("العنوان"), ticket.title)}${infoRow(L("التصنيف الفني"), localizedLabel(language, CATEGORY_LABELS, ticket.category))}${infoRow(L("الموقع"), site?.name || ticket.locationDetail)}${infoRow(L("القسم"), section?.name)}${infoRow(L("مقدم البلاغ"), userName(ticket.reportedById))}${infoRow(L("نوع البلاغ"), ticket.ticketType)}${infoRow(L("اللغة الأصلية"), ticket.originalLanguage)}${infoRow(L("رقم الأصل"), ticket.assetId)}
+    </div><div class="text-block"><b>${L("الوصف")}:</b> ${escapeHtml(ticket.description || L("لا يوجد وصف"))}</div></section>
 
-    <section><h2>2. الفرز والتوجيه والمسؤوليات</h2><div class="two-col">
-      ${infoRow("الجهة المسؤولة", DEPARTMENT_LABELS[ticket.maintenanceResponsibleDepartment] || ticket.maintenanceResponsibleDepartment)}${infoRow("مدير الجهة", userName(ticket.maintenanceResponsibleManagerId))}${infoRow("من قام بالتوجيه", userName(ticket.maintenanceRoutedById))}${infoRow("وقت التوجيه", fmtDate(ticket.maintenanceRoutedAt, true))}${infoRow("الفني المسند", assignedName)}${infoRow("وقت الإسناد", fmtDate(ticket.assignedAt, true))}${infoRow("المشرف", userName(ticket.supervisorId))}${infoRow("المسار التنفيذي", ticket.maintenancePath)}
-    </div>${ticket.triageNotes ? `<div class="text-block"><b>ملاحظات الفرز:</b> ${escapeHtml(ticket.triageNotes)}</div>` : ""}${ticket.maintenanceRoutingNote ? `<div class="text-block"><b>ملاحظات التوجيه:</b> ${escapeHtml(ticket.maintenanceRoutingNote)}</div>` : ""}${ticket.justification ? `<div class="text-block"><b>مبرر المسار:</b> ${escapeHtml(ticket.justification)}</div>` : ""}</section>
+    <section><h2>2. ${L("الفرز والتوجيه والمسؤوليات")}</h2><div class="two-col">
+      ${infoRow(L("الجهة المسؤولة"), localizedLabel(language, DEPARTMENT_LABELS, ticket.maintenanceResponsibleDepartment))}${infoRow(L("مدير الجهة"), userName(ticket.maintenanceResponsibleManagerId))}${infoRow(L("من قام بالتوجيه"), userName(ticket.maintenanceRoutedById))}${infoRow(L("وقت التوجيه"), date(ticket.maintenanceRoutedAt, true))}${infoRow(L("الفني المسند"), assignedName)}${infoRow(L("وقت الإسناد"), date(ticket.assignedAt, true))}${infoRow(L("المشرف"), userName(ticket.supervisorId))}${infoRow(L("المسار التنفيذي"), ticket.maintenancePath)}
+    </div>${ticket.triageNotes ? `<div class="text-block"><b>${L("ملاحظات الفرز")}:</b> ${escapeHtml(ticket.triageNotes)}</div>` : ""}${ticket.maintenanceRoutingNote ? `<div class="text-block"><b>${L("ملاحظات التوجيه")}:</b> ${escapeHtml(ticket.maintenanceRoutingNote)}</div>` : ""}${ticket.justification ? `<div class="text-block"><b>${L("مبرر المسار")}:</b> ${escapeHtml(ticket.justification)}</div>` : ""}</section>
 
-    <section><h2>3. نتائج الفحص ومراجعاتها</h2>${inspectionHtml}</section>
+    <section><h2>3. ${L("نتائج الفحص ومراجعاتها")}</h2>${inspectionHtml}</section>
 
-    <section><h2>4. التنفيذ والإقفال</h2><div class="two-col">
-      ${infoRow("اعتمد بواسطة", userName(ticket.approvedById))}${infoRow("تكلفة تقديرية", fmtMoney(ticket.estimatedCost))}${infoRow("تكلفة فعلية", fmtMoney(ticket.actualCost))}${infoRow("تاريخ الإغلاق", fmtDate(ticket.closedAt, true))}${infoRow("اعتماد الخروج", userName(ticket.gateExitApprovedById))}${infoRow("وقت الخروج", fmtDate(ticket.gateExitApprovedAt, true))}${infoRow("اعتماد الدخول", userName(ticket.gateEntryApprovedById))}${infoRow("وقت الدخول", fmtDate(ticket.gateEntryApprovedAt, true))}
-    </div>${ticket.repairNotes ? `<div class="text-block"><b>ملاحظات الإصلاح:</b> ${escapeHtml(ticket.repairNotes)}</div>` : ""}${ticket.materialsUsed ? `<div class="text-block"><b>المواد المستخدمة:</b> ${escapeHtml(ticket.materialsUsed)}</div>` : ""}</section>
+    <section><h2>4. ${L("التنفيذ والإقفال")}</h2><div class="two-col">
+      ${infoRow(L("اعتمد بواسطة"), userName(ticket.approvedById))}${infoRow(L("تكلفة تقديرية"), money(ticket.estimatedCost))}${infoRow(L("تكلفة فعلية"), money(ticket.actualCost))}${infoRow(L("تاريخ الإغلاق"), date(ticket.closedAt, true))}${infoRow(L("اعتماد الخروج"), userName(ticket.gateExitApprovedById))}${infoRow(L("وقت الخروج"), date(ticket.gateExitApprovedAt, true))}${infoRow(L("اعتماد الدخول"), userName(ticket.gateEntryApprovedById))}${infoRow(L("وقت الدخول"), date(ticket.gateEntryApprovedAt, true))}
+    </div>${ticket.repairNotes ? `<div class="text-block"><b>${L("ملاحظات الإصلاح")}:</b> ${escapeHtml(ticket.repairNotes)}</div>` : ""}${ticket.materialsUsed ? `<div class="text-block"><b>${L("المواد المستخدمة")}:</b> ${escapeHtml(ticket.materialsUsed)}</div>` : ""}</section>
 
-    ${ticket.maintenancePath === "C" ? `<section><h2>5. دورة الصيانة الخارجية وحركة الأصل</h2>${externalMaintenanceHtml}</section>` : ""}
-    <section><h2>${ticket.maintenancePath === "C" ? "6" : "5"}. طلبات الشراء المرتبطة</h2>${purchaseHtml}</section>
-    <section><h2>${ticket.maintenancePath === "C" ? "7" : "6"}. التسلسل الكامل لإجراءات البلاغ</h2>${timelineHtml}</section>
-    <section><h2>${ticket.maintenancePath === "C" ? "8" : "7"}. سجل التدقيق التفصيلي</h2>${auditHtml}</section>
-    <section><h2>${ticket.maintenancePath === "C" ? "9" : "8"}. الصور</h2>${photosHtml}</section>
-    <section><h2>${ticket.maintenancePath === "C" ? "10" : "9"}. المرفقات الأخرى</h2>${attachmentsHtml}</section>
-    ${confirmation ? `<section><h2>${ticket.maintenancePath === "C" ? "11" : "10"}. تأكيد مقدم البلاغ</h2><div class="two-col">${infoRow("المؤكد", userName(confirmation.confirmedById))}${infoRow("وقت التأكيد", fmtDate(confirmation.createdAt, true))}</div><div class="text-block"><b>ملاحظة التأكيد:</b> ${escapeHtml(confirmation.note)}</div></section>` : ""}
-    <div class="footer"><span>تم إنشاء الوثيقة آليًا بتاريخ ${fmtDate(new Date(), true)}</span><span>نظام الحارس المركزي — وثيقة أرشيفية</span></div>
+    ${ticket.maintenancePath === "C" ? `<section><h2>5. ${L("دورة الصيانة الخارجية وحركة الأصل")}</h2>${externalMaintenanceHtml}</section>` : ""}
+    <section><h2>${5 + shift}. ${L("طلبات الشراء المرتبطة")}</h2>${purchaseHtml}</section>
+    <section><h2>${6 + shift}. ${L("التسلسل الكامل لإجراءات البلاغ")}</h2>${timelineHtml}</section>
+    <section><h2>${7 + shift}. ${L("سجل التدقيق التفصيلي")}</h2>${auditHtml}</section>
+    <section><h2>${8 + shift}. ${L("الصور")}</h2>${photosHtml}</section>
+    <section><h2>${9 + shift}. ${L("المرفقات الأخرى")}</h2>${attachmentsHtml}</section>
+    ${confirmation ? `<section><h2>${10 + shift}. ${L("تأكيد مقدم البلاغ")}</h2><div class="two-col">${infoRow(L("المؤكد"), userName(confirmation.confirmedById))}${infoRow(L("وقت التأكيد"), date(confirmation.createdAt, true))}</div><div class="text-block"><b>${L("ملاحظة التأكيد")}:</b> ${escapeHtml(confirmation.note)}</div></section>` : ""}
+    <div class="footer"><span>${L("تم إنشاء الوثيقة آليًا بتاريخ {date}", { date: date(new Date(), true) })}</span><span>${L("نظام الحارس المركزي — وثيقة أرشيفية")}</span></div>
   </body></html>`;
 }
 
 export async function generateTicketPDF(
   ticketId: number,
   documentType: TicketPdfDocumentType = "task",
+  preferredLanguage: unknown = "ar",
 ): Promise<Buffer> {
-  const context = await loadTicketContext(ticketId);
+  const language = normalizeTicketPdfLanguage(preferredLanguage);
+  const context = await loadTicketContext(ticketId, language);
   return htmlToPdf(documentType === "archive" ? renderArchivePdf(context) : renderTaskPdf(context));
 }

@@ -1,6 +1,19 @@
 import { z } from "zod";
 import { protectedProcedure, warehouseProcedure, router } from "../_shared/procedures";
 import * as db from "../../_core/db";
+import { queueTranslation } from "../../services/translation/translationEngine";
+import { detectLanguage } from "../../services/translation/translation";
+
+
+async function queueDeliveryDocumentTranslation(id: number, itemName?: string | null, notes?: string | null, userId?: number) {
+  const fields = [
+    { fieldName: "itemName", text: (itemName || "").trim() },
+    { fieldName: "notes", text: (notes || "").trim() },
+  ].filter(field => field.text);
+  if (!fields.length) return;
+  const sourceLanguage = await detectLanguage(fields[0].text).catch(() => "ar" as const);
+  await queueTranslation({ entityType: "DELIVERY_DOCUMENT", entityId: id, fields, sourceLanguage, userId });
+}
 
 export const deliveryDocumentsRouter = router({
 
@@ -19,8 +32,8 @@ export const deliveryDocumentsRouter = router({
     warehousePhotoUrl: z.string().optional(),
     notes: z.string().optional(),
     deliveredAt: z.string(),
-  })).mutation(async ({ input }) => {
-    await db.createDeliveryDocument({
+  })).mutation(async ({ input, ctx }) => {
+    const inserted = await db.createDeliveryDocument({
       deliveryNumber: input.deliveryNumber,
       poItemId: input.poItemId,
       itemName: input.itemName,
@@ -34,12 +47,20 @@ export const deliveryDocumentsRouter = router({
       warehousePhotoUrl: input.warehousePhotoUrl,
       notes: input.notes,
     });
+    const documentId = Number((inserted as any)?.insertId || 0);
+    if (documentId > 0) {
+      await queueDeliveryDocumentTranslation(documentId, input.itemName, input.notes, ctx.user.id);
+    }
     return { success: true };
   }),
 
   // جلب كل الوثائق للتبويب
-  list: protectedProcedure.query(async () => {
-    return db.getDeliveryDocuments();
+  list: protectedProcedure.query(async ({ ctx }) => {
+    const documents = await db.getDeliveryDocuments();
+    await Promise.all((documents as any[]).map(doc =>
+      queueDeliveryDocumentTranslation(Number(doc.id), doc.itemName, doc.notes, ctx.user.id).catch(() => undefined)
+    ));
+    return documents;
   }),
 
   // رفع عداد الطباعة

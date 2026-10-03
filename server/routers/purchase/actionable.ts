@@ -37,6 +37,8 @@ export interface ActionablePO {
   actionLabel: string;
   /** ملخص الأصناف: "تم شراء 3 من 5" — يُعرض عند وجود تقدم جزئي */
   itemsSummary?: string;
+  /** وضع الإجراء للمندوب — يُستخدم للتوجيه الصحيح من شاشة «بانتظار إجرائي». */
+  actionMode?: "estimate" | "purchase" | "mixed";
 }
 
 interface UserCtx {
@@ -59,6 +61,42 @@ interface ItemInput {
   delegateId?: number | null;
   batchId?: number | null;
   delegateChangeRequestedAt?: string | Date | null;
+}
+
+export type DelegateItemActionMode = "estimate" | "purchase";
+
+/**
+ * مصدر الحقيقة المشترك لحسم ما إذا كان بند المندوب يحتاج تدخله الآن.
+ * يُستخدم في «بانتظار إجرائي» وفي تبويب «أصنافي بانتظار المعالجة» حتى لا
+ * تنحرف القائمتان عن بعضهما مع الوقت.
+ */
+export function getDelegateItemActionMode(
+  poStatus: string,
+  item: Pick<ItemInput, "status" | "batchId" | "delegateChangeRequestedAt">
+): DelegateItemActionMode | null {
+  if (item.delegateChangeRequestedAt) return null;
+
+  const blocked = [
+    PO_STATUS.DRAFT,
+    PO_STATUS.PENDING_REVIEW,
+    PO_STATUS.REVISION_NEEDED,
+    PO_STATUS.CLOSED,
+    PO_STATUS.REJECTED,
+  ].includes(poStatus as any);
+  if (blocked) return null;
+
+  if (!item.batchId && ["pending", "estimated"].includes(item.status)) {
+    return "estimate";
+  }
+
+  if (
+    ["approved", "funded"].includes(item.status) &&
+    [PO_STATUS.APPROVED, PO_STATUS.PARTIAL_PURCHASE].includes(poStatus as any)
+  ) {
+    return "purchase";
+  }
+
+  return null;
 }
 
 /**
@@ -223,16 +261,47 @@ export function computeActionablePOs(
       continue;
     }
 
-    // عند مرحلة التسعير لا يظهر الطلب للمندوب كإجراء مطلوب إذا كانت كل
-    // أصنافه المعلّقة مجمّدة بانتظار تغيير المندوب.
-    if (ctx.role === "delegate" && po.status === PO_STATUS.PENDING_ESTIMATE) {
-      const hasUnblockedAssignedItem = poItems.some((i) =>
-        i.delegateId === ctx.id &&
-        !i.delegateChangeRequestedAt &&
-        !i.batchId &&
-        ["pending", "estimated"].includes(i.status)
-      );
-      if (!hasUnblockedAssignedItem) continue;
+    // ── المندوب: «بانتظار إجرائي» يُحسم من أصنافه هو، لا من حالة PR العامة ──
+    // طلب واحد قد يكون partial_purchase لأن بعض أصنافه اكتملت، بينما يبقى
+    // صنف آخر لنفس المندوب pending للتسعير. الاعتماد على po.status وحده كان
+    // يعرض «إكمال الشراء» ثم يفتح صفحة بلا أصناف لأن الصنف الحقيقي pending.
+    // كذلك كان الطلب يبقى ظاهرًا للمندوب حتى لو كان الصنف المتبقي لمندوب آخر.
+    if (ctx.role === "delegate") {
+      const delegateItems = poItems.filter((i) => i.delegateId === ctx.id);
+      const pricingItems = delegateItems.filter((i) => getDelegateItemActionMode(po.status, i) === "estimate");
+      const purchaseItems = delegateItems.filter((i) => getDelegateItemActionMode(po.status, i) === "purchase");
+
+      if (pricingItems.length > 0 || purchaseItems.length > 0) {
+        if (pricingItems.length > 0 && purchaseItems.length > 0) {
+          result.push({
+            id: po.id, poNumber: po.poNumber, status: po.status,
+            reason: `لديك ${pricingItems.length} صنف للتسعير و${purchaseItems.length} صنف للشراء`,
+            actionLabel: "فتح",
+            actionMode: "mixed",
+            itemsSummary,
+          });
+        } else if (pricingItems.length > 0) {
+          result.push({
+            id: po.id, poNumber: po.poNumber, status: po.status,
+            reason: "بانتظار تسعيرك",
+            actionLabel: "تسعير",
+            actionMode: "estimate",
+            itemsSummary,
+          });
+        } else {
+          result.push({
+            id: po.id, poNumber: po.poNumber, status: po.status,
+            reason: po.status === PO_STATUS.PARTIAL_PURCHASE ? "بانتظار إكمال الشراء" : "بانتظار تنفيذ الشراء",
+            actionLabel: po.status === PO_STATUS.PARTIAL_PURCHASE ? "إكمال الشراء" : "تنفيذ الشراء",
+            actionMode: "purchase",
+            itemsSummary,
+          });
+        }
+      }
+
+      // للمندوب لا نعود إلى خريطة مرحلة PR العامة؛ إن لم يوجد صنف يحتاج
+      // تدخله الآن فلا يوجد شيء في «بانتظار إجرائي» حتى لو كان PR جزئيًا.
+      continue;
     }
 
     // ── الفئة 1: طلب بمرحلة يستطيع دور المستخدم التصرف فيها ───────────

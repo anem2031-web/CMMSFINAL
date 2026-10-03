@@ -51,6 +51,10 @@ import Assets from "@/pages/assets/Assets";
 import AssetHistory from "@/pages/assets/AssetHistory";
 import AssetMetrics from "@/pages/assets/AssetMetrics";
 import PreventiveMaintenance from "@/pages/preventive/PreventiveMaintenance";
+import ScheduledMaintenance from "@/pages/pmv2/ScheduledMaintenance";
+import Pmv2MyTasks from "@/pages/pmv2/Pmv2MyTasks";
+import Pmv2WarehouseQueue from "@/pages/pmv2/Pmv2WarehouseQueue";
+import Pmv2MaintenanceReports from "@/pages/pmv2/Pmv2MaintenanceReports";
 import TriageDashboard from "@/pages/tickets/TriageDashboard";
 import GateSecurity from "@/pages/assets/GateSecurity";
 import ScanAsset from "@/pages/assets/ScanAsset";
@@ -66,6 +70,7 @@ import InvoiceDraftReview from "@/pages/inventory/InvoiceDraftReview";
 import WarehouseReturn from "@/pages/inventory/WarehouseReturn";
 import Warehouses from "@/pages/inventory/Warehouses";
 import WarehouseTransfer from "@/pages/inventory/WarehouseTransfer";
+import WarehouseIssue from "@/pages/inventory/WarehouseIssue";
 import WarehouseReturnsList from "@/pages/inventory/WarehouseReturnsList";
 import ConstructionDashboard from "@/pages/construction/ConstructionDashboard";
 import ProjectsList from "@/pages/construction/ProjectsList";
@@ -130,6 +135,10 @@ function Router() {
             <Route path="/assets/history" component={AssetHistory} />
             <Route path="/assets/metrics" component={AssetMetrics} />
             <Route path="/preventive" component={PreventiveMaintenance} />
+            <Route path="/scheduled-maintenance/my-tasks" component={Pmv2MyTasks} />
+            <Route path="/scheduled-maintenance/warehouse-requests" component={Pmv2WarehouseQueue} />
+            <Route path="/scheduled-maintenance/reports" component={Pmv2MaintenanceReports} />
+            <Route path="/scheduled-maintenance" component={ScheduledMaintenance} />
             <Route path="/triage" component={TriageDashboard} />
             <Route path="/gate-security" component={GateSecurity} />
             <Route path="/scan-asset" component={ScanAsset} />
@@ -151,6 +160,7 @@ function Router() {
             <Route path="/warehouse/return" component={WarehouseReturn} />
             <Route path="/warehouses" component={Warehouses} />
             <Route path="/warehouse/transfer" component={WarehouseTransfer} />
+            <Route path="/warehouse/issue" component={WarehouseIssue} />
             <Route path="/warehouse/returns" component={WarehouseReturnsList} />
             <Route path="/inspection-dashboard" component={Dashboard} />
             <Route path="/catalog" component={CatalogDashboard} />

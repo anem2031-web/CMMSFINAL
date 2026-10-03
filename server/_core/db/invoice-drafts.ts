@@ -1121,7 +1121,7 @@ export async function searchInventoryCountCandidates(params: {
   }));
 }
 
-// ── 1ب-Lot) مسح QR دفعة أثناء الجرد الدوري ──
+// ── 1ب-Lot) مسح QR أو إدخال رقم Lot أثناء الجرد الدوري ──
 // المسح لا يغيّر أي رصيد. يحدد Lot + Inventory داخل مستودع عملية الجرد،
 // ويعيد/ينشئ سطر الجرد الخاص بهذه الدفعة ثم تُسجّل الكمية الفعلية عبر recordCountItem.
 export async function scanCountLot(params: {
@@ -1546,7 +1546,7 @@ export async function recordCountItem(params: {
       }
       lotCode = storedLot.lotCode;
     } else {
-      if (!params.trackingToken?.trim()) throw new Error("يجب مسح QR للدفعة قبل حفظ الكمية المعدودة");
+      if (!params.trackingToken?.trim()) throw new Error("يجب مسح QR أو إدخال رقم اللوت قبل حفظ الكمية المعدودة");
 
       const lot = await resolveInventoryLotForCount({
         tx: db,
@@ -1554,7 +1554,7 @@ export async function recordCountItem(params: {
         warehouseId: Number(opRows[0].warehouseId),
       });
       if (lot.lotId !== Number(row.lotId) || lot.inventoryId !== Number(row.inventoryId)) {
-        throw new Error("QR الممسوح لا يطابق الدفعة المحددة في سطر الجرد");
+        throw new Error("رقم اللوت أو QR لا يطابق الدفعة المحددة في سطر الجرد");
       }
       lotCode = lot.lotCode;
     }

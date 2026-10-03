@@ -27,6 +27,7 @@ import { useStaticLabels } from "@/hooks/useContentTranslation";
 import { useTranslatedField } from "@/hooks/useTranslatedField";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { toast } from "sonner";
+import { localizeApiError } from "@/i18n/apiError";
 
 // يبني قائمة أرقام الصفحات المطلوب عرضها (مع نقاط حذف "..." عند كثرة الصفحات)
 // مثال لـ 10 صفحات وأنت بالصفحة 1: [1, 2, "dots", 10]
@@ -91,7 +92,8 @@ export default function GeneralTicketsList() {
   const didMountFilters = useRef(false);
   const PAGE_SIZE = 10;
   
-  const { t, language } = useTranslation();
+  const { t, language, dir } = useTranslation();
+  const wt = t.workflow.ticket;
   const { getStatusLabel, getPriorityLabel, getCategoryLabel } = useStaticLabels();
   const { getField } = useTranslatedField();
   const { user } = useAuth();
@@ -171,7 +173,7 @@ export default function GeneralTicketsList() {
       utils.tickets.listPaginated.invalidate();
       setEditOpen(false);
     },
-    onError: (err) => toast.error(err.message),
+    onError: (err) => toast.error(localizeApiError(err.message)),
   });
 
   const deleteMutation = trpc.tickets.delete.useMutation({
@@ -181,7 +183,7 @@ export default function GeneralTicketsList() {
       utils.tickets.listPaginated.invalidate();
       setDeleteOpen(false);
     },
-    onError: (err) => toast.error(err.message),
+    onError: (err) => toast.error(localizeApiError(err.message)),
   });
 
   const openEdit = (ticket: any, e: React.MouseEvent) => {
@@ -200,16 +202,16 @@ export default function GeneralTicketsList() {
   const locale = language === "ar" ? "ar-SA" : language === "ur" ? "ur-PK" : "en-US";
   const inspectionStatusLabel = (value?: string | null) => {
     switch (value) {
-      case MAINTENANCE_INSPECTION_WORKFLOW_STATUS.PENDING_SUBMISSION: return "بانتظار نتيجة الفحص";
-      case MAINTENANCE_INSPECTION_WORKFLOW_STATUS.SUBMITTED_FOR_REVIEW: return "بانتظار اعتماد النتيجة";
-      case MAINTENANCE_INSPECTION_WORKFLOW_STATUS.RETURNED_FOR_CORRECTION: return "الفحص معاد للتصحيح";
-      case MAINTENANCE_INSPECTION_WORKFLOW_STATUS.APPROVED: return "الفحص معتمد";
+      case MAINTENANCE_INSPECTION_WORKFLOW_STATUS.PENDING_SUBMISSION: return wt.inspectionPending;
+      case MAINTENANCE_INSPECTION_WORKFLOW_STATUS.SUBMITTED_FOR_REVIEW: return wt.inspectionManagerPending;
+      case MAINTENANCE_INSPECTION_WORKFLOW_STATUS.RETURNED_FOR_CORRECTION: return wt.inspectionReturnedStatus;
+      case MAINTENANCE_INSPECTION_WORKFLOW_STATUS.APPROVED: return wt.inspectionApprovedStatus;
       default: return null;
     }
   };
 
   return (
-    <div className="space-y-6">
+    <div dir={dir} className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{t.tickets.title}</h1>
@@ -228,12 +230,12 @@ export default function GeneralTicketsList() {
         <div className="flex flex-col gap-1 flex-1 min-w-[200px]">
           <span className="text-xs text-muted-foreground">{t.common.search}</span>
           <div className="relative">
-            <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Search className={`absolute top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground ${dir === "rtl" ? "right-3" : "left-3"}`} />
             <Input
               placeholder={`${t.common.search}...`}
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="pr-10"
+              className={dir === "rtl" ? "pr-10" : "pl-10"}
             />
           </div>
         </div>
@@ -363,15 +365,15 @@ export default function GeneralTicketsList() {
                             <>
                               <Badge variant="secondary" className="text-[10px] gap-1">
                                 <GitBranch className="w-3 h-3" />
-                                {subTickets.length} بلاغات فرعية
+                                {wt.familySubTickets.replace("{count}", String(subTickets.length))}
                               </Badge>
                               <Badge
                                 variant="outline"
                                 className={`text-[10px] gap-1 ${summary.allFinished ? "border-emerald-300 text-emerald-700 bg-emerald-50 dark:bg-emerald-950/40 dark:text-emerald-400" : "border-purple-300 text-purple-700 bg-purple-50 dark:bg-purple-950/40 dark:text-purple-300"}`}
                               >
                                 {summary.allFinished
-                                  ? "اكتملت كل الفروع — بانتظار الإغلاق"
-                                  : `اكتمال ${summary.percent}% (${summary.finished}/${summary.total})`}
+                                  ? wt.familyAllFinished
+                                  : wt.familyProgress.replace("{percent}", String(summary.percent)).replace("{finished}", String(summary.finished)).replace("{total}", String(summary.total))}
                               </Badge>
                             </>
                           );
@@ -427,14 +429,14 @@ export default function GeneralTicketsList() {
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div>
-                              <p className="text-xs text-muted-foreground">البلاغ الرئيسي</p>
+                              <p className="text-xs text-muted-foreground">{wt.mainTicket}</p>
                               <p className="font-mono font-semibold mt-1">{ticket.ticketNumber}</p>
                             </div>
                             <Badge className={`status-badge ${STATUS_COLORS[ticket.status] || "bg-gray-100 text-gray-700"}`}>
                               {getStatusLabel(ticket.status)}
                             </Badge>
                           </div>
-                          <p className="text-xs text-muted-foreground mt-2">اضغط لفتح تفاصيل البلاغ الرئيسي</p>
+                          <p className="text-xs text-muted-foreground mt-2">{wt.openMainTicketHelp}</p>
                         </button>
 
                         <button
@@ -444,12 +446,12 @@ export default function GeneralTicketsList() {
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div>
-                              <p className="text-xs text-muted-foreground">البلاغات الفرعية</p>
-                              <p className="font-semibold mt-1">{subTickets.length} بلاغات</p>
+                              <p className="text-xs text-muted-foreground">{wt.subTickets}</p>
+                              <p className="font-semibold mt-1">{wt.ticketsCount.replace("{count}", String(subTickets.length))}</p>
                             </div>
                             <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform ${subTicketsExpanded ? "rotate-180" : ""}`} />
                           </div>
-                          <p className="text-xs text-muted-foreground mt-2">اضغط لعرض بطاقات البلاغات الفرعية</p>
+                          <p className="text-xs text-muted-foreground mt-2">{wt.showSubTicketsHelp}</p>
                         </button>
                       </div>
 
@@ -510,7 +512,7 @@ export default function GeneralTicketsList() {
                     onClick={e => { e.preventDefault(); if (page > 1) setPage(page - 1); }}
                     className={`gap-1 px-2.5 ${page <= 1 ? "pointer-events-none opacity-50" : ""}`}
                   >
-                    <ChevronLeft className="w-4 h-4" />
+                    <ChevronLeft className={`w-4 h-4 ${dir === "rtl" ? "rotate-180" : ""}`} />
                     <span className="hidden sm:block">{t.common.previous}</span>
                   </PaginationLink>
                 </PaginationItem>
@@ -540,7 +542,7 @@ export default function GeneralTicketsList() {
                     className={`gap-1 px-2.5 ${page >= totalPages ? "pointer-events-none opacity-50" : ""}`}
                   >
                     <span className="hidden sm:block">{t.common.next}</span>
-                    <ChevronRight className="w-4 h-4" />
+                    <ChevronRight className={`w-4 h-4 ${dir === "rtl" ? "rotate-180" : ""}`} />
                   </PaginationLink>
                 </PaginationItem>
               </PaginationContent>

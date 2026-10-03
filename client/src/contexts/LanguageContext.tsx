@@ -62,14 +62,35 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
     return "ar";
   });
 
+  const utils = trpc.useUtils();
+  const meQuery = trpc.auth.me.useQuery(undefined, {
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
   const setLanguageMutation = trpc.translation.setLanguage.useMutation();
+
+  // The user's DB preference is the cross-device source of truth after login.
+  // localStorage remains a fast startup fallback for anonymous/login screens.
+  useEffect(() => {
+    const preferred = meQuery.data?.preferredLanguage as SupportedLanguage | undefined;
+    if (!preferred || !["ar", "en", "ur"].includes(preferred)) return;
+    setLanguageState(preferred);
+    localStorage.setItem(STORAGE_KEY, preferred);
+  }, [meQuery.data?.id, meQuery.data?.preferredLanguage]);
 
   const setLanguage = useCallback((lang: SupportedLanguage) => {
     setLanguageState(lang);
     localStorage.setItem(STORAGE_KEY, lang);
+
+    // Keep the authenticated-user cache in sync immediately so a later auth
+    // refetch cannot briefly snap the UI back to the previous direction.
+    utils.auth.me.setData(undefined, (current: any) =>
+      current ? { ...current, preferredLanguage: lang } : current
+    );
+
     // Update user preference in DB (fire and forget)
     setLanguageMutation.mutate({ language: lang });
-  }, [setLanguageMutation]);
+  }, [setLanguageMutation, utils]);
 
   // Apply direction and lang to document
   useEffect(() => {

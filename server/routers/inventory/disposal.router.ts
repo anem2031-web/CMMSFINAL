@@ -6,13 +6,13 @@ import { isInventoryLotsEnabled, resolveInventoryLotForDisposal } from "../../_c
 
 export const disposalRouter = router({
 
-  // 2B-8 — QR الدفعة هو مصدر الحقيقة عند الاستبعاد. لا نقبل lotId من العميل.
+  // 2B-8 — هوية الدفعة هي مصدر الحقيقة عند الاستبعاد. نقبل QR أو رقم اللوت ولا نقبل lotId من العميل.
   // إذا كانت الدفعة موزعة على أكثر من مستودع نرفض الاختيار الصامت حتى يكون
   // للـWorkflow سياق مستودع صريح.
   resolveLot: warehouseProcedure
     .input(z.object({
       warehouseId: z.number().int().positive("المستودع مطلوب"),
-      trackingToken: z.string().trim().min(1, "QR الدفعة مطلوب"),
+      trackingToken: z.string().trim().min(1, "QR الدفعة أو رقم اللوت مطلوب"),
     }))
     .mutation(async ({ input }) => {
       if (!isInventoryLotsEnabled()) {
@@ -54,7 +54,7 @@ export const disposalRouter = router({
           remainingQuantity: lot.remainingQuantity,
         };
       } catch (err: any) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: err?.message || "QR الدفعة غير صالح للاستبعاد" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: err?.message || "QR الدفعة أو رقم اللوت غير صالح للاستبعاد" });
       }
     }),
 
@@ -81,7 +81,7 @@ export const disposalRouter = router({
           throw new TRPCError({ code: "BAD_REQUEST", message: "يجب اختيار المستودع قبل حفظ عملية الاستبعاد" });
         }
         if (input.items.some(item => !String(item.lotTrackingToken || "").trim())) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "يجب مسح QR دفعة لكل بند استبعاد قبل حفظ العملية" });
+          throw new TRPCError({ code: "BAD_REQUEST", message: "يجب مسح QR أو إدخال رقم اللوت لكل بند استبعاد قبل حفظ العملية" });
         }
       }
       try {

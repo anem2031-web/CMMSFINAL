@@ -28,6 +28,40 @@ export interface ParsedCatalog {
   items:         ParsedItem[];
 }
 
+export interface CatalogImportAuditContext {
+  userId: number;
+  ipAddress?: string;
+  userAgent?: string;
+}
+
+function auditJson(value: Record<string, any> | null | undefined): string | null {
+  return value ? JSON.stringify(value) : null;
+}
+
+async function writeImportAudit(
+  db: any,
+  audit: CatalogImportAuditContext | undefined,
+  entry: {
+    action: string;
+    entityType: string;
+    entityId?: number;
+    oldValues?: Record<string, any> | null;
+    newValues?: Record<string, any> | null;
+  },
+): Promise<void> {
+  if (!audit) return;
+  await db.insert(schema.catalogAuditLogs).values({
+    userId: audit.userId,
+    action: entry.action,
+    entityType: entry.entityType,
+    entityId: entry.entityId,
+    oldValues: auditJson(entry.oldValues),
+    newValues: auditJson(entry.newValues),
+    ipAddress: audit.ipAddress,
+    userAgent: audit.userAgent,
+  } as any);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // parseCatalogImportFile
 // قراءة ملف Excel وتحويله إلى كائنات
@@ -91,12 +125,13 @@ export async function parseCatalogImportFile(
 
 // ─────────────────────────────────────────────────────────────────────────
 // commitCatalogImport
-// كتابة البيانات في قاعدة البيانات (upsert حقيقي)
+// كتابة البيانات في قاعدة البيانات (upsert حقيقي) + Audit لكل تغيير
 // ─────────────────────────────────────────────────────────────────────────
 
 export async function commitCatalogImport(
   db:     any,
-  parsed: ParsedCatalog
+  parsed: ParsedCatalog,
+  audit?: CatalogImportAuditContext,
 ): Promise<{ success: boolean; taxonomyCount: number; itemsCount: number }> {
 
   // ── 1. ترتيب النودز: الآباء أولاً (أقصر كود = أعلى مستوى) ───────────────
@@ -107,60 +142,109 @@ export async function commitCatalogImport(
 
   // ── 2. upsert التصنيفات (بدون parent أولاً) ──────────────────────────────
 
-  // map من code → id لاستخدامه لاحقاً
   const codeToId = new Map<string, number>();
+  const nodeStateByCode = new Map<string, any>();
 
-  // أولاً: اجلب التصنيفات الموجودة حالياً
   const existingNodes: any[] = await db
     .select()
     .from(schema.catalogNodes);
+  const existingNodeById = new Map<number, any>();
 
   existingNodes.forEach((n: any) => {
-    if (n.code) codeToId.set(n.code, n.id);
+    existingNodeById.set(Number(n.id), { ...n });
+    if (n.code) {
+      codeToId.set(n.code, n.id);
+      nodeStateByCode.set(n.code, { ...n });
+    }
   });
 
-  for (const node of sortedNodes) {
+  const codeAliases: any[] = await db.select().from(schema.catalogCodeAliases);
+  const nodeAliasByOldCode = new Map<string, number>();
+  const itemAliasByOldCode = new Map<string, number>();
+  const aliasedInputNodeCodes = new Set<string>();
+  for (const alias of codeAliases) {
+    const oldCode = String(alias.oldCode || "").trim();
+    if (!oldCode) continue;
+    if (alias.entityType === "node") {
+      const entityId = Number(alias.entityId);
+      nodeAliasByOldCode.set(oldCode, entityId);
+      if (existingNodeById.has(entityId) && !codeToId.has(oldCode)) codeToId.set(oldCode, entityId);
+    }
+    if (alias.entityType === "item") itemAliasByOldCode.set(oldCode, Number(alias.entityId));
+  }
 
-    if (codeToId.has(node.code)) {
-      // تحديث الموجود
+  for (const node of sortedNodes) {
+    const aliasNodeId = nodeAliasByOldCode.get(node.code);
+    const existing = nodeStateByCode.get(node.code) || (aliasNodeId ? existingNodeById.get(aliasNodeId) : undefined);
+    if (aliasNodeId && !existing) {
+      throw new Error(`الكود التاريخي ${node.code} يشير إلى تصنيف غير موجود؛ أوقف الاستيراد وراجع سجل الأكواد التاريخية`);
+    }
+    if (existing) codeToId.set(node.code, Number(existing.id));
+    const resolvedViaAlias = !!aliasNodeId && String(existing?.code || "") !== node.code;
+    if (resolvedViaAlias) aliasedInputNodeCodes.add(node.code);
+    const updateValues = resolvedViaAlias
+      ? { nameAr: node.nameAr, nameEn: node.nameEn }
+      : { nameAr: node.nameAr, nameEn: node.nameEn, level: node.level };
+
+    if (existing) {
       await db
         .update(schema.catalogNodes)
-        .set({
-          nameAr: node.nameAr,
-          nameEn: node.nameEn,
-          level:  node.level,
-        })
-        .where(eq(schema.catalogNodes.code, node.code));
+        .set(updateValues)
+        .where(eq(schema.catalogNodes.id, Number(existing.id)));
 
+      await writeImportAudit(db, audit, {
+        action: "import_update",
+        entityType: "node",
+        entityId: Number(existing.id),
+        oldValues: {
+          sourceCode: node.code,
+          currentCode: existing.code,
+          nameAr: existing.nameAr,
+          nameEn: existing.nameEn,
+          level: existing.level,
+        },
+        newValues: { sourceCode: node.code, currentCode: existing.code, ...updateValues, source: "catalog_import" },
+      });
+      nodeStateByCode.set(node.code, { ...existing, ...updateValues });
     } else {
-      // إدراج جديد بدون parentId أولاً
+      const insertValues = {
+        code:     node.code,
+        nameAr:   node.nameAr,
+        nameEn:   node.nameEn,
+        level:    node.level,
+        isActive: 1,
+      };
       const result = await db
         .insert(schema.catalogNodes)
-        .values({
-          code:     node.code,
-          nameAr:   node.nameAr,
-          nameEn:   node.nameEn,
-          level:    node.level,
-          isActive: 1,
-        });
+        .values(insertValues);
 
-      // استخرج الـ id المُولَّد
-      const insertId =
+      let insertId = Number(
         result[0]?.insertId ??
         result?.insertId   ??
-        result[0]?.id;
+        result[0]?.id      ??
+        0
+      );
 
-      if (insertId) {
-        codeToId.set(node.code, insertId);
-      } else {
-        // fallback: اقرأ من DB
+      if (!insertId) {
         const fresh: any[] = await db
           .select()
           .from(schema.catalogNodes)
           .where(eq(schema.catalogNodes.code, node.code))
           .limit(1);
-        if (fresh[0]) codeToId.set(node.code, fresh[0].id);
+        insertId = Number(fresh[0]?.id || 0);
       }
+
+      if (insertId) {
+        codeToId.set(node.code, insertId);
+        nodeStateByCode.set(node.code, { id: insertId, parentId: null, ...insertValues });
+      }
+
+      await writeImportAudit(db, audit, {
+        action: "import_create",
+        entityType: "node",
+        entityId: insertId || undefined,
+        newValues: { ...insertValues, source: "catalog_import" },
+      });
     }
   }
 
@@ -168,14 +252,30 @@ export async function commitCatalogImport(
 
   for (const node of sortedNodes) {
     if (!node.parentCode) continue;
+    // A file that still uses a historical code must never move the node back to
+    // its old parent/level. The alias is identity-only compatibility.
+    if (aliasedInputNodeCodes.has(node.code)) continue;
 
     const parentId = codeToId.get(node.parentCode);
-    if (!parentId) continue;
+    const nodeId = codeToId.get(node.code);
+    if (!parentId || !nodeId) continue;
+
+    const current = nodeStateByCode.get(node.code) || {};
+    if (Number(current.parentId || 0) === Number(parentId)) continue;
 
     await db
       .update(schema.catalogNodes)
       .set({ parentId })
-      .where(eq(schema.catalogNodes.code, node.code));
+      .where(eq(schema.catalogNodes.id, nodeId));
+
+    await writeImportAudit(db, audit, {
+      action: "import_update",
+      entityType: "node",
+      entityId: nodeId,
+      oldValues: { code: node.code, parentId: current.parentId ?? null },
+      newValues: { code: node.code, parentId, parentCode: node.parentCode, source: "catalog_import" },
+    });
+    nodeStateByCode.set(node.code, { ...current, parentId });
   }
 
   // ── 4. upsert الأصناف ─────────────────────────────────────────────────────
@@ -183,50 +283,92 @@ export async function commitCatalogImport(
   let itemsCount = 0;
 
   for (const item of parsed.items) {
-
     const nodeId = codeToId.get(item.nodeCode);
 
     if (!nodeId) {
-      // التصنيف غير موجود، تخطي هذا الصنف
       console.warn(`SKIP item ${item.code}: nodeCode "${item.nodeCode}" not found`);
       continue;
     }
 
-    const existing: any[] = await db
+    let existing: any[] = await db
       .select()
       .from(schema.catalogItems)
       .where(eq(schema.catalogItems.code, item.code))
       .limit(1);
 
+    if (existing.length === 0) {
+      const aliasItemId = itemAliasByOldCode.get(item.code);
+      if (aliasItemId) {
+        existing = await db.select().from(schema.catalogItems)
+          .where(eq(schema.catalogItems.id, aliasItemId))
+          .limit(1);
+        if (existing.length === 0) {
+          throw new Error(`الكود التاريخي ${item.code} يشير إلى صنف غير موجود؛ أوقف الاستيراد وراجع سجل الأكواد التاريخية`);
+        }
+      }
+    }
+
+    const nextValues = {
+      nameAr:       item.nameAr,
+      nameEn:       item.nameEn,
+      unit:         item.unit || null,
+      manufacturer: item.manufacturer || null,
+      nodeId,
+    };
+
     if (existing.length > 0) {
-      // تحديث
       await db
         .update(schema.catalogItems)
-        .set({
-          nameAr:       item.nameAr,
-          nameEn:       item.nameEn,
-          unit:         item.unit        || null,
-          manufacturer: item.manufacturer || null,
-          nodeId,
-        })
-        .where(eq(schema.catalogItems.code, item.code));
+        .set(nextValues)
+        .where(eq(schema.catalogItems.id, Number(existing[0].id)));
+
+      const before = existing[0] as any;
+      await writeImportAudit(db, audit, {
+        action: "import_update",
+        entityType: "item",
+        entityId: Number(before.id),
+        oldValues: {
+          sourceCode: item.code,
+          currentCode: before.code,
+          nameAr: before.nameAr,
+          nameEn: before.nameEn,
+          unit: before.unit,
+          manufacturer: before.manufacturer,
+          nodeId: before.nodeId,
+        },
+        newValues: { sourceCode: item.code, currentCode: before.code, ...nextValues, source: "catalog_import" },
+      });
     } else {
-      // إدراج جديد
-      await db
+      const insertValues = {
+        code:         item.code,
+        ...nextValues,
+        isActive:     1,
+      };
+      const result = await db
         .insert(schema.catalogItems)
-        .values({
-          code:         item.code,
-          nameAr:       item.nameAr,
-          nameEn:       item.nameEn,
-          unit:         item.unit        || null,
-          manufacturer: item.manufacturer || null,
-          nodeId,
-          isActive:     1,
-        });
+        .values(insertValues);
+      const insertId = Number((result as any)[0]?.insertId || (result as any)?.insertId || 0) || undefined;
+
+      await writeImportAudit(db, audit, {
+        action: "import_create",
+        entityType: "item",
+        entityId: insertId,
+        newValues: { ...insertValues, source: "catalog_import" },
+      });
     }
 
     itemsCount++;
   }
+
+  await writeImportAudit(db, audit, {
+    action: "import_commit",
+    entityType: "catalog_import",
+    newValues: {
+      taxonomyCount: sortedNodes.length,
+      itemsCount,
+      source: "catalog_import",
+    },
+  });
 
   return {
     success:       true,

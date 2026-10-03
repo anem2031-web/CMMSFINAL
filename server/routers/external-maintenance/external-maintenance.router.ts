@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { APP_ROLE } from "@shared/roles";
+import { APP_ROLE, MAINTENANCE_RESPONSIBLE_DEPARTMENT } from "@shared/roles";
 import {
   canGateApproveExternalEntry,
   canGateApproveExternalExit,
@@ -15,6 +15,8 @@ import {
 } from "../_shared/procedures";
 import * as db from "../../_core/db";
 import { assertTicketReadable } from "../tickets/tickets.access";
+import { queueTranslation } from "../../services/translation/translationEngine";
+import { detectLanguage } from "../../services/translation/translation";
 
 function translateExternalDbError(error: unknown): never {
   const code = error instanceof Error ? error.message : String(error);
@@ -32,6 +34,26 @@ function translateExternalDbError(error: unknown): never {
   throw new TRPCError({
     code: code.includes("EXISTS") ? "CONFLICT" : "BAD_REQUEST",
     message: messages[code] || "تعذر تنفيذ إجراء الصيانة الخارجية",
+  });
+}
+
+
+async function queueExternalJobTranslation(
+  jobId: number,
+  fields: Array<{ fieldName: string; text?: string | null }>,
+  userId?: number,
+) {
+  const normalized = fields
+    .map(field => ({ fieldName: field.fieldName, text: (field.text || "").trim() }))
+    .filter(field => field.text.length > 0);
+  if (!normalized.length) return;
+  const sourceLanguage = await detectLanguage(normalized[0].text).catch(() => "ar" as const);
+  await queueTranslation({
+    entityType: "EXTERNAL_MAINTENANCE_JOB",
+    entityId: jobId,
+    fields: normalized,
+    sourceLanguage,
+    userId,
   });
 }
 
@@ -125,6 +147,11 @@ export const externalMaintenanceRouter = router({
         warehouseNotes: input.warehouseNotes,
         warehousePreparedById: ctx.user.id,
       });
+      await queueExternalJobTranslation(result.jobId, [
+        { fieldName: "assetName", text: input.assetName },
+        { fieldName: "assetBeforeCondition", text: input.assetBeforeCondition },
+        { fieldName: "warehouseNotes", text: input.warehouseNotes },
+      ], ctx.user.id);
       const gateUsers = await db.getUsersByRole(APP_ROLE.GATE_SECURITY);
       for (const gateUser of gateUsers) {
         await db.createNotification({
@@ -172,6 +199,9 @@ export const externalMaintenanceRouter = router({
         carrierName: input.carrierName,
         notes: input.notes,
       });
+      await queueExternalJobTranslation(input.jobId, [
+        { fieldName: "gateExitNotes", text: input.notes },
+      ], ctx.user.id);
       if (result.job.delegateId) {
         await db.createNotification({
           userId: result.job.delegateId,
@@ -212,6 +242,9 @@ export const externalMaintenanceRouter = router({
         carrierName: input.carrierName,
         notes: input.notes,
       });
+      await queueExternalJobTranslation(input.jobId, [
+        { fieldName: "gateEntryNotes", text: input.notes },
+      ], ctx.user.id);
       const ticket = await db.getTicketById(result.ticketId);
       const warehouseUsers = await db.getUsersByRole(APP_ROLE.WAREHOUSE);
       for (const warehouseUser of warehouseUsers) {
@@ -253,6 +286,10 @@ export const externalMaintenanceRouter = router({
         ...input,
         warehouseUserId: ctx.user.id,
       });
+      await queueExternalJobTranslation(input.jobId, [
+        { fieldName: "returnCondition", text: input.returnCondition },
+        { fieldName: "warehouseReturnNotes", text: input.notes },
+      ], ctx.user.id);
       await db.createAuditLog({
         userId: ctx.user.id,
         action: "receive_external_asset_by_warehouse",
@@ -284,16 +321,34 @@ export const externalMaintenanceRouter = router({
         APP_ROLE.MAINTENANCE_MANAGER,
         APP_ROLE.GENERAL_MAINTENANCE_MANAGER,
         APP_ROLE.CONSTRUCTION_PROCUREMENT_MANAGER,
+        APP_ROLE.IT_MANAGER,
         APP_ROLE.ADMIN,
         APP_ROLE.OWNER,
       ],
       "يجب اختيار فني أو مسؤول صالح لاستلام الأصل",
     );
+    if (recipient.role === APP_ROLE.IT_MANAGER) {
+      const ticket = await db.getTicketById(job.ticketId);
+      if (
+        !ticket ||
+        ticket.maintenanceResponsibleDepartment !== MAINTENANCE_RESPONSIBLE_DEPARTMENT.IT ||
+        ticket.maintenanceResponsibleManagerId !== recipient.id ||
+        ticket.assignedToId !== recipient.id
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "مدير تقنية المعلومات يمكنه استلام الأصل فقط لبلاغ IT المسند إليه",
+        });
+      }
+    }
     try {
       const result = await db.handoverExternalMaintenanceAsset({
         ...input,
         warehouseUserId: ctx.user.id,
       });
+      await queueExternalJobTranslation(input.jobId, [
+        { fieldName: "handoverNotes", text: input.notes },
+      ], ctx.user.id);
       const recipients = new Set<number>(
         [result.ticket.assignedToId, input.actualRecipientId].filter(
           (recipientId): recipientId is number => typeof recipientId === "number" && recipientId > 0,

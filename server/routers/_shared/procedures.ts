@@ -73,6 +73,32 @@ export const ticketManagerProcedure = roleMiddleware([
   APP_ROLE.ADMIN,
 ]);
 
+/**
+ * Scoped ticket workflow decisions. IT Manager is admitted here only so the
+ * ticket routers can apply per-ticket IT ownership guards; this does NOT make
+ * the role a general maintenance manager. Keep generic manager procedures
+ * unchanged.
+ */
+export const ticketScopedWorkflowManagerProcedure = roleMiddleware([
+  APP_ROLE.MAINTENANCE_MANAGER,
+  APP_ROLE.GENERAL_MAINTENANCE_MANAGER,
+  APP_ROLE.CONSTRUCTION_PROCUREMENT_MANAGER,
+  APP_ROLE.IT_MANAGER,
+  APP_ROLE.OWNER,
+  APP_ROLE.ADMIN,
+]);
+
+/** Closure-capable ticket roles, with IT still constrained by ticket scope. */
+export const ticketScopedClosureProcedure = roleMiddleware([
+  APP_ROLE.SUPERVISOR,
+  APP_ROLE.MAINTENANCE_MANAGER,
+  APP_ROLE.GENERAL_MAINTENANCE_MANAGER,
+  APP_ROLE.CONSTRUCTION_PROCUREMENT_MANAGER,
+  APP_ROLE.IT_MANAGER,
+  APP_ROLE.OWNER,
+  APP_ROLE.ADMIN,
+]);
+
 export const supervisorProcedure = roleMiddleware([
   APP_ROLE.SUPERVISOR,
   APP_ROLE.MAINTENANCE_MANAGER,
@@ -138,6 +164,7 @@ export const catalogReadProcedure = roleMiddleware([
   APP_ROLE.CONSTRUCTION_PROCUREMENT_MANAGER,
   APP_ROLE.PURCHASE_MANAGER,
   APP_ROLE.PURCHASE_REQUESTER,
+  APP_ROLE.IT_MANAGER,
   APP_ROLE.WAREHOUSE,
   APP_ROLE.FOOD_WAREHOUSE_MANAGER,
   APP_ROLE.FOOD_WAREHOUSE_ASSISTANT,

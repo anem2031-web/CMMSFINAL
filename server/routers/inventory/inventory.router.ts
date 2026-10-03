@@ -6,6 +6,7 @@ import { syncPathBTicketFromPurchaseOrder } from "../purchase/ticket-purchase-wo
 import { isInventoryLotsEnabled, resolveInventoryLotForIssue } from "../../_core/inventory-lots";
 import { catalogSuppliers, inventory, inventoryLotBalances, inventoryLots, warehouseReceipts } from "../../../drizzle/schema";
 import { and, desc, eq, gt, or, sql } from "drizzle-orm";
+import { issueCostAllocationsSchema } from "./issue-cost-allocation.schema";
 
 export const inventoryRouter = router({
   list: inventoryReadProcedure.query(async () => {
@@ -156,6 +157,30 @@ export const inventoryRouter = router({
       return db.getInventoryTransactions(input.inventoryId);
     }),
 
+  // قراءة مستقلة لتقارير تحميل تكلفة الصرف حسب اللوت والجهة المستفيدة.
+  // لا تغيّر تقييم المخزون الحالي؛ تعتمد فقط على snapshots المحفوظة وقت الصرف.
+  issueCostAllocations: inventoryReadProcedure
+    .input(z.object({
+      siteId: z.number().int().positive().optional(),
+      sectionId: z.number().int().positive().optional(),
+      assetId: z.number().int().positive().optional(),
+      dateFrom: z.string().optional(),
+      dateTo: z.string().optional(),
+      limit: z.number().int().min(1).max(2000).optional(),
+    }).optional())
+    .query(async ({ input }) => {
+      const dateFrom = input?.dateFrom ? new Date(`${input.dateFrom}T00:00:00`) : undefined;
+      const dateTo = input?.dateTo ? new Date(`${input.dateTo}T23:59:59.999`) : undefined;
+      return db.getIssueCostAllocations({
+        siteId: input?.siteId,
+        sectionId: input?.sectionId,
+        assetId: input?.assetId,
+        dateFrom,
+        dateTo,
+        limit: input?.limit,
+      });
+    }),
+
   // البحث بالباركود
   scanBarcode: warehouseProcedure
     .input(z.object({ code: z.string().min(1) }))
@@ -282,6 +307,7 @@ export const inventoryRouter = router({
           receiptId: lot.receiptId,
           availableQuantity: lot.balanceQuantity,
           remainingQuantity: lot.remainingQuantity,
+          issueUnitCost: Number(lot.issueUnitCost || 0),
         };
       } catch (error: any) {
         throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "رقم اللوت أو QR الدفعة غير صالح للصرف" });
@@ -299,6 +325,7 @@ export const inventoryRouter = router({
       deliveredToId: z.number(),
       deliveredQuantity: z.number().positive(),
       lotTrackingToken: z.string().trim().min(1).optional(),
+      costAllocations: issueCostAllocationsSchema.optional(),
       notes: z.string().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -351,6 +378,7 @@ export const inventoryRouter = router({
         notes: input.notes || "تسليم مادة مرتبطة ببلاغ من المخزون",
         markPurchaseOrderItemDelivered: true,
         lotTrackingToken: input.lotTrackingToken,
+        costAllocations: input.costAllocations,
       });
 
       await syncPathBTicketFromPurchaseOrder(
@@ -380,6 +408,8 @@ export const inventoryRouter = router({
           ticketId: ticket?.id ?? null,
           lotId: deliveryResult.lotId ?? null,
           inventoryTransactionId: deliveryResult.inventoryTransactionId ?? null,
+          costAllocationCount: deliveryResult.costAllocationCount ?? 0,
+          allocatedCostTotal: deliveryResult.allocatedCostTotal ?? null,
         },
       });
 

@@ -16,6 +16,22 @@ const ACTION_COLORS: Record<string, string> = {
   create: "bg-emerald-100 text-emerald-700 border-emerald-200",
   update: "bg-blue-100 text-blue-700 border-blue-200",
   delete: "bg-red-100 text-red-700 border-red-200",
+  import_create: "bg-emerald-100 text-emerald-700 border-emerald-200",
+  import_update: "bg-blue-100 text-blue-700 border-blue-200",
+  import_commit: "bg-indigo-100 text-indigo-700 border-indigo-200",
+  assign_supplier_to_item: "bg-amber-100 text-amber-700 border-amber-200",
+  update_item_supplier_link: "bg-blue-100 text-blue-700 border-blue-200",
+  restore_item_supplier_link: "bg-emerald-100 text-emerald-700 border-emerald-200",
+  remove_supplier_from_item: "bg-red-100 text-red-700 border-red-200",
+  set_preferred_supplier: "bg-yellow-100 text-yellow-700 border-yellow-200",
+  unset_preferred_supplier: "bg-gray-100 text-gray-700 border-gray-200",
+  create_supplier_alias: "bg-amber-100 text-amber-700 border-amber-200",
+  create_supplier_item_alias: "bg-teal-100 text-teal-700 border-teal-200",
+  confirm_supplier_item_alias: "bg-cyan-100 text-cyan-700 border-cyan-200",
+  create_item_candidate: "bg-teal-100 text-teal-700 border-teal-200",
+  create_supplier_candidate: "bg-orange-100 text-orange-700 border-orange-200",
+  add_attachment: "bg-violet-100 text-violet-700 border-violet-200",
+  delete_attachment: "bg-red-100 text-red-700 border-red-200",
   approve: "bg-teal-100 text-teal-700 border-teal-200",
   reject: "bg-rose-100 text-rose-700 border-rose-200",
   assign: "bg-amber-100 text-amber-700 border-amber-200",
@@ -33,6 +49,22 @@ const ACTION_ICONS: Record<string, string> = {
   create: "➕",
   update: "✏️",
   delete: "🗑️",
+  import_create: "📥",
+  import_update: "📥",
+  import_commit: "📦",
+  assign_supplier_to_item: "🔗",
+  update_item_supplier_link: "✏️",
+  restore_item_supplier_link: "♻️",
+  remove_supplier_from_item: "🔓",
+  set_preferred_supplier: "⭐",
+  unset_preferred_supplier: "☆",
+  create_supplier_alias: "🏷️",
+  create_supplier_item_alias: "🔗",
+  confirm_supplier_item_alias: "✅",
+  create_item_candidate: "🆕",
+  create_supplier_candidate: "🆕",
+  add_attachment: "🖼️",
+  delete_attachment: "🗑️",
   approve: "✅",
   reject: "❌",
   assign: "👤",
@@ -58,6 +90,12 @@ const ENTITY_COLORS: Record<string, string> = {
   node: "bg-violet-50 text-violet-700",
   unit: "bg-cyan-50 text-cyan-700",
   supplier: "bg-amber-50 text-amber-700",
+  catalog_item: "bg-emerald-50 text-emerald-700",
+  item_supplier: "bg-amber-50 text-amber-700",
+  supplier_alias: "bg-orange-50 text-orange-700",
+  supplier_item_alias: "bg-teal-50 text-teal-700",
+  catalog_import: "bg-indigo-50 text-indigo-700",
+  catalog_ai_matching: "bg-cyan-50 text-cyan-700",
   catalog_item_candidate: "bg-teal-50 text-teal-700",
   supplier_candidate: "bg-orange-50 text-orange-700",
   application_update: "bg-blue-50 text-blue-700",
@@ -119,7 +157,63 @@ export default function AuditLog() {
         pwa_update_forced: "لازمی اپ ڈیٹ",
       },
     };
-    return pwaLabels[language]?.[action] || (t.audit as any)[action] || action;
+    const catalogLabels: Record<string, Record<string, string>> = {
+      ar: {
+        import_create: "إنشاء عبر استيراد الكتالوج",
+        import_update: "تعديل عبر استيراد الكتالوج",
+        import_commit: "اعتماد استيراد الكتالوج",
+        assign_supplier_to_item: "ربط مورد بصنف",
+        update_item_supplier_link: "تعديل ربط مورد بصنف",
+        restore_item_supplier_link: "إعادة تفعيل ربط مورد بصنف",
+        remove_supplier_from_item: "فك ربط مورد من صنف",
+        set_preferred_supplier: "تحديد المورد المفضل",
+        unset_preferred_supplier: "إلغاء المورد المفضل",
+        create_supplier_alias: "إضافة اسم بديل للمورد",
+        create_supplier_item_alias: "إضافة ذاكرة صنف للمورد",
+        confirm_supplier_item_alias: "تأكيد ذاكرة صنف للمورد",
+        create_item_candidate: "إنشاء مرشح صنف جديد",
+        create_supplier_candidate: "إنشاء مرشح مورد جديد",
+        add_attachment: "إضافة صورة/مرفق",
+        delete_attachment: "حذف صورة/مرفق",
+      },
+      en: {
+        import_create: "Create via catalog import",
+        import_update: "Update via catalog import",
+        import_commit: "Commit catalog import",
+        assign_supplier_to_item: "Link supplier to item",
+        update_item_supplier_link: "Update item supplier link",
+        restore_item_supplier_link: "Restore item supplier link",
+        remove_supplier_from_item: "Unlink supplier from item",
+        set_preferred_supplier: "Set preferred supplier",
+        unset_preferred_supplier: "Unset preferred supplier",
+        create_supplier_alias: "Create supplier alias",
+        create_supplier_item_alias: "Create supplier item memory",
+        confirm_supplier_item_alias: "Confirm supplier item memory",
+        create_item_candidate: "Create item candidate",
+        create_supplier_candidate: "Create supplier candidate",
+        add_attachment: "Add image/attachment",
+        delete_attachment: "Delete image/attachment",
+      },
+      ur: {
+        import_create: "کیٹلاگ درآمد سے نیا ریکارڈ",
+        import_update: "کیٹلاگ درآمد سے ترمیم",
+        import_commit: "کیٹلاگ درآمد منظور",
+        assign_supplier_to_item: "سپلائر کو آئٹم سے جوڑنا",
+        update_item_supplier_link: "سپلائر-آئٹم ربط میں ترمیم",
+        restore_item_supplier_link: "سپلائر-آئٹم ربط بحال",
+        remove_supplier_from_item: "سپلائر کا ربط ختم",
+        set_preferred_supplier: "ترجیحی سپلائر مقرر",
+        unset_preferred_supplier: "ترجیحی سپلائر ختم",
+        create_supplier_alias: "سپلائر متبادل نام شامل",
+        create_supplier_item_alias: "سپلائر آئٹم یادداشت شامل",
+        confirm_supplier_item_alias: "سپلائر آئٹم یادداشت کی تصدیق",
+        create_item_candidate: "نیا آئٹم امیدوار",
+        create_supplier_candidate: "نیا سپلائر امیدوار",
+        add_attachment: "تصویر/منسلکہ شامل",
+        delete_attachment: "تصویر/منسلکہ حذف",
+      },
+    };
+    return pwaLabels[language]?.[action] || catalogLabels[language]?.[action] || (t.audit as any)[action] || action;
   };
   const getUserName = (userId: number | null) => {
     if (!userId) return t.common.all;
@@ -140,6 +234,12 @@ export default function AuditLog() {
       node: language === "ar" ? "تصنيف الكتالوج" : language === "ur" ? "کیٹلاگ زمرہ" : "Catalog Category",
       unit: language === "ar" ? "وحدة قياس" : language === "ur" ? "پیمائش یونٹ" : "Catalog Unit",
       supplier: language === "ar" ? "مورد الكتالوج" : language === "ur" ? "کیٹلاگ سپلائر" : "Catalog Supplier",
+      catalog_item: language === "ar" ? "صورة/مرفق صنف الكتالوج" : language === "ur" ? "کیٹلاگ آئٹم منسلکہ" : "Catalog Item Attachment",
+      item_supplier: language === "ar" ? "ربط الصنف بالمورد" : language === "ur" ? "آئٹم-سپلائر ربط" : "Item Supplier Link",
+      supplier_alias: language === "ar" ? "اسم بديل للمورد" : language === "ur" ? "سپلائر متبادل نام" : "Supplier Alias",
+      supplier_item_alias: language === "ar" ? "ذاكرة صنف المورد" : language === "ur" ? "سپلائر آئٹم یادداشت" : "Supplier Item Memory",
+      catalog_import: language === "ar" ? "استيراد الكتالوج" : language === "ur" ? "کیٹلاگ درآمد" : "Catalog Import",
+      catalog_ai_matching: language === "ar" ? "مطابقة الكتالوج الذكية" : language === "ur" ? "کیٹلاگ AI میچنگ" : "Catalog AI Matching",
       catalog_item_candidate: language === "ar" ? "مرشح صنف" : language === "ur" ? "آئٹم امیدوار" : "Item Candidate",
       supplier_candidate: language === "ar" ? "مرشح مورد" : language === "ur" ? "سپلائر امیدوار" : "Supplier Candidate",
       application_update: language === "ar" ? "تحديث التطبيق" : language === "ur" ? "ایپ اپ ڈیٹ" : "Application Update",
@@ -156,7 +256,9 @@ export default function AuditLog() {
       const entity = getEntityLabel(log.entityType).toLowerCase();
       const action = getActionLabel(log.action).toLowerCase();
       const details = log.details ? JSON.stringify(log.details).toLowerCase() : "";
-      return actor.includes(q) || entity.includes(q) || action.includes(q) || details.includes(q) || String(log.entityId).includes(q);
+      const oldValues = log.oldValues ? JSON.stringify(log.oldValues).toLowerCase() : "";
+      const newValues = log.newValues ? JSON.stringify(log.newValues).toLowerCase() : "";
+      return actor.includes(q) || entity.includes(q) || action.includes(q) || details.includes(q) || oldValues.includes(q) || newValues.includes(q) || String(log.entityId).includes(q);
     });
   }, [logs, searchQuery, users]);
 
@@ -319,7 +421,10 @@ export default function AuditLog() {
                           </span>
                           <span className="flex items-center gap-1">
                             <Calendar className="w-3 h-3" />
-                            {new Date(log.createdAt).toLocaleString(locale)}
+                            {new Date(log.createdAt).toLocaleString(locale, {
+                              year: "numeric", month: "2-digit", day: "2-digit",
+                              hour: "2-digit", minute: "2-digit", second: "2-digit",
+                            })}
                           </span>
                         </div>
                         {/* Inline preview of changes */}

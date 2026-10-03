@@ -1,14 +1,9 @@
 // ============================================================
 // مركز المستندات — /documents
-// صفحة تجميع وقراءة فقط لستة أنواع مستندات موجودة أصلاً بالنظام:
-// طلب شراء، سند استلام، سند تسليم، سند مرتجع، عملية استبعاد،
-// عملية جرد، تسوية جرد.
-//
-// مبدأ أساسي: هذه الصفحة لا تُنشئ أي منطق طباعة أو صلاحيات جديد.
-// تستخدم بالضبط نفس استعلامات tRPC التي تستخدمها الصفحات الأصلية
-// لكل نوع (نفس نطاق الرؤية والأدوار)، وتستدعي نفس قوالب الطباعة
-// المشتركة (client/src/lib/print*.ts) التي استُخرجت من تلك الصفحات
-// بلا أي تعديل. لا جداول جديدة، لا أرقام تسلسلية جديدة، لا Workflow.
+// صفحة تجميع وقراءة فقط لمستندات الشراء والمخزون الموجودة بالنظام.
+// Patch 124 أضاف نوع WIS (سند صرف مخزني تجميعي) بتسلسله وقالب طباعته
+// الخاصين، مع بقاء DLV وحركات المخزون الأصلية كمصدر التأثير التشغيلي.
+// مركز المستندات لا ينفذ الصرف؛ يعرض المستندات ويعيد طباعتها فقط.
 // ============================================================
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -27,13 +22,14 @@ import {
 import { toast } from "sonner";
 import { buildReceiptHtml } from "@/lib/printReceiptDocument";
 import { buildDeliveryReceiptHtml } from "@/lib/printDeliveryDocument";
+import { buildWarehouseIssueHtml } from "@/lib/printWarehouseIssueDocument";
 import { buildReturnDocumentHtml } from "@/lib/printReturnDocument";
 import {
   buildDisposalHtml, buildCountHtml, buildSettlementHtml,
 } from "@/lib/printInventoryOperationDocuments";
 import { viewDocumentAsPdf, downloadDocumentAsPdf } from "@/lib/exportHtmlToPdf";
 
-type DocType = "purchase_order" | "receipt" | "delivery" | "return" | "disposal" | "count" | "settlement" | "delegate_pricing_documents" | "po_financial_batch";
+type DocType = "purchase_order" | "receipt" | "delivery" | "warehouse_issue" | "return" | "disposal" | "count" | "settlement" | "delegate_pricing_documents" | "po_financial_batch";
 
 type DocRow = {
   type: DocType;
@@ -50,6 +46,7 @@ const TYPE_META: Record<DocType, { label: string; icon: any; color: string }> = 
   purchase_order: { label: "طلب شراء",      icon: ShoppingCart,   color: "bg-indigo-100 text-indigo-700 border-indigo-200" },
   receipt:        { label: "سند استلام",    icon: PackageCheck,   color: "bg-green-100 text-green-700 border-green-200" },
   delivery:       { label: "سند تسليم",     icon: Truck,          color: "bg-blue-100 text-blue-700 border-blue-200" },
+  warehouse_issue:{ label: "سند صرف مخزني", icon: Truck,          color: "bg-cyan-100 text-cyan-800 border-cyan-200" },
   return:         { label: "سند مرتجع",     icon: RotateCcw,      color: "bg-orange-100 text-orange-700 border-orange-200" },
   disposal:       { label: "عملية استبعاد", icon: Trash2,         color: "bg-red-100 text-red-700 border-red-200" },
   count:          { label: "عملية جرد",     icon: ClipboardCheck, color: "bg-teal-100 text-teal-700 border-teal-200" },
@@ -106,6 +103,7 @@ export default function DocumentsCenter() {
   const poQ       = trpc.purchaseOrders.list.useQuery({}, { enabled: canViewGeneralDocs });
   const receiptsQ = trpc.warehouseReceipts.list.useQuery(undefined, { enabled: canViewGeneralDocs });
   const deliveryQ = trpc.deliveryDocuments.list.useQuery(undefined, { enabled: canViewGeneralDocs });
+  const warehouseIssueQ = trpc.warehouseIssueBatches.list.useQuery(undefined, { enabled: canViewGeneralDocs });
   const returnQ   = trpc.returnDocuments.list.useQuery(undefined, { enabled: canViewGeneralDocs });
   const disposalQ = trpc.disposal.list.useQuery(undefined, { enabled: canViewGeneralDocs });
   const countQ    = trpc.inventoryCount.listOperations.useQuery(undefined, { enabled: canViewGeneralDocs });
@@ -141,14 +139,14 @@ export default function DocumentsCenter() {
     ? financialDocsQ.isLoading
     : isDelegateOnly
       ? delegatePricingDocsQ.isLoading
-      : (poQ.isLoading || receiptsQ.isLoading || deliveryQ.isLoading ||
+      : (poQ.isLoading || receiptsQ.isLoading || deliveryQ.isLoading || warehouseIssueQ.isLoading ||
          returnQ.isLoading || disposalQ.isLoading || countQ.isLoading || settleQ.isLoading ||
          (canViewFinancialDocs && financialDocsQ.isLoading) ||
          (canViewDelegatePricingDocs && delegatePricingDocsQ.isLoading));
 
   const refresh = () => {
     if (canViewGeneralDocs) {
-      poQ.refetch(); receiptsQ.refetch(); deliveryQ.refetch();
+      poQ.refetch(); receiptsQ.refetch(); deliveryQ.refetch(); warehouseIssueQ.refetch();
       returnQ.refetch(); disposalQ.refetch(); countQ.refetch(); settleQ.refetch();
     }
     if (canViewFinancialDocs) financialDocsQ.refetch();
@@ -169,6 +167,10 @@ export default function DocumentsCenter() {
     (deliveryQ.data as any[] || []).forEach(d => out.push({
       type: "delivery", id: d.id, documentNumber: d.deliveryNumber,
       date: d.createdAt, referenceLabel: d.deliveredToName || "—", printCount: d.printCount ?? 0,
+    }));
+    (warehouseIssueQ.data as any[] || []).forEach(w => out.push({
+      type: "warehouse_issue", id: w.id, documentNumber: w.issueNumber,
+      date: w.createdAt, referenceLabel: `${w.warehouseName || "—"} ← ${w.deliveredToName || "—"}`, printCount: w.printCount ?? 0,
     }));
     (returnQ.data as any[] || []).forEach(r => out.push({
       type: "return", id: r.id, documentNumber: r.returnNumber,
@@ -203,7 +205,7 @@ export default function DocumentsCenter() {
       }));
     }
     return out;
-  }, [poQ.data, receiptsQ.data, deliveryQ.data, returnQ.data, disposalQ.data, countQ.data, settleQ.data, canViewFinancialDocs, canViewDelegatePricingDocs, financialDocsQ.data, delegatePricingDocsQ.data]);
+  }, [poQ.data, receiptsQ.data, deliveryQ.data, warehouseIssueQ.data, returnQ.data, disposalQ.data, countQ.data, settleQ.data, canViewFinancialDocs, canViewDelegatePricingDocs, financialDocsQ.data, delegatePricingDocsQ.data]);
 
   // ── الفلترة والبحث والترتيب — على القائمة المجمَّعة كاملة ──
   const filtered = useMemo(() => {
@@ -253,6 +255,7 @@ export default function DocumentsCenter() {
 
   const utils = trpc.useUtils();
   const incrementDeliveryPrintMut = trpc.deliveryDocuments.incrementPrint.useMutation();
+  const incrementWarehouseIssuePrintMut = trpc.warehouseIssueBatches.incrementPrint.useMutation();
   const incrementReturnPrintMut   = trpc.returnDocuments.incrementPrint.useMutation();
   const incrementReceiptPrintMut  = trpc.warehouseReceipts.incrementPrint.useMutation();
 
@@ -281,6 +284,10 @@ export default function DocumentsCenter() {
       }
       case "delivery":
         return buildDeliveryReceiptHtml(buildDeliveryData(row));
+      case "warehouse_issue": {
+        const data = await utils.warehouseIssueBatches.getById.fetch({ id: row.id });
+        return buildWarehouseIssueHtml(data as any);
+      }
       case "return": {
         const full = (returnQ.data as any[] || []).find(r => r.id === row.id);
         if (!full) throw new Error("تعذر إيجاد بيانات سند المرتجع");
@@ -307,6 +314,7 @@ export default function DocumentsCenter() {
   const incrementPrintForRow = (row: DocRow) => {
     if (row.type === "receipt") incrementReceiptPrintMut.mutate({ id: row.id });
     else if (row.type === "delivery") incrementDeliveryPrintMut.mutate({ id: row.id });
+    else if (row.type === "warehouse_issue") incrementWarehouseIssuePrintMut.mutate({ id: row.id });
     else if (row.type === "return") incrementReturnPrintMut.mutate({ id: row.id });
   };
 

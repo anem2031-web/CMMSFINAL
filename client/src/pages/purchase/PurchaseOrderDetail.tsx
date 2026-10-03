@@ -13,15 +13,18 @@ import {
   ArrowRight, ShoppingCart, CheckCircle2, Clock, DollarSign, Loader2,
   Camera, Package, User, FileText, AlertCircle, ExternalLink, XCircle, Pencil, Upload, FileDown, Ban
 } from "lucide-react";
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useTranslation } from "@/contexts/LanguageContext";
 import { useTranslatedField } from "@/hooks/useTranslatedField";
-import { useStaticLabels, getLocalizedItemField, useEntityTranslation } from "@/hooks/useContentTranslation";
+import { useStaticLabels, getLocalizedItemField, useEntityTranslation, useBatchTranslation } from "@/hooks/useContentTranslation";
 import DropZone, { type UploadedFile } from "@/components/common/DropZone";
+import { EntityTranslatedText } from "@/components/i18n/EntityTranslatedText";
+import { localizeApiError } from "@/i18n/apiError";
+import { getLocalizedCatalogUnitName } from "@/i18n/catalogMasterData";
 
 const PO_STATUS_COLORS: Record<string, string> = {
   draft: "bg-gray-100 text-gray-700",
@@ -72,7 +75,7 @@ function numberToWords(num: number, language: string): string {
   }
   if (language !== "ar") {
     // Urdu: numeric display
-    return `${num.toLocaleString("ur-PK")} روپے`;
+    return `${num.toLocaleString("ur-PK")} سعودی ریال`;
   }
   // Arabic
   if (num === 0) return "صفر ريال";
@@ -100,13 +103,16 @@ export default function PurchaseOrderDetail() {
   const [, params] = useRoute("/purchase-orders/:id");
   const [, setLocation] = useLocation();
   const { user } = useAuth();
-  const { t, language } = useTranslation();
+  const { t, language, dir } = useTranslation();
   const { getField } = useTranslatedField();
   const { getPOStatusLabel, getPOItemStatusLabel } = useStaticLabels();
   const locale = language === "ar" ? "ar-SA" : language === "ur" ? "ur-PK" : "en-US";
   const currency = t.common.currency;
   const poId = parseInt(params?.id || "0");
   const utils = trpc.useUtils();
+  const { data: catalogUnits = [] } = trpc.catalog.units.list.useQuery();
+  const displayUnit = (value: string | null | undefined) =>
+    getLocalizedCatalogUnitName(value, catalogUnits as any[], language);
 
   const { data: po, isLoading, refetch } = trpc.purchaseOrders.getById.useQuery({ id: poId }, { enabled: !!poId });
   const { data: users } = trpc.users.list.useQuery();
@@ -146,18 +152,26 @@ export default function PurchaseOrderDetail() {
   const getItemField = (item: any, fieldName: string) =>
     getLocalizedItemField(item, fieldName, language);
 
-  const estimateMut = trpc.purchaseOrders.estimateCost.useMutation({ onSuccess: () => { toast.success(t.common.save); refetch(); refetchBatches(); }, onError: (e) => toast.error(e.message) });
+  const { translationsMap: itemWorkflowTranslations } = useBatchTranslation(
+    "PO_ITEM",
+    (po?.items ?? []).map((item: any) => Number(item.id)).filter((id: number) => Number.isFinite(id)),
+    ["delegateChangeReason", "managementRejectionReason", "itemRevisionNote", "purchaseCancelReason", "returnReason"],
+  );
+  const getItemWorkflowField = (item: any, fieldName: string) =>
+    itemWorkflowTranslations[Number(item.id)]?.[fieldName] || item?.[fieldName] || "";
+
+  const estimateMut = trpc.purchaseOrders.estimateCost.useMutation({ onSuccess: () => { toast.success(t.common.save); refetch(); refetchBatches(); }, onError: (e) => toast.error(localizeApiError(e.message)) });
   const submitPricedBatchMut = trpc.purchaseOrders.submitPricedBatch.useMutation({
     onSuccess: (res: any) => {
-      toast.success(`تم إرسال ${res.itemCount} صنف للحسابات (دفعة رقم ${res.batchNumber})`);
+      toast.success(t.workflow.purchase.pricingSentBatch.replace("{count}", String(res.itemCount)).replace("{batch}", String(res.batchNumber)));
       if (res.pricingDocumentArchived === false) {
-        toast.warning("تم إرسال التسعير للحسابات، لكن تعذر حفظ وثيقة التسعير في مركز المستندات");
+        toast.warning(t.workflow.purchase.pricingDocumentWarning);
       }
       utils.attachments.listByType.invalidate({ entityType: "delegate_pricing_documents" });
       refetch();
       refetchBatches();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
   const { data: pricingBatches = [], refetch: refetchBatches } = trpc.purchaseOrders.listPricingBatches.useQuery(
     { purchaseOrderId: poId },
@@ -165,19 +179,19 @@ export default function PurchaseOrderDetail() {
   );
   const approveAccountingBatchMut = trpc.purchaseOrders.approveAccountingBatch.useMutation({
     onSuccess: (result: any, variables: any) => {
-      toast.success("تم اعتماد الدفعة");
+      toast.success(t.workflow.purchase.batchApprovedSuccess);
       if (result?.financialDocumentArchived === false) {
-        toast.warning("تم اعتماد الدفعة، لكن تعذر حفظ الوثيقة المالية في مركز المستندات");
+        toast.warning(t.workflow.purchase.financialDocumentWarning);
       }
       utils.attachments.listByType.invalidate({ entityType: "po_financial_batch" });
       refetch(); refetchBatches();
       printPurchasePdf(variables.batchId);
     },
-    onError: (e: any) => { toast.error(e.message); refetch(); refetchBatches(); },
+    onError: (e: any) => { toast.error(localizeApiError(e.message)); refetch(); refetchBatches(); },
   });
   const approveManagementBatchMut = trpc.purchaseOrders.approveManagementBatch.useMutation({
-    onSuccess: () => { toast.success("تم اعتماد الدفعة"); refetch(); refetchBatches(); },
-    onError: (e: any) => { toast.error(e.message); refetch(); refetchBatches(); },
+    onSuccess: () => { toast.success(t.workflow.purchase.batchApprovedSuccess); refetch(); refetchBatches(); },
+    onError: (e: any) => { toast.error(localizeApiError(e.message)); refetch(); refetchBatches(); },
   });
 
   // رفض صنف فوري أثناء مراجعة الحسابات لدفعة تسعير — 2026-08-10.
@@ -188,72 +202,72 @@ export default function PurchaseOrderDetail() {
   const rejectAccountingBatchItemMut = trpc.purchaseOrders.rejectAccountingBatchItem.useMutation({
     onSuccess: (res: any) => {
       toast.success(
-        res?.batchNowClosed ? "تم رفض الصنف — رُفضت الدفعة بالكامل لعدم وجود أصناف فعّالة متبقية" :
-        res?.poNowClosed ? "تم رفض الصنف — رُفض الطلب بالكامل لعدم وجود أصناف فعّالة متبقية" :
-        "تم رفض الصنف"
+        res?.batchNowClosed ? t.workflow.purchase.batchRejectedAll :
+        res?.poNowClosed ? t.workflow.purchase.orderRejectedAll :
+        t.workflow.purchase.itemRejected
       );
       setRejectItemDialog(null);
       setRejectItemReason("");
       refetch(); refetchBatches();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
-  const reviewItemsMut = trpc.purchaseOrders.reviewItems.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e) => toast.error(e.message) });
+  const reviewItemsMut = trpc.purchaseOrders.reviewItems.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e) => toast.error(localizeApiError(e.message)) });
   const approveAccMut = trpc.purchaseOrders.approveAccounting.useMutation({
     onSuccess: () => {
       toast.success(t.common.confirm);
       refetch();
       printPurchasePdf();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
-  const approveMgmtMut = trpc.purchaseOrders.approveManagement.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e) => toast.error(e.message) });
-  const rejectMut = trpc.purchaseOrders.reject.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e) => toast.error(e.message) });
-  const confirmPurchaseMut = trpc.purchaseOrders.confirmItemPurchase.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e) => toast.error(e.message) });
+  const approveMgmtMut = trpc.purchaseOrders.approveManagement.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e) => toast.error(localizeApiError(e.message)) });
+  const rejectMut = trpc.purchaseOrders.reject.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e) => toast.error(localizeApiError(e.message)) });
+  const confirmPurchaseMut = trpc.purchaseOrders.confirmItemPurchase.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e) => toast.error(localizeApiError(e.message)) });
   const cancelPurchaseMut = trpc.purchaseOrders.cancelItemPurchase.useMutation({
     onSuccess: () => { toast.success(t.purchaseOrders.cancelPurchaseSuccess); refetch(); setCancelPurchaseDialog(null); setCancelPurchaseNote(""); },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
-  const receiveItemMut = trpc.purchaseOrders.confirmDeliveryToWarehouse.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e: any) => toast.error(e.message) });
-  const editItemMut = trpc.purchaseOrders.editItem.useMutation({ onSuccess: () => { toast.success(t.common.savedSuccessfully); setEditingItem(null); refetch(); }, onError: (e: any) => toast.error(e.message) });
+  const receiveItemMut = trpc.purchaseOrders.confirmDeliveryToWarehouse.useMutation({ onSuccess: () => { toast.success(t.common.confirm); refetch(); }, onError: (e: any) => toast.error(localizeApiError(e.message)) });
+  const editItemMut = trpc.purchaseOrders.editItem.useMutation({ onSuccess: () => { toast.success(t.common.savedSuccessfully); setEditingItem(null); refetch(); }, onError: (e: any) => toast.error(localizeApiError(e.message)) });
   const editAndResubmitReturnedItemMut = trpc.purchaseOrders.editAndResubmitReturnedItem.useMutation({
     onSuccess: () => {
       toast.success(t.purchaseOrders.itemSavedAndResubmitted);
       setEditingItem(null);
       refetch();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
-  const cancelItemMut = trpc.purchaseOrders.cancelItem.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.cancelItemSuccess); refetch(); refetchBatches(); }, onError: (e: any) => toast.error(e.message) });
+  const cancelItemMut = trpc.purchaseOrders.cancelItem.useMutation({ onSuccess: () => { toast.success(t.purchaseOrders.cancelItemSuccess); refetch(); refetchBatches(); }, onError: (e: any) => toast.error(localizeApiError(e.message)) });
   const requestItemRevisionMut = trpc.purchaseOrders.requestItemRevision.useMutation({
   onSuccess: () => {
     toast.success(t.purchaseOrders.itemRevisionRequested);
     refetch();
   },
-  onError: (e: any) => toast.error(e.message)
+  onError: (e: any) => toast.error(localizeApiError(e.message))
 });
 
   const requestDelegateChangeMut = trpc.purchaseOrders.requestDelegateChange.useMutation({
     onSuccess: () => {
-      toast.success("تم إرسال طلب تغيير المندوب إلى مدير الصيانة");
+      toast.success(t.workflow.purchase.delegateChangeSent);
       setDelegateChangeDialogItem(null);
       setDelegateChangeReason("");
       refetch();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
 
   const resolveDelegateChangeMut = trpc.purchaseOrders.resolveDelegateChange.useMutation({
     onSuccess: () => {
-      toast.success("تم تعيين مندوب الصنف");
+      toast.success(t.workflow.purchase.itemDelegateAssigned);
       refetch();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
 
 const submitDraftMut = trpc.purchaseOrders.submitDraft.useMutation({
     onSuccess: () => { toast.success(t.purchaseOrders.submitDraftSuccess); refetch(); },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
 
   const resubmitItemRevisionMut = trpc.purchaseOrders.resubmitItemRevision.useMutation({
@@ -261,26 +275,44 @@ const submitDraftMut = trpc.purchaseOrders.submitDraft.useMutation({
     toast.success(t.purchaseOrders.itemResubmitted);
     refetch();
   },
-  onError: (e: any) => toast.error(e.message)
+  onError: (e: any) => toast.error(localizeApiError(e.message))
 });
 
   const resubmitCancelledPurchaseMut = trpc.purchaseOrders.resubmitCancelledPurchase.useMutation({
     onSuccess: () => { toast.success(t.purchaseOrders.itemResubmittedToDelegate); refetch(); },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
 
   const finalizeCancelledItemMut = trpc.purchaseOrders.finalizeCancelledItem.useMutation({
     onSuccess: () => { toast.success(t.purchaseOrders.itemCancelledFinal); refetch(); },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(localizeApiError(e.message)),
   });
   const role = user?.role || "";
   const userId = user?.id;
-  // عند فتح PR من «بانتظار إجرائي» لتنفيذ الشراء، نعرض للمندوب فقط
-  // الأصناف التي وصلت فعلًا لمرحلة الشراء؛ الأصناف غير المسعّرة تبقى ضمن PB.
-  const isDelegatePurchaseActionView =
-    role === "delegate" &&
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("action") === "purchase";
+  // عند فتح PR من «بانتظار إجرائي» نعرض للمندوب فقط الأصناف التي
+  // تتطلب منه الإجراء الذي ضغطه: تسعير أو شراء أو كلاهما. الفتح العادي
+  // للطلب يبقى كما كان ويعرض كل أصناف المندوب المرتبطة به.
+  const delegateActionView =
+    role === "delegate" && typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("action")
+      : null;
+  const focusedItemId =
+    typeof window !== "undefined"
+      ? Number(new URLSearchParams(window.location.search).get("itemId") || 0) || null
+      : null;
+
+  // فتح الصنف من أي قائمة مسطحة (المندوب أو «متابعة أصنافي») يمرر itemId؛
+  // التركيز البصري لا يغيّر الصلاحيات ولا فلترة المندوب، بل يوجّه المستخدم فقط.
+  useEffect(() => {
+    if (!focusedItemId || !po?.items?.length || typeof document === "undefined") return;
+    const timer = window.setTimeout(() => {
+      document.getElementById(`purchase-order-item-${focusedItemId}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [focusedItemId, po?.items?.length]);
 
   const [estimates, setEstimates] = useState<Record<number, string>>({});
   const [rejectReason, setRejectReason] = useState("");
@@ -379,7 +411,7 @@ const submitDraftMut = trpc.purchaseOrders.submitDraft.useMutation({
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      toast.error("تعذر تنزيل مستند دفعة الإرسال الرسمي");
+      toast.error(t.workflow.purchase.dispatchDocumentDownloadFailed);
     } finally {
       setExportingSubmissionId(null);
     }
@@ -416,11 +448,11 @@ const submitDraftMut = trpc.purchaseOrders.submitDraft.useMutation({
         a.href = url;
         a.download = `${po.poNumber || `po-${po.id}`}${batchId ? `-batch${batchId}` : ""}.pdf`;
         a.click();
-        toast.error("تعذر فتح نافذة الطباعة تلقائياً (على الأغلب المتصفح منع النافذة) — تم تنزيل الملف بدلاً من ذلك، افتحه واطبعه يدوياً");
+        toast.error(t.workflow.purchase.printPopupFailed);
       }
       setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch (err) {
-      toast.error("تعذر تجهيز ملف الطباعة");
+      toast.error(t.workflow.purchase.printPrepareFailed);
     } finally {
       printWindowRef.current = null;
     }
@@ -432,17 +464,17 @@ const submitDraftMut = trpc.purchaseOrders.submitDraft.useMutation({
 
   const requestRevisionMut = trpc.purchaseOrders.requestRevision.useMutation({
     onSuccess: () => { toast.success(t.purchaseOrders.submitDraftSuccess); setIsRevisionDialogOpen(false); setRevisionNote(""); refetch(); },
-    onError: (e) => toast.error(e.message)
+    onError: (e) => toast.error(localizeApiError(e.message))
   });
 
   const resubmitMut = trpc.purchaseOrders.resubmit.useMutation({
     onSuccess: () => { toast.success(t.purchaseOrders.resubmit); setResubmitNote(""); refetch(); },
-    onError: (e) => toast.error(e.message)
+    onError: (e) => toast.error(localizeApiError(e.message))
   });
 
   const closeMut = trpc.purchaseOrders.close.useMutation({
     onSuccess: () => { toast.success(t.purchaseOrders.closeOrderSuccess); refetch(); },
-    onError: (e) => toast.error(e.message)
+    onError: (e) => toast.error(localizeApiError(e.message))
   });
 
   const readyToSubmitCount = (po?.items || []).filter((i: any) => i.status === "estimated" && !i.batchId && !i.delegateChangeRequestedAt).length;
@@ -498,14 +530,21 @@ const visibleItems = useMemo(() => {
   if (isAdminOrOwner || isMaintenanceManagerVariant) return po.items;
 
   if (role === "delegate") {
-    return po.items.filter(
-      (item: any) =>
-        item.delegateId === userId &&
-        (
-          !isDelegatePurchaseActionView ||
-          ["approved", "funded"].includes(item.status)
-        )
-    );
+    return po.items.filter((item: any) => {
+      if (item.delegateId !== userId) return false;
+
+      const needsEstimate =
+        !item.batchId &&
+        !item.delegateChangeRequestedAt &&
+        ["pending", "estimated"].includes(item.status);
+      const needsPurchase = ["approved", "funded"].includes(item.status);
+
+      if (delegateActionView === "estimate") return needsEstimate;
+      if (delegateActionView === "purchase") return needsPurchase;
+      if (delegateActionView === "mixed") return needsEstimate || needsPurchase;
+
+      return true;
+    });
   }
 
   // منشئ الطلب دائماً يرى جميع الأصناف بما فيها needs_item_revision
@@ -522,7 +561,7 @@ const visibleItems = useMemo(() => {
     role === "food_warehouse_manager"
   ) {
     // ⚠️ 2026-08-10 (تصحيح): دور الحسابات يرى فقط الأصناف **الجاهزة فعليًا
-    // لقراره الآن** — نفس الشرط تمامًا الذي يُظهر زر "رفض الصنف" (canRejectThisItem)
+    // لقراره الآن** — نفس الشرط تمامًا الذي يُظهر زر "{t.workflow.purchase.rejectItem}" (canRejectThisItem)
     // لا كل الأصناف التي مرّت بمرحلة الحسابات تاريخيًا. صنف مرفوض مسبقًا، أو
     // بدفعة اعتُمدت/رُفضت بالفعل، أو بطلب تجاوز مرحلة الحسابات = لا يظهر.
     if (role === "accountant") {
@@ -549,9 +588,30 @@ const visibleItems = useMemo(() => {
   }
 
   return po.items;
-}, [po?.items, po?.status, isAdminOrOwner, role, userId, pricingBatches, isDelegatePurchaseActionView]);
+}, [po?.items, po?.status, isAdminOrOwner, role, userId, pricingBatches, delegateActionView]);
   const totalEstimated = useMemo(() => visibleItems.filter((item: any) => !["rejected", "cancelled", "purchase_cancelled"].includes(item.status)).reduce((sum: number, item: any) => sum + (parseFloat(item.estimatedTotalCost || "0")), 0), [visibleItems]);
   const totalActual = useMemo(() => visibleItems.filter((item: any) => !["rejected", "cancelled", "purchase_cancelled"].includes(item.status)).reduce((sum: number, item: any) => sum + (parseFloat(item.actualTotalCost || "0")), 0), [visibleItems]);
+
+  // PM V2 Purchase context is displayed from the standard order/item notes.
+  // Patch 121 links PM V2 atomically during Purchase creation, so there is no
+  // manual relink action in the normal Purchase workflow.
+  const pmv2PurchaseContext = useMemo(() => {
+    if (!po) return null;
+    const noteText = [
+      po.notes,
+      ...(po.items || []).map((item: any) => item.notes),
+    ].filter(Boolean).join("\n");
+    if (!/PM V2/i.test(noteText)) return null;
+    const requestMatch = noteText.match(/طلب مواد\s*#(\d+)\s*\/\s*بند\s*#(\d+)/);
+    if (!requestMatch) return null;
+    const taskMatch = noteText.match(/PMV2-[A-Z0-9-]+/i);
+    return {
+      requestId: Number(requestMatch[1]),
+      requestItemId: Number(requestMatch[2]),
+      taskNumber: taskMatch?.[0] || null,
+    };
+  }, [po]);
+
 
   const handleUpload = async (file: File, itemId: number, type: "invoice" | "purchased" | "warehouse"): Promise<string | null> => {
     setUploadingItem(`${itemId}-${type}`);
@@ -591,10 +651,10 @@ const visibleItems = useMemo(() => {
   const pendingCount = visibleItems.filter((i: any) => !["purchased", "received"].includes(i.status)).length;
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-6 max-w-5xl" dir={dir}>
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="icon" onClick={() => goBackOrFallback(setLocation, "/purchase-orders")}>
-          <ArrowRight className="w-5 h-5" />
+          <ArrowRight className={`w-5 h-5 ${dir === "ltr" ? "rotate-180" : ""}`} />
         </Button>
         <div className="flex-1">
           <div className="flex items-center gap-3 flex-wrap">
@@ -616,7 +676,7 @@ const visibleItems = useMemo(() => {
               disabled={submitPricedBatchMut.isPending}
             >
               {submitPricedBatchMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShoppingCart className="w-4 h-4" />}
-              إرسال للحسابات ({readyToSubmitCount})
+              {t.purchaseOrders.submitForAccounting || t.purchaseOrders.approveAccounting} ({readyToSubmitCount})
             </Button>
           )}
           {po.status === "draft" && (isAdminOrOwner || String(po.requestedById) === String(userId)) && (
@@ -646,6 +706,24 @@ const visibleItems = useMemo(() => {
           )}
         </div>
       </div>
+
+      {pmv2PurchaseContext && isWarehouse && (
+        <Card className="border-emerald-200 bg-emerald-50/60">
+          <CardContent className="p-4 flex items-start gap-3">
+            <CheckCircle2 className="w-5 h-5 text-emerald-700 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-emerald-900">{t.workflow.purchase.pmv2AutoLinkedShortage}</p>
+              <p className="text-xs text-emerald-700 mt-1">
+                {t.workflow.purchase.pmv2RequestItemRef.replace("{request}", String(pmv2PurchaseContext.requestId)).replace("{item}", String(pmv2PurchaseContext.requestItemId))}
+                {pmv2PurchaseContext.taskNumber ? ` · ${pmv2PurchaseContext.taskNumber}` : ""}
+              </p>
+              <p className="text-xs text-emerald-700 mt-1">
+                {t.workflow.purchase.pmv2LinkedNoManual}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {po.status === "revision_needed" && (
         <Card className="border-rose-200 bg-rose-50">
@@ -756,7 +834,7 @@ const visibleItems = useMemo(() => {
             <CardHeader className="pb-3">
               <CardTitle className="text-base flex items-center gap-2">
                 <User className="w-4 h-4" />
-                توزيع الطلب على المناديب
+                {t.workflow.purchase.orderDistribution}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2.5">
@@ -771,17 +849,17 @@ const visibleItems = useMemo(() => {
 
                 const stateLabel =
                   purchasedCountForDel === 0
-                    ? { text: "لم يبدأ", color: "text-red-700 bg-red-50 border-red-200" }
+                    ? { text: t.workflow.purchase.notStarted, color: "text-red-700 bg-red-50 border-red-200" }
                     : remaining === 0
-                    ? { text: "مكتمل", color: "text-green-700 bg-green-50 border-green-200" }
-                    : { text: "جاري", color: "text-amber-700 bg-amber-50 border-amber-200" };
+                    ? { text: t.workflow.purchase.completedShort, color: "text-green-700 bg-green-50 border-green-200" }
+                    : { text: t.workflow.purchase.inProgressShort, color: "text-amber-700 bg-amber-50 border-amber-200" };
 
                 return (
                   <div key={delId} className="border rounded-lg p-3 space-y-2">
                     <div className="flex items-center justify-between flex-wrap gap-1.5">
                       <p className="text-sm font-medium flex items-center gap-1.5">
                         <User className="w-3.5 h-3.5 text-muted-foreground" />
-                        {delegateUser?.name || `مندوب #${delId}`}
+                        {delegateUser?.name || t.workflow.purchase.delegateFallback.replace("{id}", String(delId))}
                       </p>
                       <div className="flex items-center gap-1.5">
                         <span className={`text-[11px] px-2 py-0.5 rounded-full border ${stateLabel.color}`}>
@@ -789,7 +867,7 @@ const visibleItems = useMemo(() => {
                         </span>
                         {excludedItems.length > 0 && (
                           <span className="text-[11px] px-2 py-0.5 rounded-full border text-muted-foreground bg-muted/50">
-                            +{excludedItems.length} مرفوض/ملغى
+                            +{excludedItems.length} {t.workflow.purchase.excludedShort}
                           </span>
                         )}
                       </div>
@@ -797,15 +875,15 @@ const visibleItems = useMemo(() => {
 
                     <div className="grid grid-cols-3 gap-2 text-center">
                       <div className="bg-muted/40 rounded p-1.5">
-                        <p className="text-[10px] text-muted-foreground">المطلوب شراؤه</p>
+                        <p className="text-[10px] text-muted-foreground">{t.workflow.purchase.requiredToBuy}</p>
                         <p className="text-sm font-bold">{totalRequired}</p>
                       </div>
                       <div className="bg-green-50 rounded p-1.5">
-                        <p className="text-[10px] text-muted-foreground">تم الشراء</p>
+                        <p className="text-[10px] text-muted-foreground">{t.workflow.purchase.purchasedShort}</p>
                         <p className="text-sm font-bold text-green-700">{purchasedCountForDel}</p>
                       </div>
                       <div className="bg-amber-50 rounded p-1.5">
-                        <p className="text-[10px] text-muted-foreground">المتبقي</p>
+                        <p className="text-[10px] text-muted-foreground">{t.workflow.purchase.remainingShort}</p>
                         <p className="text-sm font-bold text-amber-700">{remaining}</p>
                       </div>
                     </div>
@@ -860,7 +938,17 @@ const visibleItems = useMemo(() => {
             const isPurchaseCancelled = item.status === "purchase_cancelled";
             const isCancelled = isCancelledRaw || isPurchaseCancelled;
             return (
-              <div key={item.id} className={`border rounded-xl p-4 space-y-3 transition-colors ${isCancelled ? "opacity-60 bg-gray-50 border-gray-200" : "hover:border-primary/20"}`}>
+              <div
+                key={item.id}
+                id={`purchase-order-item-${item.id}`}
+                className={`border rounded-xl p-4 space-y-3 transition-colors ${
+                  focusedItemId === Number(item.id)
+                    ? "border-primary ring-2 ring-primary/20 bg-primary/5"
+                    : isCancelled
+                      ? "opacity-60 bg-gray-50 border-gray-200"
+                      : "hover:border-primary/20"
+                }`}
+              >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -871,7 +959,7 @@ const visibleItems = useMemo(() => {
                     </div>
                     {item.description && <p className={`text-xs break-words ${isCancelled ? "text-gray-400 line-through" : "text-muted-foreground"}`}>{getField(item, "description")}</p>}
                     <div className="flex items-center gap-4 mt-1.5 text-xs text-muted-foreground flex-wrap">
-                      <span className={isCancelled ? "line-through" : ""}>{t.purchaseOrders.quantity}: <strong>{item.quantity} {item.unit || ""}</strong></span>
+                      <span className={isCancelled ? "line-through" : ""}>{t.purchaseOrders.quantity}: <strong>{item.quantity} {displayUnit(item.unit)}</strong></span>
                       {delegate && <span>{t.purchaseOrders.delegate}: <strong>{delegate.name}</strong></span>}
                     </div>
                     {item.notes && <p className="text-xs text-muted-foreground mt-1.5 bg-muted/50 rounded-lg p-2 break-words">{getField(item, "notes")}</p>}
@@ -881,7 +969,7 @@ const visibleItems = useMemo(() => {
                         {isCancelled
                           ? t.purchaseOrders.cancelReason
                           : t.purchaseOrders.rejectionReason}
-                        {item.managementRejectionReason}
+                        {getItemWorkflowField(item, "managementRejectionReason")}
                       </p>
                     )}
                   </div>
@@ -920,7 +1008,7 @@ const visibleItems = useMemo(() => {
                       className="shrink-0 h-8 w-8 text-gray-400 hover:text-red-500 hover:bg-red-50"
                       title={t.purchaseOrders.cancelItemTitle}
                       onClick={() => {
-                        if (confirm(language === "ar" ? `هل أنت متأكد من إلغاء الصنف "${item.itemName}"?` : `Cancel item "${item.itemName}"?`)) {
+                        if (confirm(t.workflow.purchase.confirmCancelItem.replace("{item}", getField(item, "itemName")))) {
                           cancelItemMut.mutate({ itemId: item.id });
                         }
                       }}
@@ -939,7 +1027,7 @@ const visibleItems = useMemo(() => {
                       onClick={() => { setRejectItemDialog({ itemId: item.id, itemName: getField(item, "itemName") }); setRejectItemReason(""); }}
                     >
                       <XCircle className="w-3.5 h-3.5" />
-                      رفض الصنف
+                      {t.workflow.purchase.rejectItem}
                     </Button>
                   )}
                 </div>
@@ -970,19 +1058,19 @@ const visibleItems = useMemo(() => {
                 {(item.invoicePhotoUrl || item.purchasedPhotoUrl || item.warehousePhotoUrl) && (
                   <div className="flex gap-3 border-t pt-2">
                     {item.invoicePhotoUrl && (
-                      <button onClick={() => setPreviewImage(mediaUrl(item.invoicePhotoUrl))} className="group text-left hover:opacity-80 transition-opacity">
+                      <button onClick={() => setPreviewImage(mediaUrl(item.invoicePhotoUrl))} className="group text-start hover:opacity-80 transition-opacity">
                         <p className="text-[10px] text-muted-foreground mb-1">{t.purchaseOrders.accountingNotes}</p>
                         <img src={mediaUrl(item.invoicePhotoUrl)} className="w-20 h-20 rounded-lg object-cover border group-hover:ring-2 ring-primary/30 transition-all" />
                       </button>
                     )}
                     {item.purchasedPhotoUrl && (
-                      <button onClick={() => setPreviewImage(mediaUrl(item.purchasedPhotoUrl))} className="group text-left hover:opacity-80 transition-opacity">
+                      <button onClick={() => setPreviewImage(mediaUrl(item.purchasedPhotoUrl))} className="group text-start hover:opacity-80 transition-opacity">
                         <p className="text-[10px] text-muted-foreground mb-1">{t.tickets.photos}</p>
                         <img src={mediaUrl(item.purchasedPhotoUrl)} className="w-20 h-20 rounded-lg object-cover border group-hover:ring-2 ring-primary/30 transition-all" />
                       </button>
                     )}
                     {item.warehousePhotoUrl && (
-                      <button onClick={() => setPreviewImage(mediaUrl(item.warehousePhotoUrl))} className="group text-left hover:opacity-80 transition-opacity">
+                      <button onClick={() => setPreviewImage(mediaUrl(item.warehousePhotoUrl))} className="group text-start hover:opacity-80 transition-opacity">
                         <p className="text-[10px] text-muted-foreground mb-1">{t.purchaseOrders.warehousePhoto}</p>
                         <img src={mediaUrl(item.warehousePhotoUrl)} className="w-20 h-20 rounded-lg object-cover border group-hover:ring-2 ring-primary/30 transition-all" />
                       </button>
@@ -995,21 +1083,21 @@ const visibleItems = useMemo(() => {
     <div className="flex items-start justify-between gap-3 flex-wrap">
       <div className="space-y-1">
         <p className="text-sm font-semibold text-blue-900 flex items-center gap-1.5">
-          <User className="w-4 h-4" /> طلب تغيير مندوب معلّق
+          <User className="w-4 h-4" /> {t.workflow.purchase.delegateChangeRequest}
         </p>
         <p className="text-xs text-blue-800">
-          المندوب الحالي: <strong>{delegate?.name || "غير محدد"}</strong>
+          {t.workflow.purchase.currentDelegate}: <strong>{delegate?.name || t.tickets.unspecified}</strong>
         </p>
         <p className="text-xs text-blue-800 whitespace-pre-wrap">
-          السبب: <strong>{item.delegateChangeReason || "لم يُذكر سبب"}</strong>
+          {t.workflow.purchase.reason}: <strong>{getItemWorkflowField(item, "delegateChangeReason") || t.workflow.purchase.reasonNotProvided}</strong>
         </p>
         <p className="text-[11px] text-blue-600">
-          تاريخ الطلب: {new Date(item.delegateChangeRequestedAt).toLocaleString(locale)}
+          {t.workflow.purchase.requestDate}: {new Date(item.delegateChangeRequestedAt).toLocaleString(locale)}
         </p>
       </div>
       {!canManageDelegateChange && (
         <Badge className="bg-blue-100 text-blue-800">
-          {po?.reviewedByName ? `بانتظار ${po.reviewedByName}` : "بانتظار مدير الصيانة"}
+          {po?.reviewedByName ? t.workflow.purchase.waitingForNamedReviewer.replace("{name}", po.reviewedByName) : t.workflow.purchase.waitingMaintenanceManager}
         </Badge>
       )}
     </div>
@@ -1017,21 +1105,21 @@ const visibleItems = useMemo(() => {
     {canManageDelegateChange && (
       <div className="flex flex-col sm:flex-row gap-2 sm:items-end border-t border-blue-200 pt-3">
         <div className="flex-1 space-y-1">
-          <Label className="text-xs text-blue-900">اختيار المندوب المسؤول</Label>
+          <Label className="text-xs text-blue-900">{t.workflow.purchase.selectDelegate}</Label>
           <Select
             value={delegateSelections[item.id] || String(item.delegateId || "")}
             onValueChange={(value) => setDelegateSelections((prev) => ({ ...prev, [item.id]: value }))}
           >
             <SelectTrigger className="bg-white">
-              <SelectValue placeholder="اختر المندوب" />
+              <SelectValue placeholder={t.workflow.purchase.chooseDelegate} />
             </SelectTrigger>
             <SelectContent>
               {delegateUsers
                 .filter((delegateUser: any) => delegateUser.id === item.delegateId || (delegateUser.isActive !== 0 && delegateUser.isActive !== false))
                 .map((delegateUser: any) => (
                 <SelectItem key={delegateUser.id} value={String(delegateUser.id)}>
-                  {delegateUser.name || delegateUser.username || `مندوب #${delegateUser.id}`}
-                  {delegateUser.id === item.delegateId ? " — الحالي" : ""}
+                  {delegateUser.name || delegateUser.username || t.workflow.purchase.delegateFallback.replace("{id}", String(delegateUser.id))}
+                  {delegateUser.id === item.delegateId ? ` — ${t.workflow.purchase.current}` : ""}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -1047,7 +1135,7 @@ const visibleItems = useMemo(() => {
           }}
         >
           {resolveDelegateChangeMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-          تعيين المندوب
+          {t.workflow.purchase.assignDelegate}
         </Button>
       </div>
     )}
@@ -1057,7 +1145,7 @@ const visibleItems = useMemo(() => {
 {isMyItem && item.status === "estimated" && !item.batchId && (
   <div className="bg-teal-50 border border-teal-200 rounded-lg p-2.5 flex items-center justify-between gap-2">
     <p className="text-xs text-teal-800 flex items-center gap-1.5">
-      <CheckCircle2 className="w-3.5 h-3.5" /> تم التسعير — بانتظار الإرسال للحسابات
+      <CheckCircle2 className="w-3.5 h-3.5" /> {t.workflow.purchase.pricedWaitingAccounting}
     </p>
     <span className="text-xs font-bold text-teal-700">
       {Number(item.estimatedTotalCost || 0).toLocaleString(locale)} {currency}
@@ -1130,7 +1218,7 @@ const visibleItems = useMemo(() => {
           setIsItemRevisionDialogOpen(true);
         }}
       >
-        طلب مراجعة
+        {t.workflow.purchase.itemReviewRequest}
       </Button>
 
       {role === "delegate" && item.delegateId === userId && !item.estimatedUnitCost && (
@@ -1142,7 +1230,7 @@ const visibleItems = useMemo(() => {
             setDelegateChangeReason("");
           }}
         >
-          إعادة تعيين المندوب
+          {t.workflow.purchase.delegateChangeRequest}
         </Button>
       )}
     </div>
@@ -1152,14 +1240,14 @@ const visibleItems = useMemo(() => {
 {item.status === "needs_item_revision" && (
   <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-3">
     <p className="text-sm font-medium text-red-800">
-      ⚠️ هذا الصنف يحتاج مراجعة
+      ⚠️ {t.workflow.purchase.needsReview}
     </p>
 
     {item.itemRevisionNote && (
       <div className="text-sm text-red-700 bg-white p-2 rounded border">
-        <strong>سبب المراجعة:</strong>
+        <strong>{t.workflow.purchase.reviewReason}:</strong>
         <br />
-        {item.itemRevisionNote}
+        {getItemWorkflowField(item, "itemRevisionNote")}
       </div>
     )}
 
@@ -1182,7 +1270,7 @@ const visibleItems = useMemo(() => {
               });
             }}
           >
-            تعديل الصنف
+            {t.workflow.purchase.editItem}
           </Button>
         )}
 
@@ -1194,7 +1282,7 @@ const visibleItems = useMemo(() => {
               disabled={resubmitItemRevisionMut.isPending}
             >
               {resubmitItemRevisionMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-              إعادة إرسال الصنف
+              {t.workflow.purchase.resubmitItem}
             </Button>
 
             <Button
@@ -1208,7 +1296,7 @@ const visibleItems = useMemo(() => {
               disabled={finalizeCancelledItemMut.isPending}
             >
               {finalizeCancelledItemMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-              إلغاء نهائي
+              {t.workflow.purchase.finalCancel}
             </Button>
           </>
         )}
@@ -1220,18 +1308,18 @@ const visibleItems = useMemo(() => {
 {item.status === "purchase_cancelled" && (
   <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-3">
     <p className="text-sm font-medium text-red-800">
-      ⛔ تعذّر شراء هذا الصنف من قبل المندوب
+      ⛔ {t.workflow.purchase.purchaseUnavailable}
     </p>
 
     {item.purchaseCancelledByName && (
-      <p className="text-xs text-red-700">المندوب: <strong>{item.purchaseCancelledByName}</strong></p>
+      <p className="text-xs text-red-700">{t.workflow.purchase.delegateLabel}: <strong>{item.purchaseCancelledByName}</strong></p>
     )}
 
     {item.purchaseCancelReason && (
       <div className="text-sm text-red-700 bg-white p-2 rounded border">
-        <strong>السبب:</strong>
+        <strong>{t.workflow.purchase.reason}:</strong>
         <br />
-        {item.purchaseCancelReason}
+        {getItemWorkflowField(item, "purchaseCancelReason")}
       </div>
     )}
 
@@ -1254,7 +1342,7 @@ const visibleItems = useMemo(() => {
               });
             }}
           >
-            تعديل الصنف
+            {t.workflow.purchase.editItem}
           </Button>
         )}
 
@@ -1266,7 +1354,7 @@ const visibleItems = useMemo(() => {
               disabled={resubmitCancelledPurchaseMut.isPending}
             >
               {resubmitCancelledPurchaseMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-              إعادة إرسال للمندوب للشراء
+              {t.workflow.purchase.resendDelegate}
             </Button>
 
             <Button
@@ -1280,7 +1368,7 @@ const visibleItems = useMemo(() => {
               disabled={finalizeCancelledItemMut.isPending}
             >
               {finalizeCancelledItemMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-              إلغاء نهائي
+              {t.workflow.purchase.finalCancel}
             </Button>
           </>
         )}
@@ -1381,7 +1469,7 @@ const visibleItems = useMemo(() => {
                         disabled={confirmPurchaseMut.isPending}
                       >
                         <Ban className="w-3.5 h-3.5" />
-                        إلغاء الشراء
+                        {t.workflow.purchase.cancelPurchase}
                       </Button>
                       <Button size="sm" className="flex-1 gap-1.5" onClick={() => {
                         confirmPurchaseMut.mutate({
@@ -1400,11 +1488,11 @@ const visibleItems = useMemo(() => {
                 {isWarehouse && item.status === "purchased" && (
                   <div className="bg-green-50 border border-green-200 rounded-lg p-3">
                     <p className="text-xs font-medium text-green-800 flex items-center gap-1.5 mb-2">
-                      <Package className="w-3.5 h-3.5" /> استلام من المشتريات وإضافة للمخزون
+                      <Package className="w-3.5 h-3.5" /> {t.workflow.purchase.receiveInventory}
                     </p>
                     <Button size="sm" className="w-full gap-1.5 bg-green-600 hover:bg-green-700" onClick={() => setLocation(`/warehouse/receive-v2?poId=${po.id}`)}>
                       <Package className="w-3.5 h-3.5" />
-                      فتح صفحة الاستلام
+                      {t.workflow.purchase.openReceivingPage}
                     </Button>
                   </div>
                 )}
@@ -1424,11 +1512,11 @@ const visibleItems = useMemo(() => {
                       </div>
                     </div>
                     <div className="space-y-1">
-                      <Label className="text-[11px] text-green-700">اسم الصنف كما في الفاتورة (اختياري)</Label>
+                      <Label className="text-[11px] text-green-700">{t.workflow.purchase.supplierItemNameOptional}</Label>
                       <Input className="bg-white" placeholder={item.name} value={receiveData[item.id]?.supplierItemName || ""} onChange={e => setReceiveData(p => ({ ...p, [item.id]: { ...p[item.id], cost: p[item.id]?.cost || "", supplier: p[item.id]?.supplier || "", supplierItemName: e.target.value, warehousePhotoUrl: p[item.id]?.warehousePhotoUrl || "" } }))} />
                     </div>
                     <div className="space-y-1">
-                      <Label className="text-[11px] text-green-700">صورة تأكيد الاستلام *</Label>
+                      <Label className="text-[11px] text-green-700">{t.workflow.purchase.receiptPhotoRequired}</Label>
                       {itemPhotos[item.id]?.warehouse ? (
                         <div className="relative mt-1">
                           <button onClick={() => setPreviewImage(itemPhotos[item.id]!.warehouse || null)} className="w-full hover:opacity-80 transition-opacity">
@@ -1495,7 +1583,7 @@ const visibleItems = useMemo(() => {
                 {(itemComments.get(item.id) || []).length > 0 && (
                   <div className="border-t pt-2 space-y-2">
                     <p className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
-                      <FileText className="w-3 h-3" /> سجل ملاحظات هذا الصنف
+                      <FileText className="w-3 h-3" /> {t.workflow.purchase.itemNotesHistory}
                     </p>
                     {(itemComments.get(item.id) || []).map((comment: any) => (
                       <div key={comment.id} className="space-y-1">
@@ -1506,9 +1594,14 @@ const visibleItems = useMemo(() => {
                           </div>
                           <span className="text-[10px] text-muted-foreground">{new Date(comment.createdAt).toLocaleString(locale)}</span>
                         </div>
-                        <p className="text-xs text-muted-foreground bg-muted/30 p-2 rounded-lg border-l-2 border-primary/20 whitespace-pre-wrap">
-                          {comment.note}
-                        </p>
+                        <EntityTranslatedText
+                          as="p"
+                          className="text-xs text-muted-foreground bg-muted/30 p-2 rounded-lg border-s-2 border-primary/20 whitespace-pre-wrap"
+                          entityType="PO_COMMENT"
+                          entityId={comment.id}
+                          field="note"
+                          original={comment.note}
+                        />
                       </div>
                     ))}
                   </div>
@@ -1530,7 +1623,7 @@ const visibleItems = useMemo(() => {
                 <span className="text-muted-foreground">{t.purchaseOrders.totalEstimated}:</span>
                 <span className="font-bold text-lg">{totalEstimated.toLocaleString(locale)} {currency}</span>
               </div>
-              <p className="text-xs text-muted-foreground text-left">({numberToWords(totalEstimated, language)})</p>
+              <p className="text-xs text-muted-foreground text-start">({numberToWords(totalEstimated, language)})</p>
             </div>
           )}
           {totalActual > 0 && (
@@ -1539,7 +1632,7 @@ const visibleItems = useMemo(() => {
                 <span className="text-muted-foreground">{t.purchaseOrders.totalActual}:</span>
                 <span className="font-bold text-lg text-emerald-700">{totalActual.toLocaleString(locale)} {currency}</span>
               </div>
-              <p className="text-xs text-emerald-600 text-left">({numberToWords(totalActual, language)})</p>
+              <p className="text-xs text-emerald-600 text-start">({numberToWords(totalActual, language)})</p>
             </div>
           )}
           {totalEstimated > 0 && totalActual > 0 && (
@@ -1569,7 +1662,7 @@ const visibleItems = useMemo(() => {
         return (
           <Card className="border-purple-200 bg-purple-50/50">
             <CardHeader className="pb-2">
-              <CardTitle className="text-base text-purple-800">مراجعة الأصناف وتعيين المندوبين</CardTitle>
+              <CardTitle className="text-base text-purple-800">{t.workflow.purchase.reviewAssignDelegates}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex gap-2 mb-4">
@@ -1603,7 +1696,7 @@ const visibleItems = useMemo(() => {
                       <div className="min-w-0 flex-1">
                         <p className="text-sm font-medium break-words">{getField(item, "itemName")}</p>
                         {item.description && <p className="text-xs text-muted-foreground break-words">{getField(item, "description")}</p>}
-                        <p className="text-xs text-muted-foreground mt-0.5">{t.purchaseOrders.quantity}: <strong>{item.quantity} {item.unit || ""}</strong></p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{t.purchaseOrders.quantity}: <strong>{item.quantity} {displayUnit(item.unit)}</strong></p>
                       </div>
                     </div>
                     <div className="flex gap-3">
@@ -1699,12 +1792,12 @@ const visibleItems = useMemo(() => {
         const rejectedCount = visibleBatches.filter((b: any) => b.status === "rejected").length;
         const totalCount = visibleBatches.length;
         const progressLabel = totalCount === 1
-          ? (approvedCount === 1 ? "الدفعة معتمدة بالكامل" : rejectedCount === 1 ? "الدفعة مرفوضة" : "الدفعة قيد الاعتماد")
-          : `تم اعتماد ${approvedCount} من ${totalCount} دفعة${rejectedCount > 0 ? ` (${rejectedCount} مرفوضة)` : ""}`;
+          ? (approvedCount === 1 ? t.workflow.purchase.batchFullyApproved : rejectedCount === 1 ? t.workflow.purchase.batchRejected : t.workflow.purchase.batchPendingApproval)
+          : `${t.workflow.purchase.batchApprovalProgress.replace("{approved}", String(approvedCount)).replace("{total}", String(totalCount))}${rejectedCount > 0 ? ` (${t.workflow.purchase.rejectedCount.replace("{count}", String(rejectedCount))})` : ""}`;
         return (
       <Card className="border-teal-200 bg-teal-50/40">
         <CardHeader className="pb-2">
-          <CardTitle className="text-base text-teal-800">دفعات التسعير</CardTitle>
+          <CardTitle className="text-base text-teal-800">{t.workflow.purchase.pricingBatches}</CardTitle>
           <p className="text-xs text-teal-700 font-medium">{progressLabel}</p>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -1713,15 +1806,15 @@ const visibleItems = useMemo(() => {
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div>
                     <p className="text-sm font-bold">
-                      دفعة رقم {batch.batchNumber} — {batch.itemCount} صنف
-                      {batch.isAutoClosed ? " — لا توجد أصناف فعّالة" : ""}
+                      {t.workflow.purchase.batchNumber} {batch.batchNumber} — {batch.itemCount} {t.workflow.purchase.itemCount}
+                      {batch.isAutoClosed ? ` — ${t.workflow.purchase.noActiveItems}` : ""}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      الإجمالي: {Number(batch.totalEstimatedCost || 0).toLocaleString("ar-SA")} ر.س.
+                      {t.workflow.purchase.total}: {Number(batch.totalEstimatedCost || 0).toLocaleString(locale)} {currency}
                     </p>
                     {batch.custodyAmount && (
                       <p className="text-xs text-amber-700 font-medium mt-0.5">
-                        المندوب عليه عهدة بمبلغ: {Number(batch.custodyAmount).toLocaleString("ar-SA")} ر.س.
+                        {t.workflow.purchase.custodyAmount}: {Number(batch.custodyAmount).toLocaleString(locale)} {currency}
                       </p>
                     )}
                   </div>
@@ -1733,10 +1826,10 @@ const visibleItems = useMemo(() => {
                       "bg-orange-100 text-orange-700"
                     }
                   >
-                    {batch.isAutoClosed ? "ملغاة — جميع الأصناف ملغاة أو مرفوضة" :
-                     batch.status === "pending_accounting" ? "بانتظار الحسابات" :
-                     batch.status === "pending_management" ? "بانتظار الإدارة" :
-                     batch.status === "approved" ? "معتمدة" : "مرفوضة"}
+                    {batch.isAutoClosed ? t.workflow.purchase.cancelledAllItems :
+                     batch.status === "pending_accounting" ? t.workflow.purchase.accountingPending :
+                     batch.status === "pending_management" ? t.workflow.purchase.managementPending :
+                     batch.status === "approved" ? t.workflow.purchase.approved : t.workflow.purchase.rejected}
                   </Badge>
                 </div>
 
@@ -1760,10 +1853,10 @@ const visibleItems = useMemo(() => {
                           onClick={() => handleExportPackageSubmissionPdf(submissionId)}
                         >
                           {exportingSubmissionId === submissionId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
-                          تنزيل مستند دفعة الإرسال الرسمي
+                          {t.workflow.purchase.downloadOfficialDispatch}
                         </Button>
                         <p className="text-[11px] text-muted-foreground">
-                          لا يتاح PDF مستقل لهذا الطلب لأنه تابع لدفعة إرسال حزمة؛ المستند الرسمي هو مستند دفعة الإرسال.
+                          {t.workflow.purchase.noStandaloneBatchPdf}
                         </p>
                       </div>
                     );
@@ -1778,7 +1871,7 @@ const visibleItems = useMemo(() => {
                       onClick={() => handleExportBatchPdf(batch.id, batch.batchNumber)}
                     >
                       {exportingBatchId === batch.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
-                      تصدير PDF لهذه الدفعة (لطلب العهدة)
+                      {t.workflow.purchase.exportBatchCustodyPdf}
                     </Button>
                   );
                 })()}
@@ -1786,7 +1879,7 @@ const visibleItems = useMemo(() => {
                 {isAccountant && batch.status === "pending_accounting" && batch.purchasePackageSubmissionId == null && (
                   <div className="flex gap-2 items-end flex-wrap">
                     <div className="space-y-1">
-                      <Label className="text-[11px] text-orange-700">المندوب عليه عهدة بمبلغ (ر.س.) *</Label>
+                      <Label className="text-[11px] text-orange-700">{t.workflow.purchase.custodyAmount} ({currency}) *</Label>
                       <Input
                         type="number"
                         placeholder="0.00"
@@ -1808,7 +1901,7 @@ const visibleItems = useMemo(() => {
                       }}
                     >
                       {approveAccountingBatchMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-                      اعتماد الدفعة (حسابات)
+                      {t.workflow.purchase.approveBatchAccounting}
                     </Button>
                   </div>
                 )}
@@ -1816,7 +1909,7 @@ const visibleItems = useMemo(() => {
                 {isAccountant && batch.status === "pending_accounting" && batch.purchasePackageSubmissionId != null && (
                   <div className="rounded-lg border border-orange-200 bg-orange-50/60 p-3 flex items-center justify-between gap-3 flex-wrap">
                     <p className="text-xs text-orange-900">
-                      العهدة واعتماد الحسابات لهذه الدفعة يتمان من دفعة الإرسال الرسمية فقط.
+                      {t.workflow.purchase.custodyBatchOnly}
                     </p>
                     {po.packageId && (
                       <Button
@@ -1826,7 +1919,7 @@ const visibleItems = useMemo(() => {
                           setLocation(`/purchase-packages/${po.packageId}?submissionId=${batch.purchasePackageSubmissionId}`)
                         }
                       >
-                        فتح دفعة الإرسال
+                        {t.workflow.purchase.openDispatchBatch}
                       </Button>
                     )}
                   </div>
@@ -1841,7 +1934,7 @@ const visibleItems = useMemo(() => {
                     onClick={() => approveManagementBatchMut.mutate({ batchId: batch.id })}
                   >
                     {approveManagementBatchMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-                    اعتماد الدفعة (الإدارة العليا)
+                    {t.workflow.purchase.approveBatchManagement}
                   </Button>
                 )}
               </div>
@@ -1856,7 +1949,7 @@ const visibleItems = useMemo(() => {
           <CardHeader className="pb-2"><CardTitle className="text-base text-orange-800">{t.purchaseOrders.accountingApproval}</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             <div className="space-y-1">
-              <label className="text-xs font-medium text-orange-800">المندوب عليه عهدة بمبلغ (ر.س.) *</label>
+              <label className="text-xs font-medium text-orange-800">{t.workflow.purchase.custodyAmount} ({currency}) *</label>
               <Input type="number" placeholder={t.purchaseOrders.custodyAmountPlaceholder} value={custodyAmount} onChange={e => setCustodyAmount(e.target.value)} className="bg-white" />
             </div>
 
@@ -1864,8 +1957,8 @@ const visibleItems = useMemo(() => {
                 هذه البطاقة — 2026-08-10. لا حاجة لقائمة استبعاد منفصلة هنا، ولا
                 زر "رفض الطلب بالكامل": رفض كل الأصناف الفعّالة يرفض الطلب تلقائيًا. */}
             <p className="text-xs text-orange-600">
-              لرفض صنف معيّن، استخدم زر "رفض الصنف" أمامه مباشرة بقائمة الأصناف أعلاه.
-              اعتماد هذا الطلب يشمل كل الأصناف التي لم تُرفض.
+              {t.workflow.purchase.rejectSpecificItemHelp}
+              {t.workflow.purchase.approvalCoversNonRejected}
             </p>
 
             <Button onClick={() => {
@@ -1888,13 +1981,13 @@ const visibleItems = useMemo(() => {
           <CardHeader className="pb-2"><CardTitle className="text-base text-orange-800">{t.purchaseOrders.managementApproval}</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             <div className="bg-white p-3 rounded-md border border-orange-100 space-y-2 mb-3">
-              <h4 className="text-sm font-medium text-orange-800">مراجعة الأصناف (اختياري)</h4>
-              <p className="text-xs text-orange-600 mb-2">يمكنك استبعاد أصناف محددة من الاعتماد.</p>
+              <h4 className="text-sm font-medium text-orange-800">{t.workflow.purchase.reviewItemsOptional}</h4>
+              <p className="text-xs text-orange-600 mb-2">{t.workflow.purchase.excludeItemsHelp}</p>
               {po.items?.filter((i: any) => i.status !== "rejected").map((item: any) => (
                 <div key={item.id} className="flex items-center justify-between py-2 border-b border-orange-50 last:border-0">
                   <div className="flex-1 min-w-0">
                     <p className={`text-sm break-words ${lateRejections[item.id] ? 'line-through text-gray-400' : 'text-gray-800 font-medium'}`}>{getField(item, "itemName")}</p>
-                    <p className="text-xs text-gray-500">التكلفة المقدرة: {Number(item.estimatedTotalCost || 0).toLocaleString("ar-SA")} ر.س.</p>
+                    <p className="text-xs text-gray-500">{t.workflow.purchase.estimatedCostLabel} {Number(item.estimatedTotalCost || 0).toLocaleString(locale)} {currency}</p>
                   </div>
                   <Button 
                     variant={lateRejections[item.id] ? "outline" : "ghost"} 
@@ -1928,7 +2021,7 @@ const visibleItems = useMemo(() => {
                 if (!rejectReason.trim()) { toast.error(t.purchaseOrders.justification); return; }
                 rejectMut.mutate({ id: po.id, reason: rejectReason });
               }} disabled={rejectMut.isPending} className="gap-1">
-                <XCircle className="w-4 h-4" /> رفض الطلب بالكامل
+                <XCircle className="w-4 h-4" /> {t.workflow.purchase.rejectWholeOrder}
               </Button>
             </div>
             <Input placeholder={t.purchaseOrders.rejectReasonPlaceholder} value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
@@ -1940,11 +2033,11 @@ const visibleItems = useMemo(() => {
         <Card className="border-amber-200 bg-amber-50/50">
           <CardContent className="p-4 flex items-center gap-3">
             <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
-              <span className="text-amber-700 text-sm font-bold">ع</span>
+              <span className="text-amber-700 text-sm font-bold">{t.workflow.purchase.custodyIconLabel}</span>
             </div>
             <div>
-              <p className="text-xs text-amber-700 font-medium">المندوب عليه عهدة بمبلغ</p>
-              <p className="text-lg font-bold text-amber-800">{Number(po.custodyAmount).toLocaleString("ar-SA")} ر.س.</p>
+              <p className="text-xs text-amber-700 font-medium">{t.workflow.purchase.custodyAmount}</p>
+              <p className="text-lg font-bold text-amber-800">{Number(po.custodyAmount).toLocaleString(locale)} {currency}</p>
             </div>
           </CardContent>
         </Card>
@@ -1966,7 +2059,7 @@ const visibleItems = useMemo(() => {
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <FileText className="w-4 h-4 text-muted-foreground" />
-              ملاحظات عامة على الطلب
+              {t.workflow.purchase.generalOrderNotes}
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
@@ -1977,14 +2070,19 @@ const visibleItems = useMemo(() => {
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-bold">{comment.userName}</span>
                       <Badge variant="outline" className="text-[10px] py-0 h-4">{comment.userRole}</Badge>
-                      {comment.actionType === "return_for_revision" && <Badge className="bg-rose-100 text-rose-700 text-[10px] py-0 h-4">طلب مراجعة</Badge>}
-                      {comment.actionType === "resubmitted" && <Badge className="bg-blue-100 text-blue-700 text-[10px] py-0 h-4">إعادة تقديم</Badge>}
+                      {comment.actionType === "return_for_revision" && <Badge className="bg-rose-100 text-rose-700 text-[10px] py-0 h-4">{t.purchaseOrders.returnForRevision}</Badge>}
+                      {comment.actionType === "resubmitted" && <Badge className="bg-blue-100 text-blue-700 text-[10px] py-0 h-4">{t.purchaseOrders.resubmit}</Badge>}
                     </div>
                     <span className="text-[10px] text-muted-foreground">{new Date(comment.createdAt).toLocaleString(locale)}</span>
                   </div>
-                  <p className="text-sm text-muted-foreground bg-muted/30 p-2 rounded-lg border-l-2 border-primary/20">
-                    {comment.note}
-                  </p>
+                  <EntityTranslatedText
+                    as="p"
+                    className="text-sm text-muted-foreground bg-muted/30 p-2 rounded-lg border-s-2 border-primary/20 whitespace-pre-wrap"
+                    entityType="PO_COMMENT"
+                    entityId={comment.id}
+                    field="note"
+                    original={comment.note}
+                  />
                 </div>
               ))}
             </div>
@@ -2031,17 +2129,17 @@ const visibleItems = useMemo(() => {
   <DialogContent>
     <DialogHeader>
       <DialogTitle>
-        طلب مراجعة الصنف
+        {t.workflow.purchase.itemReviewRequest}
       </DialogTitle>
     </DialogHeader>
 
     <div className="space-y-4 py-2">
       <p className="text-sm text-muted-foreground">
-        اكتب سبب طلب مراجعة هذا الصنف.
+        {t.workflow.purchase.itemReviewHelp}
       </p>
 
       <div className="space-y-2">
-        <Label>سبب المراجعة *</Label>
+        <Label>{t.workflow.purchase.reviewReasonRequired}</Label>
 
         <Textarea
           value={itemRevisionReason}
@@ -2057,7 +2155,7 @@ const visibleItems = useMemo(() => {
         variant="outline"
         onClick={() => setIsItemRevisionDialogOpen(false)}
       >
-        إلغاء
+        {t.workflow.purchase.cancel}
       </Button>
 
       <Button
@@ -2101,29 +2199,27 @@ const visibleItems = useMemo(() => {
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>طلب إعادة تعيين المندوب</DialogTitle>
+            <DialogTitle>{t.workflow.purchase.delegateChangeRequest}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 py-2">
             <p className="text-sm text-muted-foreground">
-              سيتوقف تسعير الصنف مؤقتًا، ويُرسل الطلب إلى
-              {po?.reviewedByName ? <> <strong>{po.reviewedByName}</strong></> : " من راجع هذا الطلب واختار المندوب أصلًا"}
-              {" "}لاختيار مندوب جديد.
+              {t.workflow.purchase.delegateChangeExplainer}
             </p>
             <div className="rounded-lg bg-muted/40 border p-2 text-sm">
-              الصنف: <strong>{delegateChangeDialogItem?.itemName}</strong>
+              {t.workflow.purchase.itemColon} <strong>{delegateChangeDialogItem ? getItemField(delegateChangeDialogItem, "itemName") : ""}</strong>
             </div>
             <div className="space-y-2">
-              <Label>سبب طلب التغيير *</Label>
+              <Label>{t.workflow.purchase.delegateChangeReason}</Label>
               <Textarea
                 value={delegateChangeReason}
                 onChange={(e) => setDelegateChangeReason(e.target.value)}
-                placeholder="اكتب سبب عدم تمكنك من متابعة تسعير هذا الصنف"
+                placeholder={t.workflow.purchase.delegateChangePlaceholder}
                 rows={4}
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDelegateChangeDialogItem(null)}>إلغاء</Button>
+            <Button variant="outline" onClick={() => setDelegateChangeDialogItem(null)}>{t.workflow.purchase.cancel}</Button>
             <Button
               disabled={delegateChangeReason.trim().length < 5 || requestDelegateChangeMut.isPending}
               onClick={() => {
@@ -2135,7 +2231,7 @@ const visibleItems = useMemo(() => {
               }}
             >
               {requestDelegateChangeMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-              إرسال الطلب
+              {t.workflow.purchase.sendRequest}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2147,7 +2243,7 @@ const visibleItems = useMemo(() => {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Pencil className="w-4 h-4" />
-              {t.common.edit} - {editingItem?.itemName}
+              {t.common.edit} - {editingItem ? getItemField(editingItem, "itemName") : ""}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
@@ -2278,17 +2374,17 @@ const visibleItems = useMemo(() => {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-red-700">
               <Ban className="w-5 h-5" />
-              إلغاء شراء الصنف
+              {t.workflow.purchase.cancelItemPurchase}
             </DialogTitle>
           </DialogHeader>
           {cancelPurchaseDialog && (
             <div className="space-y-4">
               <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-1">
                 <p className="font-semibold text-sm">{cancelPurchaseDialog.itemName}</p>
-                <p className="text-xs text-muted-foreground">{t.purchaseOrders.quantity}: {cancelPurchaseDialog.quantity} {cancelPurchaseDialog.unit}</p>
+                <p className="text-xs text-muted-foreground">{t.purchaseOrders.quantity}: {cancelPurchaseDialog.quantity} {displayUnit(cancelPurchaseDialog.unit)}</p>
               </div>
               <div className="space-y-2">
-                <Label className="text-xs font-medium">سبب إلغاء الشراء *</Label>
+                <Label className="text-xs font-medium">{t.workflow.purchase.cancelPurchaseReasonRequired}</Label>
                 <Textarea
                   placeholder={t.purchaseOrders.cancelPurchaseReason}
                   value={cancelPurchaseNote}
@@ -2312,7 +2408,7 @@ const visibleItems = useMemo(() => {
               }}
             >
               {cancelPurchaseMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Ban className="w-4 h-4" />}
-              تأكيد إلغاء الشراء
+              {t.workflow.purchase.confirmCancelPurchase}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2324,7 +2420,7 @@ const visibleItems = useMemo(() => {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-red-700">
               <XCircle className="w-5 h-5" />
-              رفض الصنف
+              {t.workflow.purchase.rejectItem}
             </DialogTitle>
           </DialogHeader>
           {rejectItemDialog && (
@@ -2333,9 +2429,9 @@ const visibleItems = useMemo(() => {
                 <p className="font-semibold text-sm">{rejectItemDialog.itemName}</p>
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs font-medium">سبب الرفض *</Label>
+                <Label className="text-xs font-medium">{t.workflow.purchase.rejectReasonRequired}</Label>
                 <Textarea
-                  placeholder="اكتب سبب رفض هذا الصنف..."
+                  placeholder={t.workflow.purchase.rejectReasonPlaceholder}
                   value={rejectItemReason}
                   onChange={(e) => setRejectItemReason(e.target.value)}
                   rows={4}
@@ -2343,7 +2439,7 @@ const visibleItems = useMemo(() => {
                   autoFocus
                 />
                 <p className={`text-[11px] ${rejectItemReason.trim().length < REJECT_ITEM_MIN_LENGTH ? "text-red-600" : "text-emerald-600"}`}>
-                  {rejectItemReason.trim().length}/{REJECT_ITEM_MIN_LENGTH} حرفًا على الأقل
+                  {rejectItemReason.trim().length}/{REJECT_ITEM_MIN_LENGTH} {t.workflow.purchase.minimumChars}
                 </p>
               </div>
             </div>
@@ -2360,7 +2456,7 @@ const visibleItems = useMemo(() => {
               }}
             >
               {rejectAccountingBatchItemMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
-              تأكيد رفض الصنف
+              {t.workflow.purchase.confirmRejectItemAction}
             </Button>
           </DialogFooter>
         </DialogContent>

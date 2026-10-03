@@ -3,6 +3,7 @@ import { goBackOrFallback } from "@/lib/backStack";
 import { useLocation, useSearch, useRoute } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -14,6 +15,9 @@ import { useState, useMemo, useRef, useEffect } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "@/contexts/LanguageContext";
 import { cn } from "@/lib/utils";
+import { localizeApiError } from "@/i18n/apiError";
+import { getLocalizedItemField } from "@/hooks/useContentTranslation";
+import { getLocalizedCatalogDescription, getLocalizedCatalogName, getLocalizedCatalogUnitName, resolveCatalogUnit } from "@/i18n/catalogMasterData";
 
 type ItemForm = {
   sourceType: "catalog" | "manual";
@@ -28,6 +32,8 @@ type ItemForm = {
 
   photoUrls: string[];
   notes: string;
+  _catalogNameAr?: string;
+  _catalogNameEn?: string;
 };
 
 const emptyItem = (defaultUnit = ""): ItemForm => ({
@@ -50,6 +56,8 @@ interface CatalogNode {
   code: string | null;
   nameAr: string;
   nameEn: string;
+  descriptionAr?: string | null;
+  descriptionEn?: string | null;
   level: number;
   parentId: number | null;
 }
@@ -65,11 +73,13 @@ onSelect: (item: {
   id: number;
   nameAr: string;
   nameEn: string;
+  descriptionAr?: string | null;
+  descriptionEn?: string | null;
   primaryImageUrl?: string;
   unit?: string;
 }) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, language, dir, isRTL } = useTranslation();
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState<number | null>(null);
@@ -86,6 +96,8 @@ onSelect: (item: {
     { isActive: true },
     { enabled: open }
   );
+
+  const { data: catalogUnits } = trpc.catalog.units.list.useQuery(undefined, { enabled: open });
 
   // جمع ID التصنيف المختار + كل أحفاده بشكل تكراري
   const getDescendantIds = (nodeId: number, nodes: CatalogNode[]): number[] => {
@@ -151,7 +163,7 @@ onSelect: (item: {
             "flex items-center gap-1.5 py-1.5 px-2 rounded cursor-pointer hover:bg-muted/60 transition-colors text-sm",
             isSelected && "bg-primary/10 text-primary font-medium"
           )}
-          style={{ paddingRight: `${depth * 14 + 8}px` }}
+          style={isRTL ? { paddingRight: `${depth * 14 + 8}px` } : { paddingLeft: `${depth * 14 + 8}px` }}
           onClick={() => setSelectedNodeId(isSelected ? null : node.id)}
         >
           <button
@@ -160,14 +172,14 @@ onSelect: (item: {
           >
             {isExpanded
               ? <ChevronDown className="w-3.5 h-3.5" />
-              : <ChevronRight className="w-3.5 h-3.5" />}
+              : <ChevronRight className={`w-3.5 h-3.5 ${isRTL ? "rotate-180" : ""}`} />}
           </button>
           {node.code && (
             <span className="text-xs font-mono bg-muted px-1 py-0.5 rounded text-muted-foreground shrink-0">
               {node.code}
             </span>
           )}
-          <span className="truncate">{node.nameAr}</span>
+          <span className="truncate" dir={language === "ar" ? "rtl" : "ltr"}>{getLocalizedCatalogName(node, language)}</span>
         </div>
         {isExpanded && hasChildren && (
           <div>{children.map(child => renderNode(child, depth + 1))}</div>
@@ -182,19 +194,19 @@ onSelect: (item: {
         <DialogHeader className="px-5 pt-5 pb-3 border-b">
           <DialogTitle className="flex items-center gap-2">
             <BookOpen className="w-4 h-4 text-primary" />
-            اختر صنفاً من الكاتلوج
+            {t.workflow.purchase.catalogPickItem}
           </DialogTitle>
         </DialogHeader>
 
         <div className="flex flex-1 overflow-hidden">
 
           {/* Sidebar — شجرة التصنيفات */}
-          <div className="w-48 shrink-0 border-l overflow-y-auto p-2 bg-muted/20">
-            <p className="text-xs text-muted-foreground px-2 pb-2 font-medium">التصنيفات</p>
+          <div className={`w-48 shrink-0 overflow-y-auto p-2 bg-muted/20 ${isRTL ? "border-l" : "border-r"}`}>
+            <p className="text-xs text-muted-foreground px-2 pb-2 font-medium">{t.workflow.purchase.categoriesLabel}</p>
             <button
               onClick={() => setSelectedNodeId(null)}
               className={cn(
-                "w-full text-right text-sm px-2 py-1.5 rounded hover:bg-muted/60 transition-colors",
+                "w-full text-start text-sm px-2 py-1.5 rounded hover:bg-muted/60 transition-colors",
                 !selectedNodeId && "bg-primary/10 text-primary font-medium"
               )}
             >
@@ -208,14 +220,13 @@ onSelect: (item: {
             {/* Search */}
             <div className="p-3 border-b">
               <div className="relative">
-                <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Search className={`absolute top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground ${isRTL ? "right-3" : "left-3"}`} />
                 <Input
                   ref={inputRef}
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
                   placeholder={t.common.searchPlaceholder}
-                  className="pr-9"
-                  dir="rtl"
+                  className={isRTL ? "pr-9" : "pl-9"}
                 />
               </div>
               <p className="text-xs text-muted-foreground mt-1.5 h-4">
@@ -247,6 +258,8 @@ onSelect: (item: {
                           id: item.id,
                           nameAr: item.nameAr,
                           nameEn: item.nameEn,
+                          descriptionAr: item.descriptionAr,
+                          descriptionEn: item.descriptionEn,
                           primaryImageUrl: item.primaryImageUrl || "",
                           unit: item.unit || "",
                         });
@@ -254,20 +267,24 @@ onSelect: (item: {
                       onClose();
                     }}
 
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-primary/5 hover:border-primary/20 border border-transparent transition-colors text-right"
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-primary/5 hover:border-primary/20 border border-transparent transition-colors text-start"
                   >
                     {/* صورة */}
                     <div className="w-10 h-10 rounded-md bg-muted shrink-0 overflow-hidden flex items-center justify-center">
                       {item.primaryImageUrl ? (
-                        <img src={item.primaryImageUrl} alt={item.nameAr} className="w-full h-full object-cover" />
+                        <img src={item.primaryImageUrl} alt={getLocalizedCatalogName(item, language)} className="w-full h-full object-cover" />
                       ) : (
                         <FolderOpen className="w-4 h-4 text-muted-foreground/40" />
                       )}
                     </div>
                     {/* Info */}
-                    <div className="flex-1 min-w-0 text-right">
-                      <p className="text-sm font-medium truncate">{item.nameAr}</p>
-                      <p className="text-xs text-muted-foreground truncate">{item.nameEn}</p>
+                    <div className="flex-1 min-w-0 text-start">
+                      <p className="text-sm font-medium truncate" dir={language === "ar" ? "rtl" : "ltr"}>{getLocalizedCatalogName(item, language)}</p>
+                      {getLocalizedCatalogDescription(item, language) ? (
+                        <p className="text-xs text-muted-foreground truncate" dir={language === "ar" ? "rtl" : "ltr"}>{getLocalizedCatalogDescription(item, language)}</p>
+                      ) : getLocalizedCatalogUnitName(item.unit, catalogUnits as any[] | undefined, language) ? (
+                        <p className="text-xs text-muted-foreground truncate" dir={language === "ar" ? "rtl" : "ltr"}>{getLocalizedCatalogUnitName(item.unit, catalogUnits as any[] | undefined, language)}</p>
+                      ) : null}
                     </div>
                     {/* Code */}
                     {item.code && (
@@ -298,11 +315,12 @@ function AddItemChoiceDialog({
   onChooseCatalog: () => void;
   onChooseNew: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <Dialog open={open} onOpenChange={o => { if (!o) onClose(); }}>
       <DialogContent className="max-w-sm">
         <DialogHeader>
-          <DialogTitle className="text-center">إضافة صنف</DialogTitle>
+          <DialogTitle className="text-center">{t.workflow.purchase.addItem}</DialogTitle>
         </DialogHeader>
         <div className="grid grid-cols-2 gap-3 pt-2">
           <button
@@ -313,8 +331,8 @@ function AddItemChoiceDialog({
               <BookOpen className="w-6 h-6 text-primary" />
             </div>
             <div className="text-center">
-              <p className="font-semibold text-sm">من الكاتلوج</p>
-              <p className="text-xs text-muted-foreground mt-0.5">اختر من الأصناف المسجلة</p>
+              <p className="font-semibold text-sm">{t.workflow.purchase.fromCatalog}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{t.workflow.purchase.chooseRegisteredItems}</p>
             </div>
           </button>
           <button
@@ -325,8 +343,8 @@ function AddItemChoiceDialog({
               <FilePlus className="w-6 h-6 text-muted-foreground" />
             </div>
             <div className="text-center">
-              <p className="font-semibold text-sm">صنف جديد</p>
-              <p className="text-xs text-muted-foreground mt-0.5">أدخل البيانات يدوياً</p>
+              <p className="font-semibold text-sm">{t.workflow.purchase.newItem}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{t.workflow.purchase.enterManually}</p>
             </div>
           </button>
         </div>
@@ -338,7 +356,7 @@ function AddItemChoiceDialog({
 // ── Main Component ─────────────────────────────────────────────────────────
 export default function CreatePurchaseOrder() {
   const [, setLocation] = useLocation();
-  const { t } = useTranslation();
+  const { t, language, dir } = useTranslation();
   const searchStr = useSearch();
   const params = new URLSearchParams(searchStr);
   const ticketId = params.get("ticketId") ? parseInt(params.get("ticketId")!) : undefined;
@@ -347,6 +365,29 @@ export default function CreatePurchaseOrder() {
   const ticketItemId = params.get("ticketItemId") ? parseInt(params.get("ticketItemId")!) : undefined;
   const fromIdeaId = params.get("fromIdeaId") ? parseInt(params.get("fromIdeaId")!) : undefined;
   const prefillNotes = params.get("prefillNotes") || "";
+  const pmv2RequestItemId = params.get("pmv2RequestItemId") ? parseInt(params.get("pmv2RequestItemId")!) : undefined;
+  const pmv2RequestId = params.get("pmv2RequestId") ? parseInt(params.get("pmv2RequestId")!) : undefined;
+  const pmv2CatalogItemId = params.get("pmv2CatalogItemId") ? parseInt(params.get("pmv2CatalogItemId")!) : undefined;
+  const pmv2TaskNumber = params.get("pmv2TaskNumber") || "";
+  const pmv2ItemName = params.get("pmv2ItemName") || "";
+  const pmv2ItemCode = params.get("pmv2ItemCode") || "";
+  const pmv2Unit = params.get("pmv2Unit") || "";
+  const pmv2UnitIdRaw = Number(params.get("pmv2UnitId") || 0);
+  const pmv2UnitId = Number.isInteger(pmv2UnitIdRaw) && pmv2UnitIdRaw > 0 ? pmv2UnitIdRaw : undefined;
+  const pmv2MinimumQuantityRaw = Number(params.get("pmv2MinimumQuantity") || 0);
+  const pmv2MinimumQuantity = Number.isFinite(pmv2MinimumQuantityRaw) && pmv2MinimumQuantityRaw > 0
+    ? pmv2MinimumQuantityRaw
+    : 0;
+  const pmv2TaskNeedQuantityRaw = Number(params.get("pmv2TaskNeedQuantity") || 0);
+  const pmv2TaskNeedQuantity = Number.isFinite(pmv2TaskNeedQuantityRaw) && pmv2TaskNeedQuantityRaw > 0
+    ? pmv2TaskNeedQuantityRaw
+    : 0;
+  const pmv2TeamAvailableAtRequestRaw = Number(params.get("pmv2TeamAvailableAtRequest") || -1);
+  const pmv2TeamAvailableAtRequest = Number.isFinite(pmv2TeamAvailableAtRequestRaw) && pmv2TeamAvailableAtRequestRaw >= 0
+    ? pmv2TeamAvailableAtRequestRaw
+    : null;
+  const hasPmv2PurchaseContext = Boolean(pmv2RequestItemId && pmv2CatalogItemId && pmv2ItemName && pmv2MinimumQuantity > 0);
+  const pmv2MinimumPurchaseUnits = Math.max(1, Math.ceil(pmv2MinimumQuantity || 1));
   const linkIdeaMut = trpc.improvementIdeas.linkToPurchaseOrder.useMutation();
 
   // قراءة draftId من الـ URL إذا كنا نعدّل مسودة
@@ -397,24 +438,33 @@ export default function CreatePurchaseOrder() {
 
   // ✅ وحدات القياس من الكاتلوج — تُحدّث القائمة فور إضافة وحدة جديدة من تبويب الكاتلوج
   const { data: catalogUnits } = trpc.catalog.units.list.useQuery();
+  const pmv2ResolvedCatalogUnit = useMemo(() => {
+    if (!hasPmv2PurchaseContext || !catalogUnits?.length || !pmv2UnitId) return null;
+    return (catalogUnits as any[]).find((unit: any) => Number(unit.id) === pmv2UnitId) || null;
+  }, [hasPmv2PurchaseContext, catalogUnits, pmv2UnitId]);
+
 
   const createMut = trpc.purchaseOrders.create.useMutation({
-    onSuccess: (data) => {
-      toast.success(`${t.purchaseOrders.createNew} ${data.poNumber}`);
+    onSuccess: async (data) => {
+      toast.success(
+        data.pmv2Linked
+          ? `${t.purchaseOrders.createNew} ${data.poNumber} — ${t.workflow.purchase.pmv2LinkedAutomatically}`
+          : `${t.purchaseOrders.createNew} ${data.poNumber}`,
+      );
       if (fromIdeaId) {
         linkIdeaMut.mutate({ id: fromIdeaId, purchaseOrderId: data.id! });
       }
       setLocation(`/purchase-orders/${data.id}`);
     },
-    onError: (err) => toast.error(err.message),
+    onError: (err) => toast.error(localizeApiError(err.message)),
   });
 
   const saveDraftMut = trpc.purchaseOrders.saveDraft.useMutation({
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       toast.success(`${t.purchaseOrders.saveDraft} — ${data.poNumber}`);
       setLocation(`/purchase-orders/${data.id}`);
     },
-    onError: (err) => toast.error(err.message),
+    onError: (err) => toast.error(localizeApiError(err.message)),
   });
 
   const updateDraftMut = trpc.purchaseOrders.updateDraft.useMutation({
@@ -422,11 +472,74 @@ export default function CreatePurchaseOrder() {
       toast.success(t.purchaseOrders.saveChangesSuccess);
       setLocation(`/purchase-orders/${draftId}`);
     },
-    onError: (err) => toast.error(err.message),
+    onError: (err) => toast.error(localizeApiError(err.message)),
   });
 
   const [draftLoaded, setDraftLoaded] = useState(false);
-  const [items, setItems] = useState<ItemForm[]>([emptyItem()]);
+  const [items, setItems] = useState<ItemForm[]>(() => hasPmv2PurchaseContext
+    ? [{
+        sourceType: "catalog",
+        catalogItemId: pmv2CatalogItemId!,
+        itemName: pmv2ItemName,
+        description: "",
+        quantity: pmv2MinimumPurchaseUnits,
+        unit: pmv2Unit,
+        photoUrls: [],
+        notes: `PM V2 ${pmv2TaskNumber}${pmv2ItemCode ? ` · ${t.workflow.purchase.pmv2CodeLabel} ${pmv2ItemCode}` : ""} · ${t.workflow.purchase.pmv2ShortageLinkedQty} ${pmv2MinimumPurchaseUnits} ${pmv2Unit}`.trim(),
+      }]
+    : [emptyItem()]);
+
+  // Catalog item names are governed master data. If the viewer changes the UI
+  // language while the form is still open, keep the read-only catalog name in
+  // sync with the Arabic/English master fields (Urdu deliberately uses English).
+  useEffect(() => {
+    setItems(prev => prev.map(item => {
+      if (item.sourceType !== "catalog" || (!item._catalogNameAr && !item._catalogNameEn)) return item;
+      const localized = language === "ar"
+        ? (item._catalogNameAr || item._catalogNameEn || item.itemName)
+        : (item._catalogNameEn || item._catalogNameAr || item.itemName);
+      return localized === item.itemName ? item : { ...item, itemName: localized };
+    }));
+  }, [language]);
+
+  // PM V2 passes a stable Catalog Unit ID when the current Master Data can resolve it.
+  // Canonicalize the bound PO item to the active Arabic unit name expected by this form.
+  // If the unit cannot be resolved, keep the field editable as an explicit fallback.
+  useEffect(() => {
+    if (!hasPmv2PurchaseContext || !pmv2CatalogItemId || !pmv2ResolvedCatalogUnit?.nameAr) return;
+    const canonicalUnit = String(pmv2ResolvedCatalogUnit.nameAr).trim();
+    if (!canonicalUnit) return;
+    setItems(prev => {
+      const idx = prev.findIndex(item => Number(item.catalogItemId) === pmv2CatalogItemId);
+      if (idx < 0 || prev[idx].unit === canonicalUnit) return prev;
+      return prev.map((item, itemIndex) => itemIndex === idx ? { ...item, unit: canonicalUnit } : item);
+    });
+  }, [hasPmv2PurchaseContext, pmv2CatalogItemId, pmv2ResolvedCatalogUnit?.nameAr]);
+
+  // PM V2-linked Purchase is intentionally one shortage item = one Purchase item.
+  // Keep the linked identity and exact shortage quantity authoritative even if stale UI state exists.
+  useEffect(() => {
+    if (!hasPmv2PurchaseContext || !pmv2CatalogItemId) return;
+    setItems(prev => {
+      const current = prev.find(item => Number(item.catalogItemId) === pmv2CatalogItemId) || prev[0];
+      const canonicalUnit = String(pmv2ResolvedCatalogUnit?.nameAr || current?.unit || pmv2Unit || "").trim();
+      const lockedItem: ItemForm = {
+        ...(current || emptyItem()),
+        sourceType: "catalog",
+        catalogItemId: pmv2CatalogItemId,
+        itemName: pmv2ItemName,
+        quantity: pmv2MinimumPurchaseUnits,
+        unit: canonicalUnit,
+      };
+      const alreadyLocked = prev.length === 1
+        && prev[0].sourceType === "catalog"
+        && Number(prev[0].catalogItemId) === pmv2CatalogItemId
+        && prev[0].itemName === pmv2ItemName
+        && Number(prev[0].quantity) === pmv2MinimumPurchaseUnits
+        && prev[0].unit === canonicalUnit;
+      return alreadyLocked ? prev : [lockedItem];
+    });
+  }, [hasPmv2PurchaseContext, pmv2CatalogItemId, pmv2ItemName, pmv2MinimumPurchaseUnits, pmv2ResolvedCatalogUnit?.nameAr, pmv2Unit, draftLoaded]);
 
   // تحميل أصناف المسودة عند فتح صفحة التعديل
   useEffect(() => {
@@ -436,8 +549,8 @@ export default function CreatePurchaseOrder() {
         setItems(draftPO.items.map((i: any) => ({
           sourceType: i.catalogItemId ? "catalog" as const : "manual" as const,
           catalogItemId: i.catalogItemId ?? null,
-          itemName: i.itemName || "",
-          description: i.description || "",
+          itemName: getLocalizedItemField(i, "itemName", language) || i.itemName || "",
+          description: getLocalizedItemField(i, "description", language) || i.description || "",
           quantity: i.quantity || 1,
           unit: i.unit || t.purchaseOrders.defaultUnit,
           photoUrls: i.photoUrls || (i.photoUrl ? [i.photoUrl] : []),
@@ -493,16 +606,13 @@ const handleCatalogSelect = (catalogItem: any) => {
             sourceType: "catalog",
             catalogItemId: catalogItem.id,
 
-            itemName: catalogItem.nameAr || "",
-            description: catalogItem.nameEn || "",
-            // 2B-10-2B: لا ننقل وحدة معطّلة إلى طلب شراء جديد حتى لو بقيت
-            // كنص تاريخي على Master Item قديم. نستخدم فقط وحدة Catalog نشطة.
-            unit: (() => {
-              const catalogUnit = (catalogUnits || []).find((u: any) =>
-                u.nameAr === catalogItem.unit?.trim() || u.nameEn === catalogItem.unit?.trim()
-              );
-              return catalogUnit?.nameAr || "";
-            })(),
+            itemName: getLocalizedCatalogName(catalogItem, language),
+            description: getLocalizedCatalogDescription(catalogItem, language),
+            _catalogNameAr: catalogItem.nameAr || "",
+            _catalogNameEn: catalogItem.nameEn || "",
+            // Keep the canonical stored value in Arabic, while the Select renders
+            // the Arabic/English master label according to the viewer language.
+            unit: resolveCatalogUnit(catalogItem.unit, catalogUnits as any[] | undefined)?.nameAr || "",
 
             photoUrls: catalogItem.primaryImageUrl ? [catalogItem.primaryImageUrl] : [],
           }
@@ -511,34 +621,59 @@ const handleCatalogSelect = (catalogItem: any) => {
   );
 };
 
+  const purchaseItemsForSubmit = () => {
+    if (!hasPmv2PurchaseContext || !pmv2CatalogItemId) return items.filter(i => i.itemName.trim());
+    const boundItem = items.find(i => Number(i.catalogItemId) === pmv2CatalogItemId);
+    return boundItem ? [{ ...boundItem, quantity: pmv2MinimumPurchaseUnits }] : [];
+  };
+
   const buildItemsPayload = () =>
-    items.filter(i => i.itemName.trim()).map(i => ({
+    purchaseItemsForSubmit().map(i => ({
       catalogItemId: i.catalogItemId,
       itemName:    i.itemName,
       description: i.description || undefined,
-      quantity:    i.quantity,
+      quantity:    hasPmv2PurchaseContext ? pmv2MinimumPurchaseUnits : i.quantity,
       unit:        i.unit || undefined,
       photoUrl:    i.photoUrls?.[0] || undefined,
       photoUrls:   i.photoUrls?.length ? i.photoUrls : undefined,
       notes:       i.notes || undefined,
     }));
 
+  const validatePmv2LinkedPurchase = () => {
+    if (!hasPmv2PurchaseContext || !pmv2CatalogItemId) return true;
+    const boundItem = items.find((item) => Number(item.catalogItemId) === pmv2CatalogItemId);
+    if (!boundItem || items.length !== 1 || boundItem.sourceType !== "catalog") {
+      toast.error(t.workflow.purchase.pmv2SingleShortageOnly);
+      return false;
+    }
+    if (Number(boundItem.quantity || 0) !== pmv2MinimumPurchaseUnits) {
+      toast.error(`${t.workflow.purchase.pmv2ShortageQtyFixed} ${pmv2MinimumPurchaseUnits} ${getLocalizedCatalogUnitName(pmv2ResolvedCatalogUnit?.nameAr || pmv2Unit, catalogUnits as any[] | undefined, language)}`);
+      return false;
+    }
+    if (!String(boundItem.unit || "").trim()) {
+      toast.error(t.workflow.purchase.pmv2UnitAutoFailed);
+      return false;
+    }
+    return true;
+  };
+
   const handleUpdateDraft = () => {
     if (isLinkedTicketActionBlocked) {
-      toast.error("لا يمكن تعديل طلب شراء مرتبط إلا ضمن دورة المسار B النشطة");
+      toast.error(t.workflow.purchase.linkedPoEditPathBOnly);
       return;
     }
-    const validItems = buildItemsPayload();
-    if (validItems.length === 0) { toast.error(t.purchaseOrders.items); return; }
+    if (!validatePmv2LinkedPurchase()) return;
+    const sourceItems = purchaseItemsForSubmit();
+    if (sourceItems.length === 0) { toast.error(t.purchaseOrders.items); return; }
     updateDraftMut.mutate({
       id: draftId!,
       notes: notes || undefined,
-      items: (items as any[]).map(i => ({
+      items: (sourceItems as any[]).map(i => ({
         id: i._existingId || undefined,
         catalogItemId: i.catalogItemId ?? null,
         itemName: i.itemName,
         description: i.description || undefined,
-        quantity: i.quantity,
+        quantity: hasPmv2PurchaseContext ? pmv2MinimumPurchaseUnits : i.quantity,
         unit: i.unit || undefined,
         photoUrl: i.photoUrls?.[0] || undefined,
         photoUrls: i.photoUrls?.length ? i.photoUrls : undefined,
@@ -548,8 +683,9 @@ const handleCatalogSelect = (catalogItem: any) => {
   };
 
   const handleSaveDraft = () => {
+    if (!validatePmv2LinkedPurchase()) return;
     if (isLinkedTicketActionBlocked) {
-      toast.error("لا يمكن حفظ طلب شراء مرتبط إلا لبلاغ مساره B وفي مرحلة اعتماد العمل");
+      toast.error(t.workflow.purchase.linkedPoSavePathBOnly);
       return;
     }
     const validItems = buildItemsPayload();
@@ -558,15 +694,17 @@ const handleCatalogSelect = (catalogItem: any) => {
   };
 
   const handleSubmit = () => {
+    if (!validatePmv2LinkedPurchase()) return;
     if (isLinkedTicketActionBlocked) {
-      toast.error("لا يمكن إرسال طلب شراء مرتبط إلا لبلاغ مساره B وفي مرحلة اعتماد العمل");
+      toast.error(t.workflow.purchase.linkedPoSubmitPathBOnly);
       return;
     }
-    const validItems = items.filter(i => i.itemName.trim());
+    const validItems = purchaseItemsForSubmit();
     if (validItems.length === 0) { toast.error(t.purchaseOrders.items); return; }
     createMut.mutate({
       ticketId,
       ticketItemId,
+      pmv2RequestItemId: hasPmv2PurchaseContext ? pmv2RequestItemId : undefined,
       notes: notes || undefined,
       items: buildItemsPayload(),
     });
@@ -575,11 +713,11 @@ const handleCatalogSelect = (catalogItem: any) => {
   return (
     <div className="max-w-4xl space-y-6">
       <div className="flex items-center gap-3">
-        <Button variant="ghost" size="icon" onClick={() => goBackOrFallback(setLocation, linkedTicketId ? `/tickets/${linkedTicketId}` : "/purchase-orders")}>
-          <ArrowRight className="w-5 h-5" />
+        <Button variant="ghost" size="icon" onClick={() => goBackOrFallback(setLocation, linkedTicketId ? `/tickets/${linkedTicketId}` : hasPmv2PurchaseContext ? "/scheduled-maintenance/warehouse-requests" : "/purchase-orders")}>
+          <ArrowRight className={`w-5 h-5 ${dir === "ltr" ? "rotate-180" : ""}`} />
         </Button>
         <div>
-          <h1 className="text-xl font-bold">{draftId ? `تعديل مسودة ${draftPO?.poNumber || ""}` : t.purchaseOrders.createNew}</h1>
+          <h1 className="text-xl font-bold">{draftId ? `${t.purchaseOrders.editDraft || "Edit draft"} ${draftPO?.poNumber || ""}` : t.purchaseOrders.createNew}</h1>
           <p className="text-sm text-muted-foreground mt-0.5">{t.purchaseOrders.items}</p>
         </div>
       </div>
@@ -599,22 +737,63 @@ const handleCatalogSelect = (catalogItem: any) => {
         </Card>
       )}
 
+      {hasPmv2PurchaseContext && (
+        <Card className="border-amber-200 bg-amber-50/60">
+          <CardContent className="p-4 space-y-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <ShoppingCart className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-amber-900">{t.workflow.purchase.pmv2ShortagePoTitle}</p>
+                  <p className="text-xs text-amber-700">{t.workflow.purchase.pmv2ShortagePoHelp}</p>
+                </div>
+              </div>
+              <Badge variant="outline" className="border-amber-300 bg-amber-100 text-amber-900">
+                {t.workflow.purchase.pmv2LinkedTask}
+              </Badge>
+            </div>
+            <div className="grid gap-2 rounded-md border border-amber-200 bg-white/60 p-3 text-sm sm:grid-cols-2">
+              <p><span className="text-muted-foreground">{t.workflow.purchase.referenceLabel}</span> <span className="font-medium">PM V2</span></p>
+              <p><span className="text-muted-foreground">{t.workflow.purchase.linkedTaskLabel}</span> <span className="font-medium">{pmv2TaskNumber}</span></p>
+              <p><span className="text-muted-foreground">{t.workflow.purchase.requestReasonLabel}</span> <span className="font-medium">{t.workflow.purchase.scheduledMaterialShortage}</span></p>
+              <p><span className="text-muted-foreground">{t.workflow.purchase.linkedItemLabel}</span> <span className="font-medium">{pmv2ItemName}{pmv2ItemCode ? ` · ${pmv2ItemCode}` : ""}</span></p>
+              {pmv2TaskNeedQuantity > 0 && (
+                <p><span className="text-muted-foreground">{t.workflow.purchase.taskNeedLabel}</span> <span className="font-medium">{pmv2TaskNeedQuantity} {pmv2Unit}</span></p>
+              )}
+              {pmv2TeamAvailableAtRequest != null && (
+                <p><span className="text-muted-foreground">{t.workflow.purchase.teamAvailableAtShortage}</span> <span className="font-medium">{pmv2TeamAvailableAtRequest} {pmv2Unit}</span></p>
+              )}
+              <p><span className="text-muted-foreground">{t.workflow.purchase.purchaseQtyLabel}</span> <span className="font-semibold text-amber-900">{pmv2MinimumPurchaseUnits} {getLocalizedCatalogUnitName(pmv2ResolvedCatalogUnit?.nameAr || pmv2Unit, catalogUnits as any[] | undefined, language)}</span></p>
+              {pmv2RequestId && pmv2RequestItemId && (
+                <p><span className="text-muted-foreground">{t.workflow.purchase.pmv2MaterialReference}</span> <span className="font-medium">{t.workflow.purchase.requestNumber} #{pmv2RequestId} · {t.workflow.purchase.itemNumber} #{pmv2RequestItemId}</span></p>
+              )}
+            </div>
+            <p className="text-xs text-amber-800">
+              {t.workflow.purchase.pmv2PoFixedScopeHelp}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
       {isLinkedTicketInvalid && ticket && (
         <Card className="border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/20">
           <CardContent className="p-4 flex items-start gap-3 text-red-800 dark:text-red-300">
             <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
             <div className="space-y-1">
-              <p className="font-semibold">لا يمكن إنشاء أو تعديل طلب الشراء لهذا البلاغ</p>
+              <p className="font-semibold">{t.workflow.purchase.cannotCreateEditPo}</p>
               <p className="text-sm">
-                طلبات الشراء المرتبطة بالبلاغات متاحة للمسار B فقط، ويجب أن يكون البلاغ في المرحلة الصحيحة.
-                المسار الحالي: {ticket.maintenancePath || "غير محدد"} — الحالة الحالية: {ticket.status}.
+                {t.workflow.purchase.linkedPoPathBHelp}
+                {t.workflow.purchase.currentPath} {ticket.maintenancePath || t.workflow.purchase.unspecified} — {t.workflow.purchase.currentStatus} {ticket.status}.
               </p>
             </div>
           </CardContent>
         </Card>
       )}
 
-{items.map((item, idx) => (
+{items.map((item, idx) => {
+  const isPmv2BoundItem = Boolean(hasPmv2PurchaseContext && idx === 0 && item.catalogItemId === pmv2CatalogItemId);
+  const minimumQuantity = isPmv2BoundItem ? pmv2MinimumPurchaseUnits : 1;
+  return (
   <Card key={idx}>
     <CardHeader className="pb-3">
       <div className="flex items-center justify-between">
@@ -622,7 +801,7 @@ const handleCatalogSelect = (catalogItem: any) => {
           {t.purchaseOrders.itemName} #{idx + 1}
         </CardTitle>
 
-        {items.length > 1 && (
+        {items.length > 1 && !isPmv2BoundItem && (
           <Button
             variant="ghost"
             size="icon"
@@ -645,6 +824,7 @@ const handleCatalogSelect = (catalogItem: any) => {
 
         <select
           value={item.sourceType}
+          disabled={isPmv2BoundItem}
           onChange={(e) => {
             const value = e.target.value as "catalog" | "manual";
 
@@ -683,7 +863,7 @@ const handleCatalogSelect = (catalogItem: any) => {
           maxLength={300}
           rows={2}
           onClick={() => {
-            if (item.sourceType === "catalog") {
+            if (item.sourceType === "catalog" && !isPmv2BoundItem) {
               setCatalogTargetIndex(idx);
               setShowCatalogPicker(true);
             }
@@ -692,7 +872,7 @@ const handleCatalogSelect = (catalogItem: any) => {
             updateItem(idx, "itemName", e.target.value.slice(0, 300))
           }
         />
-        <p className="text-[11px] text-muted-foreground text-left">
+        <p className="text-[11px] text-muted-foreground text-start">
           {item.itemName.length} / 300
         </p>
       </div>
@@ -710,7 +890,7 @@ const handleCatalogSelect = (catalogItem: any) => {
           }
           rows={2}
         />
-        <p className="text-[11px] text-muted-foreground text-left">
+        <p className="text-[11px] text-muted-foreground text-start">
           {item.description.length} / 1500
         </p>
       </div>
@@ -724,16 +904,20 @@ const handleCatalogSelect = (catalogItem: any) => {
 
           <Input
             type="number"
-            min={1}
+            min={minimumQuantity}
             value={item.quantity}
+            disabled={isPmv2BoundItem}
             onChange={e =>
               updateItem(
                 idx,
                 "quantity",
-                parseInt(e.target.value) || 1
+                Math.max(minimumQuantity, parseInt(e.target.value) || minimumQuantity)
               )
             }
           />
+          {isPmv2BoundItem && (
+            <p className="text-xs text-muted-foreground">{t.workflow.purchase.pmv2QtyFixed}</p>
+          )}
         </div>
 
         {/* الوحدة */}
@@ -743,6 +927,7 @@ const handleCatalogSelect = (catalogItem: any) => {
           <Select
             value={item.unit}
             onValueChange={value => updateItem(idx, "unit", value)}
+            disabled={isPmv2BoundItem && Boolean(pmv2ResolvedCatalogUnit)}
           >
             <SelectTrigger dir="auto">
               <SelectValue placeholder={t.purchaseOrders.unit} />
@@ -750,24 +935,27 @@ const handleCatalogSelect = (catalogItem: any) => {
             <SelectContent>
               {(catalogUnits || []).map((u: any) => (
                 <SelectItem key={u.id} value={u.nameAr}>
-                  {u.nameEn && u.nameEn !== u.nameAr
-                    ? `${u.nameEn} / ${u.nameAr}`
-                    : u.nameAr}
+                  <span dir={language === "ar" ? "rtl" : "ltr"}>{getLocalizedCatalogUnitName(u.nameAr, catalogUnits as any[] | undefined, language)}</span>
                 </SelectItem>
               ))}
               {/* مسودة تاريخية فقط: نُظهر الوحدة القديمة كقيمة محفوظة غير قابلة للاختيار من جديد. */}
               {(item as any)._existingId && item.unit && !(catalogUnits || []).some((u: any) => u.nameAr === item.unit || u.nameEn === item.unit) && (
-                <SelectItem value={item.unit} disabled>{item.unit} (تاريخية/معطّلة)</SelectItem>
+                <SelectItem value={item.unit} disabled>{getLocalizedCatalogUnitName(item.unit, catalogUnits as any[] | undefined, language)} ({t.workflow.purchase.historicalDisabled})</SelectItem>
               )}
             </SelectContent>
           </Select>
+          {isPmv2BoundItem && !pmv2ResolvedCatalogUnit && (
+            <p className="text-xs text-amber-700">
+              {t.workflow.purchase.pmv2UnitNeedsSelection}
+            </p>
+          )}
         </div>
 
 {/* الصور — حتى 4 */}
 <div className="space-y-2">
   <Label>
     {t.tickets.photos}
-    <span className="text-xs text-muted-foreground mr-2">
+    <span className="text-xs text-muted-foreground ms-2">
       ({(item.photoUrls || []).length}/4)
     </span>
   </Label>
@@ -876,23 +1064,26 @@ const handleCatalogSelect = (catalogItem: any) => {
             updateItem(idx, "notes", e.target.value.slice(0, 200))
           }
         />
-        <p className="text-[11px] text-muted-foreground text-left">
+        <p className="text-[11px] text-muted-foreground text-start">
           {item.notes.length} / 200
         </p>
       </div>
 
     </CardContent>
   </Card>
-))}
+  );
+})}
 
-{/* زر إضافة صنف */}
-<Button
-  variant="outline"
-  onClick={() => setItems(prev => [...prev, emptyItem()])}
-  className="w-full gap-2 border-dashed h-12"
->
-  <Plus className="w-4 h-4" /> {t.common.add}
-</Button>
+{/* طلب PM V2 المرتبط = عجز واحد / صنف واحد، لذلك لا يظهر زر إضافة صنف. */}
+{!hasPmv2PurchaseContext && (
+  <Button
+    variant="outline"
+    onClick={() => setItems(prev => [...prev, emptyItem()])}
+    className="w-full gap-2 border-dashed h-12"
+  >
+    <Plus className="w-4 h-4" /> {t.common.add}
+  </Button>
+)}
 
       <div className="space-y-3">
         <Textarea
@@ -925,18 +1116,20 @@ const handleCatalogSelect = (catalogItem: any) => {
               </Button>
             ) : (
             <div className="flex gap-2">
-              <Button
-                variant="outline"
-                onClick={handleSaveDraft}
-                disabled={saveDraftMut.isPending || createMut.isPending || isLinkedTicketActionBlocked}
-                className="flex-1 gap-2"
-                size="lg"
-              >
-                {saveDraftMut.isPending
-                  ? <Loader2 className="w-4 h-4 animate-spin" />
-                  : <BookOpen className="w-4 h-4" />}
-                {t.purchaseOrders.saveDraft}
-              </Button>
+              {!hasPmv2PurchaseContext && (
+                <Button
+                  variant="outline"
+                  onClick={handleSaveDraft}
+                  disabled={saveDraftMut.isPending || createMut.isPending || isLinkedTicketActionBlocked}
+                  className="flex-1 gap-2"
+                  size="lg"
+                >
+                  {saveDraftMut.isPending
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <BookOpen className="w-4 h-4" />}
+                  {t.purchaseOrders.saveDraft}
+                </Button>
+              )}
               <Button
                 onClick={handleSubmit}
                 disabled={createMut.isPending || saveDraftMut.isPending || isLinkedTicketActionBlocked}

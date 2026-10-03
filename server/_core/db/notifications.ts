@@ -44,6 +44,7 @@ import {
   inventorySettlementNumberCounter,
 } from "../../../drizzle/schema";
 import { ENV } from '../env';
+import { APP_ROLE } from '../../../shared/roles';
 
 
 import { getDb } from "./client";
@@ -88,20 +89,27 @@ function queueNotificationTranslation(notificationId: number, title: string, mes
   }).catch(() => {});
 }
 
-export async function createNotification(data: { userId: number; title: string; message: string; type?: string; relatedTicketId?: number; relatedPoId?: number; allowSeniorManagement?: boolean }) {
+export async function createNotification(data: { userId: number; title: string; message: string; type?: string; relatedTicketId?: number; relatedPoId?: number; allowSeniorManagement?: boolean; allowItManager?: boolean }) {
   const db = await getDb();
   if (!db) return;
 
-  // ── Senior Management notification policy ───────────────────────────────
-  // دور "الإدارة العليا" (senior_management) لا يستقبل أي إشعارات إطلاقاً،
-  // باستثناء حالة واحدة فقط: طلب شراء بانتظار اعتماده بعد موافقة الحسابات.
-  // أي استدعاء آخر (حالي أو مستقبلي) يستهدف هذا الدور يُحظر تلقائياً هنا،
-  // ما لم يُمرَّر allowSeniorManagement: true صراحةً من نقطة الاستدعاء المصرّح بها.
-  if (!data.allowSeniorManagement) {
+  // ── Restricted-role notification policies ───────────────────────────────
+  // Senior Management receives only its explicit purchase-approval exception.
+  // IT Manager receives only two explicit direct notifications:
+  // 1) a newly routed IT ticket, 2) a newly generated PM V2 team task.
+  // Default-deny here prevents purchase/SLA/closure/warehouse/general broadcasts
+  // from leaking to the IT role when future notification call sites are added.
+  if (!data.allowSeniorManagement || !data.allowItManager) {
     const recipient = await getUserById(data.userId);
-    if (recipient?.role === "senior_management") {
+    if (recipient?.role === APP_ROLE.SENIOR_MANAGEMENT && !data.allowSeniorManagement) {
       console.warn(
         `[Notifications] Blocked notification to senior_management (userId=${data.userId}): "${data.title}" — not in the allowed exception list.`
+      );
+      return;
+    }
+    if (recipient?.role === APP_ROLE.IT_MANAGER && !data.allowItManager) {
+      console.warn(
+        `[Notifications] Blocked notification to it_manager (userId=${data.userId}): "${data.title}" — only IT ticket routing and new PM V2 task notifications are allowed.`
       );
       return;
     }

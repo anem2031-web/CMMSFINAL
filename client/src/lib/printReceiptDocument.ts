@@ -10,21 +10,27 @@
 // بنفس أسلوب وثيقتي التسليم والمرتجع (نافذة منبثقة تطبع تلقائياً)
 // ============================================================
 import QRCode from "qrcode";
+import { activeUiLanguage, purchaseOpsText } from "@/i18n/purchaseOpsUi";
+import type { SupportedLanguage } from "@/contexts/LanguageContext";
 
-const fmtMoney = (v: any) => {
+const localeFor = (language: SupportedLanguage) => language === "en" ? "en-US" : language === "ur" ? "ur-PK" : "ar-SA";
+const fmtMoney = (v: any, language: SupportedLanguage) => {
   const n = parseFloat(String(v ?? ""));
-  return isNaN(n) ? "—" : n.toLocaleString("ar-SA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return isNaN(n) ? "—" : n.toLocaleString(localeFor(language), { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
-const fmtQty = (v: any) => {
+const fmtQty = (v: any, language: SupportedLanguage) => {
   const n = parseFloat(String(v ?? ""));
-  return isNaN(n) ? "—" : n.toLocaleString("ar-SA", { maximumFractionDigits: 3 });
+  return isNaN(n) ? "—" : n.toLocaleString(localeFor(language), { maximumFractionDigits: 3 });
 };
 const esc = (s: any) =>
   String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 // يبني نص HTML الكامل للمستند (بلا فتح نافذة) — يُستخدم من الطباعة المباشرة
 // ومن تصدير/عرض PDF الحقيقي عبر الخادم (Puppeteer) بنفس القالب حرفيًا
-export async function buildReceiptHtml(receipt: any): Promise<string> {
+export async function buildReceiptHtml(receipt: any, language: SupportedLanguage = activeUiLanguage()): Promise<string> {
+  const p = (source: string, vars?: Record<string, string | number | null | undefined>) => purchaseOpsText(language, source, vars);
+  const locale = localeFor(language);
+  const dir = language === "en" ? "ltr" : "rtl";
   let qrDataUrl = "";
   try {
     qrDataUrl = await QRCode.toDataURL(receipt.receiptNumber, { width: 110, margin: 1 });
@@ -35,9 +41,9 @@ export async function buildReceiptHtml(receipt: any): Promise<string> {
   const ocrConf = receipt.ocrConfidence ? parseFloat(String(receipt.ocrConfidence)) : null;
 
   const sourceBadge = (i: any) =>
-    i.ocrExtracted && i.manuallyEdited ? "OCR + تعديل يدوي"
-      : i.ocrExtracted ? "تحليل OCR"
-      : "إدخال يدوي";
+    i.ocrExtracted && i.manuallyEdited ? p("OCR + تعديل يدوي")
+      : i.ocrExtracted ? p("تحليل OCR")
+      : p("إدخال يدوي");
 
   const rowsHtml = items.map((i: any, idx: number) => `
 <tr>
@@ -45,14 +51,14 @@ export async function buildReceiptHtml(receipt: any): Promise<string> {
   <td class="item-name">${esc(i.itemName)}<div class="src">${sourceBadge(i)}</div></td>
   <td class="mono">${esc(i.internalCode || "—")}</td>
   <td class="mono barcode-cell">${esc(i.manufacturerBarcode || "—")}</td>
-  <td>${fmtQty(i.receivedQuantity)} ${esc(i.unit || "")}</td>
-  <td>${fmtMoney(i.unitCost)}</td>
-  <td>${fmtMoney(i.taxAmount)}</td>
-  <td class="mono">${fmtMoney(i.lineTotal)}</td>
+  <td>${fmtQty(i.receivedQuantity, language)} ${esc(i.unit || "")}</td>
+  <td>${fmtMoney(i.unitCost, language)}</td>
+  <td>${fmtMoney(i.taxAmount, language)}</td>
+  <td class="mono">${fmtMoney(i.lineTotal, language)}</td>
 </tr>`).join("");
 
   const html = `<!DOCTYPE html>
-<html dir="rtl" lang="ar">
+<html dir="${dir}" lang="${language}">
 <head><meta charset="UTF-8"/><title>${esc(receipt.receiptNumber)}</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap');
@@ -71,11 +77,11 @@ body{font-family:'Cairo',Arial,sans-serif;background:#fff;color:#1a1a1a;padding:
 .field-label{font-size:10px;color:#777}
 .field-value{font-size:12px;font-weight:600;color:#111}
 table{width:100%;border-collapse:collapse;font-size:11px}
-th{background:#f0fdf4;color:#14532d;font-weight:700;padding:6px 6px;border:1px solid #d1e7d8;text-align:right}
+th{background:#f0fdf4;color:#14532d;font-weight:700;padding:6px 6px;border:1px solid #d1e7d8;text-align:start}
 td{padding:6px 6px;border:1px solid #e5e7eb;vertical-align:top}
 .item-name{font-weight:600;min-width:130px}
 .src{font-size:9px;color:#888;font-weight:400;margin-top:2px}
-.mono{font-family:monospace;direction:ltr;text-align:right}
+.mono{font-family:monospace;direction:ltr;text-align:start}
 .barcode-cell{font-size:12px;font-weight:700}
 .totals{margin-top:10px;margin-inline-start:auto;width:260px;font-size:12px}
 .totals .t-row{display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid #eee}
@@ -90,67 +96,67 @@ td{padding:6px 6px;border:1px solid #e5e7eb;vertical-align:top}
 <body>
 <div class="header">
   <div>
-    <div class="header-title">🧾 سند استلام المشتريات</div>
-    <div class="header-sub">نظام إدارة الصيانة المتكامل</div>
+    <div class="header-title">🧾 ${p("سند استلام المشتريات")}</div>
+    <div class="header-sub">${p("نظام إدارة الصيانة المتكامل")}</div>
   </div>
   <div class="header-meta">
-    <div>تاريخ الاستلام: <strong>${new Date(receipt.receivedAt || receipt.createdAt).toLocaleDateString("ar-SA", { year: "numeric", month: "long", day: "numeric" })}</strong></div>
+    <div>${p("تاريخ الاستلام")}: <strong>${new Date(receipt.receivedAt || receipt.createdAt).toLocaleDateString(locale, { year: "numeric", month: "long", day: "numeric" })}</strong></div>
     <div><span class="badge">${esc(receipt.receiptNumber)}</span></div>
-    ${receipt.poNumber ? `<div>طلب الشراء المرتبط: <strong>${esc(receipt.poNumber)}</strong></div>` : `<div>استلام مستقل (بلا طلب شراء)</div>`}
+    ${receipt.poNumber ? `<div>${p("طلب الشراء المرتبط")}: <strong>${esc(receipt.poNumber)}</strong></div>` : `<div>${p("استلام مستقل (بلا طلب شراء)")}</div>`}
   </div>
 </div>
 
 ${qrDataUrl ? `<div class="qr-row">
   <img src="${qrDataUrl}" width="86" height="86" style="border:1px solid #eee;border-radius:6px"/>
   <div>
-    <div class="field-label">رقم سند الاستلام</div>
+    <div class="field-label">${p("رقم سند الاستلام")}</div>
     <div class="field-value" style="font-size:16px;font-family:monospace">${esc(receipt.receiptNumber)}</div>
   </div>
 </div>` : ""}
 
 <div class="section">
-  <div class="section-title">بيانات المورد وفاتورته</div>
+  <div class="section-title">${p("بيانات المورد وفاتورته")}</div>
   <div class="grid">
-    <div class="field"><span class="field-label">اسم المورد</span><span class="field-value">${esc(receipt.vendorName || "—")}</span></div>
-    <div class="field"><span class="field-label">الرقم الضريبي</span><span class="field-value mono">${esc(receipt.vendorTaxNumber || "—")}</span></div>
-    <div class="field"><span class="field-label">رقم فاتورة المورد</span><span class="field-value mono">${esc(receipt.invoiceNumber || "—")}</span></div>
-    <div class="field"><span class="field-label">تاريخ الفاتورة</span><span class="field-value">${receipt.invoiceDate ? new Date(receipt.invoiceDate).toLocaleDateString("ar-SA") : "—"}</span></div>
-    <div class="field"><span class="field-label">مصدر الإدخال</span><span class="field-value">${anyOcr ? `تحليل آلي OCR${ocrConf != null ? ` (ثقة ${ocrConf.toFixed(0)}%)` : ""}` : "إدخال يدوي"}</span></div>
-    <div class="field"><span class="field-label">أمين المستودع (المستلم)</span><span class="field-value">${esc(receipt.receivedByName || "—")}</span></div>
+    <div class="field"><span class="field-label">${p("اسم المورد")}</span><span class="field-value">${esc(receipt.vendorName || "—")}</span></div>
+    <div class="field"><span class="field-label">${p("الرقم الضريبي")}</span><span class="field-value mono">${esc(receipt.vendorTaxNumber || "—")}</span></div>
+    <div class="field"><span class="field-label">${p("رقم فاتورة المورد")}</span><span class="field-value mono">${esc(receipt.invoiceNumber || "—")}</span></div>
+    <div class="field"><span class="field-label">${p("تاريخ الفاتورة")}</span><span class="field-value">${receipt.invoiceDate ? new Date(receipt.invoiceDate).toLocaleDateString(locale) : "—"}</span></div>
+    <div class="field"><span class="field-label">${p("مصدر الإدخال")}</span><span class="field-value">${anyOcr ? `${p("تحليل آلي OCR")}${ocrConf != null ? ` (${ocrConf.toFixed(0)}%)` : ""}` : p("إدخال يدوي")}</span></div>
+    <div class="field"><span class="field-label">${p("أمين المستودع (المستلم)")}</span><span class="field-value">${esc(receipt.receivedByName || "—")}</span></div>
   </div>
 </div>
 
 <div class="section">
-  <div class="section-title">الأصناف المستلمة (${items.length})</div>
+  <div class="section-title">${p("الأصناف المستلمة ({count})", { count: items.length })}</div>
   <table>
     <thead><tr>
       <th style="width:26px">#</th>
-      <th>الصنف</th>
-      <th>الكود الداخلي</th>
-      <th>باركود المصنع</th>
-      <th>الكمية</th>
-      <th>سعر الوحدة</th>
-      <th>الضريبة</th>
-      <th>الإجمالي</th>
+      <th>${p("اسم الصنف")}</th>
+      <th>${p("الكود الداخلي")}</th>
+      <th>${p("باركود المصنع")}</th>
+      <th>${p("الكمية")}</th>
+      <th>${p("سعر الوحدة")}</th>
+      <th>${p("الضريبة")}</th>
+      <th>${p("الإجمالي")}</th>
     </tr></thead>
     <tbody>${rowsHtml}</tbody>
   </table>
   <div class="totals">
-    <div class="t-row"><span>الإجمالي قبل الضريبة</span><span class="mono">${fmtMoney(receipt.subtotal)}</span></div>
-    <div class="t-row"><span>ضريبة القيمة المضافة</span><span class="mono">${fmtMoney(receipt.taxAmount)}</span></div>
-    <div class="t-row t-grand"><span>الإجمالي الكلي</span><span class="mono">${fmtMoney(receipt.grandTotal)} ر.س</span></div>
+    <div class="t-row"><span>${p("الإجمالي قبل الضريبة")}</span><span class="mono">${fmtMoney(receipt.subtotal, language)}</span></div>
+    <div class="t-row"><span>${p("ضريبة القيمة المضافة")}</span><span class="mono">${fmtMoney(receipt.taxAmount, language)}</span></div>
+    <div class="t-row t-grand"><span>${p("الإجمالي الكلي")}</span><span class="mono">${fmtMoney(receipt.grandTotal, language)} ${language === "en" ? "SAR" : language === "ur" ? "سعودی ریال" : "ر.س"}</span></div>
   </div>
-  ${receipt.hasDiscrepancy ? `<div class="warn-box">⚠️ سُجّلت فروقات أثناء الاستلام${receipt.discrepancyNotes ? `: ${esc(receipt.discrepancyNotes)}` : ""}</div>` : ""}
-  ${receipt.notes ? `<div class="warn-box" style="background:#f8fafc;border-color:#dde3ea;color:#334155">📝 ملاحظات: ${esc(receipt.notes)}</div>` : ""}
+  ${receipt.hasDiscrepancy ? `<div class="warn-box">⚠️ ${p("سُجّلت فروقات أثناء الاستلام")}${receipt.discrepancyNotes ? `: ${esc(receipt.discrepancyNotes)}` : ""}</div>` : ""}
+  ${receipt.notes ? `<div class="warn-box" style="background:#f8fafc;border-color:#dde3ea;color:#334155">📝 ${p("ملاحظات")}: ${esc(receipt.notes)}</div>` : ""}
 </div>
 
 <div class="sig-section">
-  <div class="sig-box">توقيع أمين المستودع<br/>${esc(receipt.receivedByName || "&nbsp;")}</div>
-  <div class="sig-box">توقيع المعتمد<br/>&nbsp;</div>
+  <div class="sig-box">${p("توقيع أمين المستودع")}<br/>${esc(receipt.receivedByName || "&nbsp;")}</div>
+  <div class="sig-box">${p("توقيع المعتمد")}<br/>&nbsp;</div>
 </div>
 <div class="footer">
-  <span>وثيقة آلية — نظام CMMS</span>
-  <span class="print-count">عدد مرات الطباعة: <strong>${(receipt.printCount ?? 0) + 1}</strong></span>
+  <span>${p("وثيقة آلية — نظام CMMS")}</span>
+  <span class="print-count">${p("عدد مرات الطباعة")}: <strong>${(receipt.printCount ?? 0) + 1}</strong></span>
 </div>
 <script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();}<\\/script>
 </body></html>`;
@@ -163,6 +169,6 @@ export async function printReceiptDocument(receipt: any, onPrinted?: () => void)
   onPrinted?.();
   // نفتح النافذة فوراً (متزامنة مع الضغطة) لتفادي حظر النوافذ المنبثقة
   const win = window.open("", "_blank", "width=920,height=800");
-  const html = await buildReceiptHtml(receipt);
+  const html = await buildReceiptHtml(receipt, activeUiLanguage());
   if (win) { win.document.write(html); win.document.close(); }
 }

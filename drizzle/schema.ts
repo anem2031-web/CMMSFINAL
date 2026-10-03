@@ -147,6 +147,20 @@ export const catalogAuditLogs = mysqlTable("catalog_audit_logs", {
 	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
 });
 
+export const catalogCodeAliases = mysqlTable("catalog_code_aliases", {
+	id: int().autoincrement().notNull(),
+	entityType: mysqlEnum(['node','item']).notNull(),
+	entityId: int().notNull(),
+	oldCode: varchar({ length: 100 }).notNull(),
+	newCode: varchar({ length: 100 }).notNull(),
+	createdById: int(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	uniqueIndex("uq_catalog_code_alias_entity_old").on(table.entityType, table.oldCode),
+	index("idx_catalog_code_alias_entity_id").on(table.entityType, table.entityId),
+]);
+
 export const catalogBusiness = mysqlTable("catalog_business", {
 	id: int().autoincrement().notNull(),
 	itemId: int().notNull(),
@@ -306,7 +320,10 @@ export const catalogNodes = mysqlTable("catalog_nodes", {
 	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
 	updatedAt: timestamp({ mode: 'string' }).defaultNow().onUpdateNow().notNull(),
 	code: varchar({ length: 20 }),
-});
+},
+(table) => [
+	uniqueIndex("catalog_nodes_code_unique").on(table.code),
+]);
 
 export const catalogSettings = mysqlTable("catalog_settings", {
 	id: int().autoincrement().notNull(),
@@ -948,6 +965,67 @@ export const deliveryDocuments = mysqlTable("delivery_documents", {
 	index("idx_delivery_documents_ticket").on(table.ticketId),
 ]);
 
+// ══════════════════════════════════════════════════════════════════════
+// warehouse_issue_batches — سند صرف مخزني تجميعي (WIS)
+// طبقة تجميع فقط فوق مسار delivery_documents الحالي. لا تستبدل DLV ولا
+// تغيّر ارتباطاته؛ كل بند WIS يحتفظ بهوية DLV/Inventory/Lot الناتجة فعلياً.
+// ══════════════════════════════════════════════════════════════════════
+export const warehouseIssueBatches = mysqlTable("warehouse_issue_batches", {
+	id: int().autoincrement().primaryKey().notNull(),
+	issueNumber: varchar({ length: 30 }).notNull(),
+	warehouseId: int().notNull(),
+	warehouseName: varchar({ length: 200 }).notNull(),
+	deliveredToId: int().notNull(),
+	deliveredToName: varchar({ length: 200 }).notNull(),
+	issuedById: int().notNull(),
+	issuedByName: varchar({ length: 200 }).notNull(),
+	notes: text(),
+	itemsCount: int().default(0).notNull(),
+	status: mysqlEnum(['completed','cancelled']).default('completed').notNull(),
+	printCount: int().default(0).notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	uniqueIndex("uq_warehouse_issue_batches_number").on(table.issueNumber),
+	index("idx_warehouse_issue_batches_warehouse").on(table.warehouseId),
+	index("idx_warehouse_issue_batches_recipient").on(table.deliveredToId),
+	index("idx_warehouse_issue_batches_created_by").on(table.issuedById),
+]);
+
+export const warehouseIssueBatchItems = mysqlTable("warehouse_issue_batch_items", {
+	id: int().autoincrement().primaryKey().notNull(),
+	// Patch 125: مطابق للجدول الفعلي الذي أُنشئ يدوياً في الإنتاج.
+	// WIS يبقى طبقة تجميع؛ لا نضيف FK فعلياً إلى DLV/Inventory/Lot أو حتى
+	// إلى الرأس حتى لا نفرض سياسة حذف جديدة على دورة الصرف الحالية.
+	batchId: int().notNull(),
+	deliveryDocumentId: int().notNull(),
+	deliveryNumber: varchar({ length: 30 }).notNull(),
+	inventoryTransactionId: int().notNull(),
+	inventoryLotId: int().notNull(),
+	lotCode: varchar({ length: 100 }).notNull(),
+	inventoryId: int().notNull(),
+	catalogItemId: int(),
+	itemName: varchar({ length: 255 }).notNull(),
+	itemCode: varchar({ length: 100 }),
+	quantity: decimal({ precision: 12, scale: 3 }).notNull(),
+	unit: varchar({ length: 50 }),
+	referenceType: varchar({ length: 50 }),
+	referenceId: int(),
+	referenceNumber: varchar({ length: 100 }),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	index("idx_warehouse_issue_batch_items_batch").on(table.batchId),
+	index("idx_warehouse_issue_batch_items_delivery").on(table.deliveryDocumentId),
+	index("idx_warehouse_issue_batch_items_lot").on(table.inventoryLotId),
+]);
+
+export const warehouseIssueBatchNumberCounter = mysqlTable("warehouse_issue_batch_number_counter", {
+	id: int().autoincrement().primaryKey().notNull(),
+	year: int().notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+});
+
 export const externalMaintenanceJobs = mysqlTable("external_maintenance_jobs", {
 	id: int().autoincrement().notNull(),
 	ticketId: int().notNull(),
@@ -1434,6 +1512,30 @@ export const inventorySettlements = mysqlTable("inventory_settlements", {
 	index("inventory_settlements_appliedby_idx").on(table.appliedById),
 ]);
 
+export const inventoryIssueCostAllocations = mysqlTable("inventory_issue_cost_allocations", {
+	id: int().autoincrement().notNull(),
+	inventoryTransactionId: int().notNull(),
+	inventoryId: int().notNull(),
+	lotId: int().notNull(),
+	deliveryNumber: varchar({ length: 50 }),
+	beneficiarySiteId: int().notNull(),
+	beneficiarySectionId: int(),
+	beneficiaryAssetId: int(),
+	quantity: decimal({ precision: 12, scale: 3 }).notNull(),
+	lotIssueUnitCostSnapshot: decimal({ precision: 12, scale: 4 }).notNull(),
+	allocatedCostTotal: decimal({ precision: 14, scale: 2 }).notNull(),
+	createdById: int().notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	index("idx_issue_cost_tx").on(table.inventoryTransactionId),
+	index("idx_issue_cost_inventory").on(table.inventoryId),
+	index("idx_issue_cost_lot").on(table.lotId),
+	index("idx_issue_cost_site_date").on(table.beneficiarySiteId, table.createdAt),
+	index("idx_issue_cost_section_date").on(table.beneficiarySectionId, table.createdAt),
+	index("idx_issue_cost_asset_date").on(table.beneficiaryAssetId, table.createdAt),
+]);
+
 export const inventoryTransactions = mysqlTable("inventory_transactions", {
 	id: int().autoincrement().notNull(),
 	inventoryId: int().notNull(),
@@ -1813,6 +1915,29 @@ export const procurementComments = mysqlTable("procurement_comments", {
 	purchaseOrderItemId: int(),
 });
 
+// سجل موحّد لتاريخ بند طلب الشراء. الغرض منه حفظ كل انتقال تشغيلي جديد
+// (حالة/مندوب/دفعة) مع إبقاء السجلات القديمة قابلة للعرض من التعليقات وحقول
+// التوقيت وaudit_logs. لا توجد FK فعلية التزامًا بنمط الجداول التشغيلية في المشروع.
+export const purchaseOrderItemHistory = mysqlTable("purchase_order_item_history", {
+	id: int().autoincrement().notNull(),
+	purchaseOrderItemId: int().notNull(),
+	purchaseOrderId: int().notNull(),
+	eventType: varchar({ length: 80 }).notNull(),
+	previousStatus: varchar({ length: 50 }),
+	newStatus: varchar({ length: 50 }),
+	previousDelegateId: int(),
+	newDelegateId: int(),
+	actorUserId: int(),
+	actorName: varchar({ length: 300 }),
+	note: text(),
+	metadata: json(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	index("idx_poi_history_item_created").on(table.purchaseOrderItemId, table.createdAt),
+	index("idx_poi_history_po_created").on(table.purchaseOrderId, table.createdAt),
+]);
+
 // ============================================================
 // [PB] PURCHASE PACKAGES — حاوية عليا فوق طلبات الشراء.
 //
@@ -2164,6 +2289,7 @@ export const ticketItems = mysqlTable("ticket_items", {
 	responsibleDepartment: mysqlEnum([
 		'maintenance_report_department_general',
 		'maintenance_report_department_construction',
+		'maintenance_report_department_it',
 	]),
 	responsibleManagerId: int(),
 	routedById: int(),
@@ -2204,7 +2330,7 @@ export const tickets = mysqlTable("tickets", {
 	description: text(),
 	status: mysqlEnum(['new','pending_triage','department_planning','under_inspection','work_approved','ready_for_closure','approved','assigned','in_progress','needs_purchase','purchase_pending_estimate','purchase_pending_accounting','purchase_pending_management','purchase_approved','partial_purchase','purchased','received_warehouse','out_for_repair','repaired','verified','closed','requester_confirmed']).default('new').notNull(),
 	priority: mysqlEnum(['low','medium','high','critical']).default('medium').notNull(),
-	category: mysqlEnum(['electrical','plumbing','hvac','structural','mechanical','general','safety','cleaning']).default('general').notNull(),
+	category: mysqlEnum(['electrical','plumbing','hvac','structural','mechanical','general','safety','cleaning','it']).default('general').notNull(),
 	siteId: int(),
 	locationDetail: varchar({ length: 300 }),
 	reportedById: int().notNull(),
@@ -2263,6 +2389,7 @@ export const tickets = mysqlTable("tickets", {
 	maintenanceResponsibleDepartment: mysqlEnum([
 		'maintenance_report_department_general',
 		'maintenance_report_department_construction',
+		'maintenance_report_department_it',
 	]),
 	maintenanceResponsibleManagerId: int(),
 	maintenanceRoutedById: int(),
@@ -2295,6 +2422,7 @@ export const ticketDepartments = mysqlTable("ticket_departments", {
 	department: mysqlEnum([
 		'maintenance_report_department_general',
 		'maintenance_report_department_construction',
+		'maintenance_report_department_it',
 	]).notNull(),
 	responsibleManagerId: int().notNull(),
 	routedById: int().notNull(),
@@ -2402,7 +2530,7 @@ export const users = mysqlTable("users", {
 	name: text(),
 	email: varchar({ length: 320 }),
 	loginMethod: varchar({ length: 64 }),
-	role: mysqlEnum(['user','admin','operator','technician','maintenance_manager','general_maintenance_manager','construction_procurement_manager','supervisor','purchase_manager','purchase_requester','delegate','accountant','senior_management','executive_director','warehouse','gate_security','owner','food_warehouse_manager','food_warehouse_assistant']).default('user').notNull(),
+	role: mysqlEnum(['user','admin','operator','technician','it_manager','maintenance_manager','general_maintenance_manager','construction_procurement_manager','supervisor','purchase_manager','purchase_requester','delegate','accountant','senior_management','executive_director','warehouse','gate_security','owner','food_warehouse_manager','food_warehouse_assistant']).default('user').notNull(),
 	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
 	updatedAt: timestamp({ mode: 'string' }).defaultNow().onUpdateNow().notNull(),
 	lastSignedIn: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
@@ -2691,6 +2819,402 @@ export const ticketNumberCounter = mysqlTable("ticket_number_counter", {
 });
 
 
+export const pmv2MaterialPurchaseLinks = mysqlTable("pmv2_material_purchase_links", {
+	id: int().autoincrement().primaryKey().notNull(),
+	materialRequestItemId: int().notNull().references(() => pmv2MaterialRequestItems.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	purchaseOrderId: int().notNull(),
+	purchaseOrderItemId: int().notNull(),
+	linkedQuantity: decimal({ precision: 12, scale: 3 }).notNull(),
+	createdById: int().notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	uniqueIndex("uq_pmv2_material_purchase_links_po_item").on(table.purchaseOrderItemId),
+	uniqueIndex("uq_pmv2_material_purchase_links_request_po_item").on(table.materialRequestItemId, table.purchaseOrderItemId),
+	index("idx_pmv2_material_purchase_links_request_item").on(table.materialRequestItemId),
+	index("idx_pmv2_material_purchase_links_purchase_order").on(table.purchaseOrderId),
+	index("idx_pmv2_material_purchase_links_created_by").on(table.createdById),
+]);
+
+
+export const pmv2TaskTicketLinks = mysqlTable("pmv2_task_ticket_links", {
+	id: int().autoincrement().primaryKey().notNull(),
+	taskItemId: int().notNull().references(() => pmv2TaskItems.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	ticketId: int().notNull(),
+	createdById: int().notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	uniqueIndex("uq_pmv2_task_ticket_links_ticket").on(table.ticketId),
+	index("idx_pmv2_task_ticket_links_task_item").on(table.taskItemId),
+	index("idx_pmv2_task_ticket_links_created_by").on(table.createdById),
+]);
+
+export const pmv2MaterialUsages = mysqlTable("pmv2_material_usages", {
+	id: int().autoincrement().primaryKey().notNull(),
+	taskItemId: int().notNull().references(() => pmv2TaskItems.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	visitId: int().notNull().references(() => pmv2Visits.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	materialRequestItemId: int().references(() => pmv2MaterialRequestItems.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	warehouseId: int().notNull(),
+	catalogItemId: int().notNull(),
+	inventoryTransactionId: int(),
+	inventoryLotId: int(),
+	deliveryDocumentId: int(),
+	purchaseOrderItemId: int(),
+	usedQuantity: decimal({ precision: 12, scale: 3 }).notNull(),
+	unitSnapshot: varchar({ length: 50 }),
+	recordedById: int().notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	index("idx_pmv2_material_usages_task_item").on(table.taskItemId),
+	index("idx_pmv2_material_usages_visit").on(table.visitId),
+	index("idx_pmv2_material_usages_request_item").on(table.materialRequestItemId),
+	index("idx_pmv2_material_usages_warehouse").on(table.warehouseId),
+	index("idx_pmv2_material_usages_catalog_item").on(table.catalogItemId),
+	index("idx_pmv2_material_usages_inventory_tx").on(table.inventoryTransactionId),
+	index("idx_pmv2_material_usages_inventory_lot").on(table.inventoryLotId),
+	index("idx_pmv2_material_usages_delivery_document").on(table.deliveryDocumentId),
+	index("idx_pmv2_material_usages_po_item").on(table.purchaseOrderItemId),
+	index("idx_pmv2_material_usages_recorded_by").on(table.recordedById),
+	index("idx_pmv2_material_usages_created_at").on(table.createdAt),
+]);
+
+
+
+export const pmv2RequestReminders = mysqlTable("pmv2_request_reminders", {
+	id: int().autoincrement().primaryKey().notNull(),
+	requestId: int().notNull().references(() => pmv2MaterialRequests.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	recipientUserId: int().notNull(),
+	reminderType: varchar({ length: 50 }).notNull(),
+	notificationId: int(),
+	createdById: int(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	index("idx_pmv2_request_reminders_request").on(table.requestId),
+	index("idx_pmv2_request_reminders_recipient_user").on(table.recipientUserId),
+	index("idx_pmv2_request_reminders_type").on(table.reminderType),
+	index("idx_pmv2_request_reminders_notification").on(table.notificationId),
+	index("idx_pmv2_request_reminders_created_by").on(table.createdById),
+	index("idx_pmv2_request_reminders_created_at").on(table.createdAt),
+]);
+
+
+export const pmv2SlaRules = mysqlTable("pmv2_sla_rules", {
+	id: int().autoincrement().primaryKey().notNull(),
+	roleKey: varchar({ length: 60 }).notNull(),
+	slaMinutes: int(),
+	reminderMinutes: int(),
+	isActive: tinyint().default(1).notNull(),
+	updatedById: int(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+	updatedAt: timestamp({ mode: 'string' }).defaultNow().onUpdateNow().notNull(),
+},
+(table) => [
+	uniqueIndex("uq_pmv2_sla_rules_role").on(table.roleKey),
+	index("idx_pmv2_sla_rules_active").on(table.isActive),
+	index("idx_pmv2_sla_rules_updated_by").on(table.updatedById),
+]);
+
+export const pmv2AlertDeliveries = mysqlTable("pmv2_alert_deliveries", {
+	id: int().autoincrement().primaryKey().notNull(),
+	taskId: int().notNull().references(() => pmv2Tasks.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	taskItemId: int().notNull().references(() => pmv2TaskItems.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	recipientUserId: int().notNull(),
+	alertType: varchar({ length: 50 }).notNull(),
+	stageKey: varchar({ length: 120 }).notNull(),
+	dedupeKey: varchar({ length: 191 }).notNull(),
+	notificationId: int(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	uniqueIndex("uq_pmv2_alert_deliveries_dedupe").on(table.dedupeKey),
+	index("idx_pmv2_alert_deliveries_task").on(table.taskId),
+	index("idx_pmv2_alert_deliveries_item").on(table.taskItemId),
+	index("idx_pmv2_alert_deliveries_recipient").on(table.recipientUserId),
+	index("idx_pmv2_alert_deliveries_type").on(table.alertType),
+]);
+
+
+export const pmv2DailyReportReviews = mysqlTable("pmv2_daily_report_reviews", {
+	id: int().autoincrement().primaryKey().notNull(),
+	reportDate: date({ mode: 'string' }).notNull(),
+	teamId: int().notNull().references(() => pmv2Teams.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	reviewedById: int().notNull(),
+	reviewedAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+	note: text(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+	updatedAt: timestamp({ mode: 'string' }).defaultNow().onUpdateNow().notNull(),
+},
+(table) => [
+	uniqueIndex("uq_pmv2_daily_report_reviews_date_team").on(table.reportDate, table.teamId),
+	index("idx_pmv2_daily_report_reviews_team").on(table.teamId),
+	index("idx_pmv2_daily_report_reviews_reviewer").on(table.reviewedById),
+	index("idx_pmv2_daily_report_reviews_reviewed_at").on(table.reviewedAt),
+]);
+
+
+// ══════════════════════════════════════════════════════════════════════
+// PM V2 — Phase 1 bounded-module schema
+// External references (users, warehouses, sites, sections, assets, ...) stay
+// logical IDs validated through PM V2 adapters; no physical external FK here.
+// ══════════════════════════════════════════════════════════════════════
+export const pmv2Specialties = mysqlTable("pmv2_specialties", {
+	id: int().autoincrement().primaryKey().notNull(),
+	code: varchar({ length: 50 }).notNull(),
+	name: varchar({ length: 200 }).notNull(),
+	nameEn: varchar({ length: 200 }),
+	nameUr: varchar({ length: 200 }),
+	description: text(),
+	managerUserId: int(),
+	isActive: tinyint().default(1).notNull(),
+	createdById: int().notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+	updatedAt: timestamp({ mode: 'string' }).defaultNow().onUpdateNow().notNull(),
+},
+(table) => [
+	uniqueIndex("uq_pmv2_specialties_code").on(table.code),
+	index("idx_pmv2_specialties_manager_user").on(table.managerUserId),
+	index("idx_pmv2_specialties_created_by").on(table.createdById),
+	index("idx_pmv2_specialties_active").on(table.isActive),
+]);
+
+export const pmv2Teams = mysqlTable("pmv2_teams", {
+	id: int().autoincrement().primaryKey().notNull(),
+	specialtyId: int().notNull().references(() => pmv2Specialties.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	code: varchar({ length: 50 }).notNull(),
+	warehouseId: int().notNull(),
+	deviceUserId: int(),
+	isActive: tinyint().default(1).notNull(),
+},
+(table) => [
+	uniqueIndex("uq_pmv2_teams_code").on(table.code),
+	index("idx_pmv2_teams_specialty").on(table.specialtyId),
+	index("idx_pmv2_teams_warehouse").on(table.warehouseId),
+	index("idx_pmv2_teams_device_user").on(table.deviceUserId),
+	index("idx_pmv2_teams_active").on(table.isActive),
+]);
+
+export const pmv2TeamMembers = mysqlTable("pmv2_team_members", {
+	id: int().autoincrement().primaryKey().notNull(),
+	teamId: int().notNull().references(() => pmv2Teams.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	userId: int().notNull(),
+	isActive: tinyint().default(1).notNull(),
+	joinedAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+	leftAt: timestamp({ mode: 'string' }),
+},
+(table) => [
+	uniqueIndex("uq_pmv2_team_members_team_user").on(table.teamId, table.userId),
+	index("idx_pmv2_team_members_team").on(table.teamId),
+	index("idx_pmv2_team_members_user").on(table.userId),
+	index("idx_pmv2_team_members_active").on(table.isActive),
+]);
+
+export const pmv2Checklists = mysqlTable("pmv2_checklists", {
+	id: int().autoincrement().primaryKey().notNull(),
+	name: varchar({ length: 200 }).notNull(),
+	description: text(),
+	isActive: tinyint().default(1).notNull(),
+	createdById: int().notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+	updatedAt: timestamp({ mode: 'string' }).defaultNow().onUpdateNow().notNull(),
+},
+(table) => [
+	index("idx_pmv2_checklists_active").on(table.isActive),
+	index("idx_pmv2_checklists_created_by").on(table.createdById),
+]);
+
+export const pmv2ChecklistItems = mysqlTable("pmv2_checklist_items", {
+	id: int().autoincrement().primaryKey().notNull(),
+	checklistId: int().notNull().references(() => pmv2Checklists.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	title: varchar({ length: 300 }).notNull(),
+	sortOrder: int().default(0).notNull(),
+	isRequired: tinyint().default(1).notNull(),
+	isActive: tinyint().default(1).notNull(),
+	frequency: mysqlEnum(['daily','weekly','monthly','quarterly','biannual','annual']).notNull(),
+	frequencyValue: int(),
+	weekday: tinyint(),
+	monthDay: tinyint(),
+	anchorDate: date({ mode: 'string' }),
+	scheduleConfigJson: text(),
+},
+(table) => [
+	index("idx_pmv2_checklist_items_checklist").on(table.checklistId),
+	index("idx_pmv2_checklist_items_active").on(table.isActive),
+	index("idx_pmv2_checklist_items_frequency").on(table.frequency),
+]);
+
+
+export const pmv2Programs = mysqlTable("pmv2_programs", {
+	id: int().autoincrement().primaryKey().notNull(),
+	title: varchar({ length: 200 }),
+	teamId: int().notNull().references(() => pmv2Teams.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	checklistId: int().notNull().references(() => pmv2Checklists.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	estimatedDurationMinutes: int(),
+	isActive: tinyint().default(1).notNull(),
+	createdById: int().notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+	updatedAt: timestamp({ mode: 'string' }).defaultNow().onUpdateNow().notNull(),
+},
+(table) => [
+	index("idx_pmv2_programs_team").on(table.teamId),
+	index("idx_pmv2_programs_checklist").on(table.checklistId),
+	index("idx_pmv2_programs_active").on(table.isActive),
+	index("idx_pmv2_programs_created_by").on(table.createdById),
+]);
+
+export const pmv2ProgramTargets = mysqlTable("pmv2_program_targets", {
+	id: int().autoincrement().primaryKey().notNull(),
+	programId: int().notNull().references(() => pmv2Programs.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	siteId: int(),
+	sectionId: int(),
+	assetId: int(),
+},
+(table) => [
+	index("idx_pmv2_program_targets_program").on(table.programId),
+	index("idx_pmv2_program_targets_site").on(table.siteId),
+	index("idx_pmv2_program_targets_section").on(table.sectionId),
+	index("idx_pmv2_program_targets_asset").on(table.assetId),
+	uniqueIndex("uq_pmv2_program_targets_program_site").on(table.programId, table.siteId),
+	uniqueIndex("uq_pmv2_program_targets_program_section").on(table.programId, table.sectionId),
+	uniqueIndex("uq_pmv2_program_targets_program_asset").on(table.programId, table.assetId),
+]);
+
+export const pmv2Tasks = mysqlTable("pmv2_tasks", {
+	id: int().autoincrement().primaryKey().notNull(),
+	programId: int().notNull().references(() => pmv2Programs.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	programTargetId: int().notNull().references(() => pmv2ProgramTargets.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	teamId: int().notNull().references(() => pmv2Teams.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	taskNumber: varchar({ length: 50 }).notNull(),
+	dueDate: date({ mode: 'string' }).notNull(),
+	status: mysqlEnum(['pending','in_progress','waiting_material','waiting_ticket','ready_to_complete','completed','cancelled']).default('pending').notNull(),
+},
+(table) => [
+	uniqueIndex("uq_pmv2_tasks_task_number").on(table.taskNumber),
+	uniqueIndex("uq_pmv2_tasks_generation").on(table.programId, table.programTargetId, table.dueDate),
+	index("idx_pmv2_tasks_program").on(table.programId),
+	index("idx_pmv2_tasks_program_target").on(table.programTargetId),
+	index("idx_pmv2_tasks_team").on(table.teamId),
+	index("idx_pmv2_tasks_due_date").on(table.dueDate),
+	index("idx_pmv2_tasks_status").on(table.status),
+]);
+
+export const pmv2TaskItems = mysqlTable("pmv2_task_items", {
+	id: int().autoincrement().primaryKey().notNull(),
+	taskId: int().notNull().references(() => pmv2Tasks.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	sourceChecklistItemId: int().notNull().references(() => pmv2ChecklistItems.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	titleSnapshot: varchar({ length: 300 }).notNull(),
+	sortOrderSnapshot: int().default(0).notNull(),
+	frequencySnapshot: mysqlEnum(['daily','weekly','monthly','quarterly','biannual','annual']),
+	frequencyValueSnapshot: int(),
+	weekdaySnapshot: tinyint(),
+	monthDaySnapshot: tinyint(),
+	anchorDateSnapshot: date({ mode: 'string' }),
+	recurrenceLabelSnapshot: varchar({ length: 500 }),
+	scheduledDate: date({ mode: 'string' }).notNull(),
+	status: mysqlEnum(['pending','in_progress','waiting_material','waiting_ticket','ready_to_complete','completed']).default('pending').notNull(),
+	result: mysqlEnum(['ok','fixed','needs_material','needs_ticket']),
+},
+(table) => [
+	uniqueIndex("uq_pmv2_task_items_generation").on(table.taskId, table.sourceChecklistItemId, table.scheduledDate),
+	index("idx_pmv2_task_items_task").on(table.taskId),
+	index("idx_pmv2_task_items_source_checklist_item").on(table.sourceChecklistItemId),
+	index("idx_pmv2_task_items_scheduled_date").on(table.scheduledDate),
+	index("idx_pmv2_task_items_status").on(table.status),
+	index("idx_pmv2_task_items_result").on(table.result),
+]);
+
+export const pmv2Visits = mysqlTable("pmv2_visits", {
+	id: int().autoincrement().primaryKey().notNull(),
+	taskId: int().notNull().references(() => pmv2Tasks.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	startedAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+	endedAt: timestamp({ mode: 'string' }),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+	updatedAt: timestamp({ mode: 'string' }).defaultNow().onUpdateNow().notNull(),
+},
+(table) => [
+	index("idx_pmv2_visits_task").on(table.taskId),
+	index("idx_pmv2_visits_started_at").on(table.startedAt),
+	index("idx_pmv2_visits_ended_at").on(table.endedAt),
+]);
+
+export const pmv2VisitMembers = mysqlTable("pmv2_visit_members", {
+	id: int().autoincrement().primaryKey().notNull(),
+	visitId: int().notNull().references(() => pmv2Visits.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	userId: int().notNull(),
+	isLeader: tinyint().default(0).notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	uniqueIndex("uq_pmv2_visit_members_visit_user").on(table.visitId, table.userId),
+	index("idx_pmv2_visit_members_visit").on(table.visitId),
+	index("idx_pmv2_visit_members_user").on(table.userId),
+	index("idx_pmv2_visit_members_leader").on(table.isLeader),
+]);
+
+export const pmv2ItemActions = mysqlTable("pmv2_item_actions", {
+	id: int().autoincrement().primaryKey().notNull(),
+	taskItemId: int().notNull().references(() => pmv2TaskItems.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	visitId: int().notNull().references(() => pmv2Visits.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	action: varchar({ length: 50 }).notNull(),
+	result: mysqlEnum(['ok','fixed','needs_material','needs_ticket']),
+	note: text(),
+	performedById: int().notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+},
+(table) => [
+	index("idx_pmv2_item_actions_task_item").on(table.taskItemId),
+	index("idx_pmv2_item_actions_visit").on(table.visitId),
+	index("idx_pmv2_item_actions_action").on(table.action),
+	index("idx_pmv2_item_actions_result").on(table.result),
+	index("idx_pmv2_item_actions_performed_by").on(table.performedById),
+	index("idx_pmv2_item_actions_created_at").on(table.createdAt),
+]);
+
+
+export const pmv2MaterialRequests = mysqlTable("pmv2_material_requests", {
+	id: int().autoincrement().primaryKey().notNull(),
+	taskItemId: int().notNull().references(() => pmv2TaskItems.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	visitId: int().notNull().references(() => pmv2Visits.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	requestedById: int().notNull(),
+	teamId: int().notNull().references(() => pmv2Teams.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	teamWarehouseId: int().notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+	updatedAt: timestamp({ mode: 'string' }).defaultNow().onUpdateNow().notNull(),
+},
+(table) => [
+	index("idx_pmv2_material_requests_task_item").on(table.taskItemId),
+	index("idx_pmv2_material_requests_visit").on(table.visitId),
+	index("idx_pmv2_material_requests_requested_by").on(table.requestedById),
+	index("idx_pmv2_material_requests_team").on(table.teamId),
+	index("idx_pmv2_material_requests_team_warehouse").on(table.teamWarehouseId),
+	index("idx_pmv2_material_requests_created_at").on(table.createdAt),
+]);
+
+
+export const pmv2MaterialRequestItems = mysqlTable("pmv2_material_request_items", {
+	id: int().autoincrement().primaryKey().notNull(),
+	requestId: int().notNull().references(() => pmv2MaterialRequests.id, { onDelete: "restrict", onUpdate: "restrict" }),
+	catalogItemId: int(),
+	itemNameSnapshot: varchar({ length: 300 }).notNull(),
+	requestedQuantity: decimal({ precision: 12, scale: 3 }).notNull(),
+	unitSnapshot: varchar({ length: 50 }),
+	status: mysqlEnum(['waiting_warehouse','external_purchase','received_warehouse','issued_to_team','consumed','cancelled']).default('waiting_warehouse').notNull(),
+	receivedWarehouseQuantity: decimal({ precision: 12, scale: 3 }).default('0.000').notNull(),
+	issuedToTeamQuantity: decimal({ precision: 12, scale: 3 }).default('0.000').notNull(),
+	createdAt: timestamp({ mode: 'string' }).default('CURRENT_TIMESTAMP').notNull(),
+	updatedAt: timestamp({ mode: 'string' }).defaultNow().onUpdateNow().notNull(),
+},
+(table) => [
+	index("idx_pmv2_material_request_items_request").on(table.requestId),
+	index("idx_pmv2_material_request_items_catalog_item").on(table.catalogItemId),
+	index("idx_pmv2_material_request_items_status").on(table.status),
+]);
+
+
+
+
 // ══════════════════════════════════════════════════════════════════════
 // الثوابت والأنواع المساعدة التالية (قوائم الحالات/الأدوار/إلخ) لا تمثّل جداول
 // بقاعدة البيانات، لذلك لم تلتقطها أداة سحب الـSchema التلقائي. أُعيدت هنا من
@@ -2698,7 +3222,7 @@ export const ticketNumberCounter = mysqlTable("ticket_number_counter", {
 // (تم تصحيح poItemStatuses لتطابق القيم الـ12 الفعلية المؤكدة من قاعدة الإنتاج).
 // ══════════════════════════════════════════════════════════════════════
 
-export const userRoles = ["operator", "technician", "maintenance_manager", "general_maintenance_manager", "construction_procurement_manager", "supervisor", "purchase_manager", "purchase_requester", "delegate", "accountant", "senior_management", "executive_director", "warehouse", "gate_security", "owner", "food_warehouse_manager", "food_warehouse_assistant"] as const;
+export const userRoles = ["operator", "technician", "it_manager", "maintenance_manager", "general_maintenance_manager", "construction_procurement_manager", "supervisor", "purchase_manager", "purchase_requester", "delegate", "accountant", "senior_management", "executive_director", "warehouse", "gate_security", "owner", "food_warehouse_manager", "food_warehouse_assistant"] as const;
 
 export type UserRole = typeof userRoles[number];
 
@@ -2725,7 +3249,7 @@ export type TicketStatus = typeof ticketStatuses[number];
 
 export const ticketPriorities = ["low", "medium", "high", "critical"] as const;
 
-export const ticketCategories = ["electrical", "plumbing", "hvac", "structural", "mechanical", "general", "safety", "cleaning"] as const;
+export const ticketCategories = ["electrical", "plumbing", "hvac", "structural", "mechanical", "general", "safety", "cleaning", "it"] as const;
 
 export const poStatuses = [
   "draft", "pending_review", "pending_estimate", "pending_accounting", "pending_management",

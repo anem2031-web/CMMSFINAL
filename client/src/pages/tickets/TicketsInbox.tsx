@@ -98,7 +98,7 @@ export default function TicketsInbox() {
   const [, setLocation] = useLocation();
   const searchParamsText = useSearch();
   const isMobile = useIsMobile();
-  const { t, language } = useTranslation();
+  const { t, language, dir } = useTranslation();
   const { getStatusLabel, getPriorityLabel, getCategoryLabel } = useStaticLabels();
   const { getField } = useTranslatedField();
   const { user } = useAuth();
@@ -341,12 +341,12 @@ export default function TicketsInbox() {
 
       {/* البحث */}
       <div className="relative max-w-md">
-        <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground rtl:right-3 ltr:left-3" />
+        <Search className={`absolute top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground ${dir === "rtl" ? "right-3" : "left-3"}`} />
         <Input
           placeholder={`${t.common.search}...`}
           value={search}
           onChange={e => setSearch(e.target.value)}
-          className="pr-10"
+          className={dir === "rtl" ? "pr-10" : "pl-10"}
         />
       </div>
 
@@ -583,7 +583,7 @@ export default function TicketsInbox() {
                     onClick={e => { e.preventDefault(); if (page > 1) setPage(page - 1); }}
                     className={`gap-1 px-2.5 ${page <= 1 ? "pointer-events-none opacity-50" : ""}`}
                   >
-                    <ChevronLeft className="w-4 h-4" />
+                    <ChevronLeft className={`w-4 h-4 ${dir === "rtl" ? "rotate-180" : ""}`} />
                     <span className="hidden sm:block">{t.common.previous}</span>
                   </PaginationLink>
                 </PaginationItem>
@@ -613,7 +613,7 @@ export default function TicketsInbox() {
                     className={`gap-1 px-2.5 ${page >= totalPages ? "pointer-events-none opacity-50" : ""}`}
                   >
                     <span className="hidden sm:block">{t.common.next}</span>
-                    <ChevronRight className="w-4 h-4" />
+                    <ChevronRight className={`w-4 h-4 ${dir === "rtl" ? "rotate-180" : ""}`} />
                   </PaginationLink>
                 </PaginationItem>
               </PaginationContent>

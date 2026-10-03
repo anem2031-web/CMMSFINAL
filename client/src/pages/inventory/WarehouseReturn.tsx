@@ -189,7 +189,7 @@ export default function WarehouseReturn() {
         return;
       }
       if (!returnLotInfo?.trackingToken) {
-        toast.error("يجب مسح QR الدفعة قبل تأكيد مرتجع المورد");
+        toast.error("يجب مسح QR الدفعة أو إدخال رقم اللوت قبل تأكيد مرتجع المورد");
         return;
       }
       if (returnedQuantity > Number(returnLotInfo.availableQuantity || 0)) {
@@ -316,7 +316,7 @@ export default function WarehouseReturn() {
             <CardHeader className="pb-2">
               <CardTitle className="text-base flex items-center gap-2">
                 <QrCode className="w-4 h-4 text-blue-600" />
-                مسح QR الدفعة المراد إرجاعها
+                مسح QR الدفعة أو إدخال رقم اللوت المراد إرجاعه
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
