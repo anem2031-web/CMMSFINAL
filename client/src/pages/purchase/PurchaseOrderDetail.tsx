@@ -1479,7 +1479,7 @@ const visibleItems = useMemo(() => {
   </div>
 )}
 
-                {isMyItem && item.status === "approved" && ["approved", "partial_purchase"].includes(po.status) && (
+                {isMyItem && item.status === "approved" && (
                   <div className="bg-teal-50 border border-teal-200 rounded-lg p-3 space-y-3">
                     <p className="text-xs font-medium text-teal-800 flex items-center gap-1.5">
                       <ShoppingCart className="w-3.5 h-3.5" /> {t.purchaseOrders.confirmPurchase}:

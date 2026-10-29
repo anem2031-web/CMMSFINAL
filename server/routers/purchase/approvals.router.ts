@@ -450,6 +450,14 @@ export const approvalsRouter = router({
           po, ctx.user,
           `تم رفض جميع أصناف الدفعة أثناء مراجعة الحسابات بواسطة ${ctx.user.name || "مستخدم"}`,
         );
+        const currentItems = await db.getPOItems(po.id);
+        if (currentItems.some(i => !["cancelled", "rejected"].includes(i.status))) {
+          const batches = await db.getPOPricingBatches(po.id);
+          const hasPending = batches.some(b => b.status === "pending_accounting" || b.status === "pending_management");
+          if (!hasPending && po.status === "pending_accounting" && batches.some(b => b.status === "approved")) {
+            await db.updatePurchaseOrder(po.id, { status: "approved" });
+          }
+        }
         batchNowClosed = true;
       }
     } else {
