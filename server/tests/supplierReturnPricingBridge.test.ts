@@ -18,7 +18,7 @@ function fixture(overrides: Record<string, unknown> = {}, reservations: any[] = 
       ...plan, status: "pending_accounting", quotedTotal: "120.0000", creditAllocated: "100.0000", additionalFunding: "20.0000",
       batchStatus: "pending_accounting", batchOrderId: 50, itemBatchId: 80,
     }]];
-    if (text.includes("FROM supplier_return_settlements") && text.includes("type='supplier_credit'")) return [[{ id: 9, amount: "100.0000", currency: "SAR", valuationBasis: "tax_inclusive", status: "completed" }]];
+    if (text.includes("SELECT id,amount,currency,valuationBasis,status FROM supplier_return_settlements")) return [[{ id: Number(plan.supplierCreditId), amount: "100.0000", currency: "SAR", valuationBasis: "tax_inclusive", status: "completed" }]];
     if (text.includes("FROM supplier_return_settlements") && text.includes("type IN")) return [reservations];
     if (text.startsWith("INSERT INTO supplier_return_settlements")) { writes.push(text); return [{ insertId: 15 }]; }
     if (text.startsWith("UPDATE supplier_return_replacement_plans")) { writes.push(text); return [{ affectedRows: 1 }]; }
@@ -28,6 +28,13 @@ function fixture(overrides: Record<string, unknown> = {}, reservations: any[] = 
 }
 
 describe("replacement pricing bridge (isolated SQL port)", () => {
+  it("uses refunded cash retained by the delegate and requests only the increase", async () => {
+    const f=fixture({resolution:"refund",supplierCreditId:19});
+    const result=await reserveReplacementPricing(f.tx,4,50,[{id:70,estimatedTotalCost:"120.0000"}]);
+    expect(result).toMatchObject({creditAllocated:"100.0000",additionalFunding:"20.0000"});
+    expect(f.params.some(row=>row.includes("cash_refund"))).toBe(true);
+    expect(f.params.some(row=>row.includes(19))).toBe(true);
+  });
   it("does not spend supplier credit twice after the delegate has refunded it", async () => {
     const f = fixture({}, [{kind:"cash_refund",amount:"100.0000",status:"completed"}]);
     const result = await reserveReplacementPricing(f.tx,4,50,[{id:70,estimatedTotalCost:"120.0000"}]);

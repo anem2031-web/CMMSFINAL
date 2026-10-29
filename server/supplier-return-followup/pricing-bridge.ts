@@ -11,7 +11,7 @@ const conflict = (message: string): never => { throw new ReturnFollowupError("CO
  */
 export async function reserveReplacementPricing(tx: FollowupTx, actorId: number, purchaseOrderId: number, items: Array<{ id: number; estimatedTotalCost: string | null }>) {
   if (!await trialEnabled(tx)) return null;
-  const [plan] = await readRows(tx, sql`SELECT p.*,c.delegateId,c.handoverStatus,c.originalPurchaseValue,c.returnedQuantity,c.currency AS caseCurrency,c.valuationBasis AS caseBasis,
+  const [plan] = await readRows(tx, sql`SELECT p.*,c.delegateId,c.handoverStatus,c.resolution,c.originalPurchaseValue,c.returnedQuantity,c.currency AS caseCurrency,c.valuationBasis AS caseBasis,
       original.poNumber AS originalPoNumber,r.returnNumber,originalBundle.bundleNumber AS originalBundleNumber
     FROM supplier_return_replacement_plans p INNER JOIN supplier_return_cases c ON c.id=p.caseId
     INNER JOIN purchase_orders original ON original.id=c.purchaseOrderId
@@ -24,12 +24,13 @@ export async function reserveReplacementPricing(tx: FollowupTx, actorId: number,
   if (Number(plan.delegateId) !== actorId || plan.handoverStatus !== "accepted" || plan.status !== "pending_review"
     || items.length !== 1 || Number(plan.purchaseOrderItemId) !== Number(items[0].id)) conflict("خطة التعويض أو المندوب أو أصناف الحزمة تغيرت");
   if (plan.caseCurrency !== "SAR" || plan.caseBasis !== "tax_inclusive") conflict("أساس سعر التعويض يجب أن يكون شامل الضريبة وبالريال");
+  const sourceType = plan.resolution === "refund" ? "cash_refund" : "supplier_credit";
   const [credit] = await readRows(tx, sql`SELECT id,amount,currency,valuationBasis,status FROM supplier_return_settlements
-    WHERE id=${plan.supplierCreditId} AND caseId=${plan.caseId} AND type='supplier_credit' FOR UPDATE`);
+    WHERE id=${plan.supplierCreditId} AND caseId=${plan.caseId} AND type=${sourceType} FOR UPDATE`);
   if (!credit || credit.status !== "completed" || credit.currency !== "SAR" || credit.valuationBasis !== "tax_inclusive"
     || decimal4(String(credit.amount)) !== decimal4(String(plan.originalPurchaseValue))) conflict("رصيد المرتجع المؤكد غير متاح");
   const reservations = await readRows(tx, sql`SELECT type AS kind,amount,status FROM supplier_return_settlements
-    WHERE caseId=${plan.caseId} AND type IN ('credit_allocation','cash_refund') FOR UPDATE`);
+    WHERE caseId=${plan.caseId} AND sourceCreditId=${credit.id} AND type IN ('credit_allocation','cash_refund') FOR UPDATE`);
   const available = availableCredit(String(credit.amount), reservations);
   const total = format4(decimal4(String(items[0].estimatedTotalCost ?? "")));
   if (decimal4(total) <= BigInt(0)) conflict("سعر البديل يجب أن يكون أكبر من صفر");

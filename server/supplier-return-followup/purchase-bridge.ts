@@ -56,7 +56,18 @@ export async function prepareReplacementPurchase(tx: FollowupTx, actor: Actor, p
     WHERE caseId=${Number(plan.caseId)} AND operationKey=${`handover-credit:${Number(plan.caseId)}`}
       AND type='supplier_credit' AND status='completed' FOR UPDATE`);
   if (!credit || credit.currency !== "SAR" || credit.valuationBasis !== "tax_inclusive" || decimal4(String(credit.amount)) !== decimal4(String(plan.originalPurchaseValue))) conflict("رصيد المرتجع المؤكد غير متاح");
-  return { planId: Number(plan.id), caseId: Number(plan.caseId), creditId: Number(credit.id), originalOrderId: Number(plan.originalOrderId) };
+  // Confirmed refunds remain with the delegate by the owner's decision. Their
+  // settlement becomes the funding source; the supplier balance was consumed.
+  let creditId = Number(credit.id);
+  if (plan.resolution === "refund") {
+    const [refund] = await readRows(tx, sql`SELECT id,amount,currency,valuationBasis,sourceCreditId FROM supplier_return_settlements
+      WHERE caseId=${Number(plan.caseId)} AND operationKey=${`cash-refund:${Number(plan.caseId)}`}
+        AND type='cash_refund' AND status='completed' FOR UPDATE`);
+    if (!refund || Number(refund.sourceCreditId) !== creditId || refund.currency !== "SAR" || refund.valuationBasis !== "tax_inclusive"
+      || decimal4(String(refund.amount)) !== decimal4(String(plan.originalPurchaseValue))) conflict("المبلغ المسترد الموجود لدى المندوب غير مثبت");
+    creditId = Number(refund.id);
+  }
+  return { planId: Number(plan.id), caseId: Number(plan.caseId), creditId, originalOrderId: Number(plan.originalOrderId) };
 }
 
 export async function linkReplacementPurchase(tx: FollowupTx, prepared: Awaited<ReturnType<typeof prepareReplacementPurchase>>, purchaseOrderId: number, purchaseOrderItemId: number) {

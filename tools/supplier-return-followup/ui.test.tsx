@@ -10,9 +10,25 @@ vi.mock("../../client/src/lib/trpc", () => ({ trpc: { supplierReturns: {
   chooseReplacement: { useMutation: () => ({ mutate: vi.fn(), isPending: false }) },
   confirmRefund: { useMutation: () => ({ mutate: vi.fn(), isPending: false }) },
   cancelAfterRefund: { useMutation: () => ({ mutate: vi.fn(), isPending: false }) },
-} } }));
+}, purchaseOrders:{approveManagementBatch:{useMutation:()=>({mutate:vi.fn(),isPending:false})}} } }));
+vi.mock("../../client/src/contexts/LanguageContext",()=>({useTranslation:()=>({language:"ar"})}));
 vi.mock("../../client/src/components/catalog/CatalogPickerDialog", () => ({ CatalogPickerDialog: () => null }));
 import { SupplierReturns } from "../../client/src/components/purchase/SupplierReturns";
+import { ReplacementRepriceButton } from "../../client/src/components/purchase/ReplacementRepriceButton";
+const replacementBatch={id:1,status:"pending_management",replacementFunding:{planId:1},batchItems:[{id:2,itemName:"بديل تجريبي",status:"estimated"}]};
+it.each(["owner","admin","senior_management"])("shows replacement repricing to %s at its management stage",role=>{
+  data.role=role;
+  expect(renderToStaticMarkup(<ReplacementRepriceButton batch={replacementBatch} onComplete={()=>{}}/>)).toContain("إعادة تسعير البديل");
+});
+it.each(["delegate","accountant","warehouse"])("does not show management repricing to %s",role=>{
+  data.role=role;
+  expect(renderToStaticMarkup(<ReplacementRepriceButton batch={replacementBatch} onComplete={()=>{}}/>)).toBe("");
+});
+it("does not change ordinary batch controls or offer repricing after purchase",()=>{
+  data.role="admin";
+  expect(renderToStaticMarkup(<ReplacementRepriceButton batch={{...replacementBatch,replacementFunding:null}} onComplete={()=>{}}/>)).toBe("");
+  expect(renderToStaticMarkup(<ReplacementRepriceButton batch={{...replacementBatch,status:"approved"}} onComplete={()=>{}}/>)).toBe("");
+});
 it("shows the confirmed refund and reference instead of offering another confirmation", () => {
   data.role="delegate";data.stage="accepted";data.resolution="refund";data.refund=true;
   const html=renderToStaticMarkup(<SupplierReturns/>);

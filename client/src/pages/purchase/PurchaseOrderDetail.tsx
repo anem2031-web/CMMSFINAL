@@ -1,4 +1,5 @@
 import { PricingBundleLink, PricingBundleAddButton } from "@/components/purchase/PricingBundleActions";
+import { ReplacementRepriceButton } from "@/components/purchase/ReplacementRepriceButton";
 import { isDelegateOwnPurchaseDraft } from "@shared/purchaseDraftVisibility";
 import { ImprovementReference } from "@/components/improvement/ImprovementReference";
 import { trpc } from "@/lib/trpc";
@@ -2020,6 +2021,7 @@ const visibleItems = useMemo(() => {
                 )}
 
 
+                <ReplacementRepriceButton batch={batch} onComplete={() => { refetch(); refetchBatches(); }} />
                 {(role === "senior_management" || isAdminOrOwner) && batch.status === "pending_management" && (
                   <Button
                     size="sm"

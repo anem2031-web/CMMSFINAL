@@ -4,7 +4,7 @@ import { prepareReplacementPurchase } from "../supplier-return-followup/purchase
 
 const actor = { id: 9, role: "admin", isActive: 1 };
 const replacement = { catalogItemId: 1140037, itemName: "قفازات اختبار", quantity: 1, unit: "كيس", siteId: 5, sectionId: 8, categoryId: 12 };
-function fixture(recorded: Record<string, number | null> = {}) {
+function fixture(recorded: Record<string, unknown> = {}) {
   const plan = {
     id: 1, caseId: 7, status: "pending_review", purchaseOrderId: null, purchaseOrderItemId: null,
     creatorId: 2, requestedById: 2, originalQuantityCovered: "1", returnedQuantity: "1",
@@ -21,6 +21,7 @@ function fixture(recorded: Record<string, number | null> = {}) {
     if (query.includes("SELECT DATABASE()")) return [[{ databaseName: "copycmms2" }]];
     if (query.includes("FROM users")) return [[{ id: 9, role: "admin", isActive: 1 }]];
     if (query.includes("FROM supplier_return_replacement_plans p")) return [[plan]];
+    if (query.includes("type='cash_refund'")) return [[{id:11,sourceCreditId:10,amount:"14.7200",currency:"SAR",valuationBasis:"tax_inclusive"}]];
     if (query.includes("FROM supplier_return_settlements")) return [[{ id: 10, amount: "14.7200", currency: "SAR", valuationBasis: "tax_inclusive" }]];
     throw Error(`Unexpected query: ${query}`);
   } };
@@ -31,6 +32,10 @@ function fixture(recorded: Record<string, number | null> = {}) {
 it("fills missing historical purchase context only on the replacement order", async () => {
   const { tx, input } = fixture();
   await expect(prepareReplacementPurchase(tx, actor, 1, input)).resolves.toMatchObject({ planId: 1, originalOrderId: 22 });
+});
+it("links the confirmed refund retained by the delegate as the replacement's funding source",async()=>{
+  const {tx,input}=fixture({resolution:"refund",creatorDecision:"replace"});
+  await expect(prepareReplacementPurchase(tx,actor,1,input)).resolves.toMatchObject({creditId:11});
 });
 
 it("still rejects changing a recorded source location or item category", async () => {
