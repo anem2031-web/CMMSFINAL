@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { canCreateOperationalIssue, canProcessOperationalIssue, canReadOperationalIssue, operationalNetCost, type OperationalActor, type OperationalOrder, type OperationalLine, type OperationalDelivery } from "../../../shared/operational-issues";
 import { executionRows as rows } from "./issue-reference";
+import { dispatchContext } from "../../../shared/operational-dispatch";
 import { addOperationalPurchaseDraft, loadOperationalStock, operationalPurchaseLinks, operationalPurchaseReady, type OperationalPurchasePorts } from "./stock-procurement";
 
 export interface OperationalPorts {
@@ -42,16 +43,20 @@ export class OperationalIssueService {
     const deliveries = await rows(db, sql`SELECT x.*,d.deliveryNumber,l.lotCode,COALESCE((SELECT SUM(r.returnedQuantity) FROM warehouse_returns r WHERE r.sourceDeliveryDocumentId=x.deliveryDocumentId),0) AS returnedQuantity
       FROM operational_issue_deliveries x INNER JOIN operational_issue_items i ON i.id=x.orderItemId
       INNER JOIN delivery_documents d ON d.id=x.deliveryDocumentId LEFT JOIN inventory_lots l ON l.id=d.lotId WHERE i.orderId=${id} ORDER BY x.id`) as OperationalDelivery[];
-    return { order, items, deliveries, cost: operationalNetCost(deliveries) };
+    const prepared = items.some(i => i.dispatchContext != null);
+    const [batch] = prepared ? await rows(db, sql`SELECT inputJson FROM operational_issue_batches WHERE orderId=${id}`) : [];
+    const dispatch: Array<{ itemId: number; actualCollectorId: number; actualCollectorName: string; notes: string }> = batch ? (typeof batch.inputJson === "string" ? JSON.parse(batch.inputJson) : batch.inputJson) : [];
+    return { order, items, deliveries, cost: operationalNetCost(deliveries), dispatch };
   }
   async availability(actor: OperationalActor, id: number) {
     this.actor(actor, "read");
     if (!canProcessOperationalIssue(actor.role) && actor.role !== "observer") deny();
     const db = await this.ports.database(); await this.order(db, actor, id);
     const lines = await rows(db, sql`SELECT * FROM operational_issue_items WHERE orderId=${id} ORDER BY id`) as OperationalLine[];
-    const items = await loadOperationalStock(db, lines);
+    const context = dispatchContext(lines[0]?.dispatchContext);
+    const items = await loadOperationalStock(db, lines, false, context?.warehouseId);
     const procurementReady = await operationalPurchaseReady(db);
-    const links = procurementReady ? await operationalPurchaseLinks(db, id) : [];
+    const links = procurementReady ? await operationalPurchaseLinks(db, id, lines) : [];
     for (const item of items) item.purchase = links.find(link => link.orderItemId === item.itemId) || null;
     return { items, procurementReady };
   }
@@ -81,6 +86,7 @@ export class OperationalIssueService {
     return result;
   }
   async create(actor: OperationalActor, input: { siteId: number; sectionId: number; collectorId: number; reason: string; operationKey: string; items: Array<{ catalogItemId: number; quantity: number; unit?: string }> }) {
+    if (actor.role === "warehouse") deny("استخدم إنشاء الصرف من المخزون");
     this.actor(actor, "create"); const db = await this.ports.database();
     if (!input.items.length || input.items.length > 20 || new Set(input.items.map(i => i.catalogItemId)).size !== input.items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أضف من 1 إلى 20 صنفًا دون تكرار" });
     return db.transaction(async (tx: any) => {
@@ -135,6 +141,7 @@ export class OperationalIssueService {
         return old;
       }
       const [line] = await rows(tx, sql`SELECT * FROM operational_issue_items WHERE id=${input.itemId} AND orderId=${input.orderId} FOR UPDATE`);
+      if (line?.dispatchContext != null) throw new TRPCError({ code: "BAD_REQUEST", message: "يلزم تأكيد صرف الطلب بالكامل" });
       if (!line || order.status !== "approved") throw new TRPCError({ code: "BAD_REQUEST", message: "الصنف لا ينتمي إلى أمر معتمد" });
       const lot = await this.ports.resolveLot({ warehouseId: input.warehouseId, identifier: input.lotTrackingToken });
       if (Number(lot.linkedItemId) !== Number(line.catalogItemId)) throw new TRPCError({ code: "BAD_REQUEST", message: "اللوت لا يطابق الصنف المطلوب" });

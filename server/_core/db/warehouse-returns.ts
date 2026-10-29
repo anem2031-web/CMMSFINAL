@@ -181,8 +181,8 @@ export async function createLotAwareSupplierReturn(params: {
   reason: string;
   recipientName?: string;
   returnedById: number;
-}) {
-  const database = await getDb();
+}, existingTx?: any) {
+  const database = existingTx || await getDb();
   if (!database) throw new Error("تعذر الاتصال بقاعدة البيانات");
 
   const returnedQuantity = normalizeInventoryQuantity(params.returnedQuantity);
@@ -195,7 +195,7 @@ export async function createLotAwareSupplierReturn(params: {
 
   const performer = await getUserById(params.returnedById);
 
-  return database.transaction(async (tx: any) => {
+  const executeReturn = async (tx: any) => {
     const warehouseRows = await tx
       .select()
       .from(warehouses)
@@ -395,7 +395,8 @@ export async function createLotAwareSupplierReturn(params: {
       lotRemainingInWarehouse: consumedLot.balanceQuantity,
       lotRemainingTotal: consumedLot.remainingQuantity,
     };
-  });
+  };
+  return existingTx ? executeReturn(existingTx) : database.transaction(executeReturn);
 }
 
 /**
@@ -1271,6 +1272,7 @@ export async function issueDelivery(params: {
   pmv2TaskItemId?:      number;
   operationalIssueItemId?: number;
   operationalOperationKey?: string;
+  operationalBatchKey?: string;
   operationalRequestFingerprint?: string;
   ticketNumber?:        string;
   assignedTechnicianId?: number;

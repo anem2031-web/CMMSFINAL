@@ -1,6 +1,7 @@
 import { PricingBundleLink, PricingBundleAddButton } from "@/components/purchase/PricingBundleActions";
 import { DelegateSupplyRows } from "@/components/purchase/DelegateSupplyRows";
 import { DelegateCompletedItems, completedLabels } from "@/components/purchase/DelegateCompletedItems";
+import { SupplierReturns } from "@/components/purchase/SupplierReturns";
 import { trpc } from "@/lib/trpc";
 import { independentReadOptions } from "@/lib/read-transport";
 import { readHistoryEntryState, writeHistoryEntryState } from "@/lib/backStack";
@@ -60,7 +61,7 @@ type PurchaseOrdersHistoryState = {
   requestedById: string;
   searchQuery: string;
   currentPage: number;
-  view: "actionable" | "items" | "tracking" | "supply" | "completed" | "all";
+  view: "actionable" | "items" | "tracking" | "supply" | "completed" | "returns" | "all";
 };
 
 type DelegateActionFilter = "all" | "estimate" | "purchase";
@@ -122,19 +123,21 @@ export default function PurchaseOrders() {
   // ── عرض "بانتظار إجرائي" مقابل "جميع الطلبات" ──
   // مدير الصيانة دوره إشرافي ويتابع جميع الطلبات بغض النظر عن منشئها، لذلك
   // يبدأ من العرض الكامل. المندوب يبدأ بأصنافه، وبقية الأدوار تبدأ بانتظار إجرائها.
-  const [selectedView, setView] = useState<"actionable" | "items" | "tracking" | "supply" | "completed" | "all">(savedHistoryState?.view ?? "actionable");
+  const [selectedView, setView] = useState<"actionable" | "items" | "tracking" | "supply" | "completed" | "returns" | "all">(savedHistoryState?.view ?? "actionable");
   // Old saved views remain valid for other roles; delegates enter their existing item queue.
-  const view = user?.role === "delegate" && selectedView !== "items" && selectedView !== "supply" && selectedView !== "completed" ? "items" : selectedView;
+  const canViewReturns = ["delegate", "admin", "owner", "maintenance_manager", "general_maintenance_manager", "construction_procurement_manager", "it_manager", "purchase_manager", "accountant", "senior_management", "executive_director", "user", "operator", "technician", "it_member", "supervisor", "purchase_requester", "food_warehouse_manager", "food_warehouse_assistant"].includes(user?.role || "");
+  const returnStatus = trpc.supplierReturns.status.useQuery(undefined, { enabled: canViewReturns });
+  const view = user?.role === "delegate" && selectedView !== "items" && selectedView !== "supply" && selectedView !== "completed" && selectedView !== "returns" ? "items" : selectedView;
   useEffect(() => {
     if (["maintenance_manager", "general_maintenance_manager", "construction_procurement_manager"].includes(user?.role || "")) {
       setView("all");
     }
   }, [user?.role]);
   useEffect(() => {
-    if (user?.role && user.role !== "delegate" && (view === "items" || view === "completed")) {
+    if (user?.role && user.role !== "delegate" && (view === "items" || view === "completed" || (view === "returns" && !canViewReturns))) {
       setView("actionable");
     }
-  }, [user?.role, view]);
+  }, [user?.role, view, canViewReturns]);
   const canAccessSupplyTracking = canRoleAccessPurchaseSupplyTracking(user?.role);
   const canViewAllSupplyTracking = canRoleViewAllPurchaseSupplyTracking(user?.role);
   const canAccessMyItemsTracking = ![
@@ -763,6 +766,7 @@ export default function PurchaseOrders() {
           </Button>
         )}
         {user?.role === "delegate" && <Button variant={view === "completed" ? "default" : "outline"} size="sm" onClick={() => setView("completed")}>{completedLabels[language].title}</Button>}
+        {canViewReturns && returnStatus.data?.enabled && <Button variant={view === "returns" ? "default" : "outline"} size="sm" onClick={() => setView("returns")}>المرتجعات</Button>}
         {user?.role !== "delegate" && <Button
           variant={view === "all" ? "default" : "outline"}
           size="sm"
@@ -1115,6 +1119,7 @@ export default function PurchaseOrders() {
 
       {/* ── متابعة التوريد: صف بطاقة واضح لكل صنف ───────────────── */}
       {view === "completed" && user?.role === "delegate" && <DelegateCompletedItems />}
+      {view === "returns" && canViewReturns && <SupplierReturns />}
       {view === "supply" && canAccessSupplyTracking && (
         <div className="space-y-4">
           <Card className="border-primary/10">

@@ -10,6 +10,9 @@ import { generatePurchaseRequestPDF } from "../../services/export/exportService"
 import { captureAccountingSignature } from "../../services/pdf/accountingSignature";
 import { storagePut } from "../../_core/storage";
 import { createTranslatedProcurementComment, queuePurchaseTranslation } from "./translation-queue";
+import { approveReplacementAccounting, approveReplacementManagement } from "../../supplier-return-followup/pricing-bridge";
+import { assertNoReplacementOrder, assertSingleReplacementRejection, returnReplacementToDelegate } from "../../supplier-return-followup/repricing";
+import { ReturnFollowupError } from "../../supplier-return-followup/policy";
 
 /**
  * أرشفة نسخة PDF معتمدة من دفعة تسعير — قسم "الوثائق المالية المعتمدة"
@@ -105,6 +108,7 @@ export const approvalsRouter = router({
     // يستدعي هذا الإجراء على طلب تجاوز مرحلة المحاسبة من زمان (معتمد، مرفوض،
     // مشترى...). الآن يُشترط أن يكون الطلب بالضبط بمرحلة pending_accounting.
     assertCanPerformPOAction("approveAccounting", ctx.user, po);
+    await db.withTransaction(tx => assertNoReplacementOrder(tx, po.id));
     const items = await db.getPOItems(input.id);
     
     // Process item rejections if any
@@ -233,6 +237,22 @@ export const approvalsRouter = router({
 
     // معالجة رفض أصناف ضمن الدفعة (إن وجدت)
     if (input.rejectedItemIds && input.rejectedItemIds.length > 0) {
+      await db.withTransaction(tx => assertSingleReplacementRejection(tx, po.id, input.rejectedItemIds!));
+      if (input.rejectedItemIds.length === 1) {
+        let returned = false;
+        try {
+          returned = await db.withTransaction(tx => returnReplacementToDelegate(tx, ctx.user.id, ctx.user.role,
+            "accounting", batch.id, input.rejectedItemIds![0], input.rejectionReason || ""));
+        } catch (error) {
+          if (error instanceof ReturnFollowupError) throw new TRPCError({ code: error.code === "INVALID" ? "BAD_REQUEST" : error.code, message: error.message });
+          throw error;
+        }
+        if (returned) {
+          await db.createAuditLog({ userId: ctx.user.id, action: "return_replacement_for_repricing", entityType: "po_item",
+            entityId: input.rejectedItemIds[0], newValues: { reason: input.rejectionReason, stage: "accounting" } });
+          return { success: true, financialDocumentArchived: null };
+        }
+      }
       for (const itemId of input.rejectedItemIds) {
         const item = batchItems.find(i => i.id === itemId);
         if (item) {
@@ -271,18 +291,28 @@ export const approvalsRouter = router({
       );
     } else {
       // مبلغ العهدة إلزامي عند اعتماد الدفعة فعلياً (غير مطلوب في حالة رفض الدفعة بالكامل أعلاه)
-      const custodyValue = input.custodyAmount ? parseFloat(input.custodyAmount) : NaN;
-      if (!input.custodyAmount || !input.custodyAmount.trim() || isNaN(custodyValue) || custodyValue <= 0) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ العهدة إلزامي لاعتماد الدفعة من الحسابات" });
+      let replacementApproved = false;
+      try {
+        replacementApproved = await db.withTransaction(tx => approveReplacementAccounting(tx, ctx.user.id, batch.id,
+          input.custodyAmount, input.notes, captureAccountingSignature(ctx.user)));
+      } catch (error) {
+        if (error instanceof ReturnFollowupError) throw new TRPCError({ code: error.code === "INVALID" ? "BAD_REQUEST" : error.code, message: error.message });
+        throw error;
       }
-      await db.updatePOPricingBatch(batch.id, {
-        status: "pending_management",
-        accountingApprovedById: ctx.user.id,
-        accountingApprovedAt: new Date(),
-        accountingSignatureSnapshot: captureAccountingSignature(ctx.user),
-        accountingNotes: input.notes,
-        custodyAmount: input.custodyAmount || null,
-      });
+      if (!replacementApproved) {
+        const custodyValue = input.custodyAmount ? parseFloat(input.custodyAmount) : NaN;
+        if (!input.custodyAmount || !input.custodyAmount.trim() || isNaN(custodyValue) || custodyValue <= 0) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ العهدة إلزامي لاعتماد الدفعة من الحسابات" });
+        }
+        await db.updatePOPricingBatch(batch.id, {
+          status: "pending_management",
+          accountingApprovedById: ctx.user.id,
+          accountingApprovedAt: new Date(),
+          accountingSignatureSnapshot: captureAccountingSignature(ctx.user),
+          accountingNotes: input.notes,
+          custodyAmount: input.custodyAmount || null,
+        });
+      }
       // Synchronize the header before translation/PDF work. Otherwise a reader
       // can see an approved batch but the old header throughout PDF generation.
       const allBatchesAfterAccounting = await db.getPOPricingBatches(po.id);
@@ -374,6 +404,22 @@ export const approvalsRouter = router({
       throw new TRPCError({ code: "BAD_REQUEST", message: "هذا الصنف ليس بانتظار اعتماد الحسابات" });
     }
 
+    if (batch) {
+      let returned = false;
+      try {
+        returned = await db.withTransaction(tx => returnReplacementToDelegate(tx, ctx.user.id, ctx.user.role,
+          "accounting", batch.id, item.id, input.reason));
+      } catch (error) {
+        if (error instanceof ReturnFollowupError) throw new TRPCError({ code: error.code === "INVALID" ? "BAD_REQUEST" : error.code, message: error.message });
+        throw error;
+      }
+      if (returned) {
+        await db.createAuditLog({ userId: ctx.user.id, action: "return_replacement_for_repricing", entityType: "po_item",
+          entityId: item.id, newValues: { reason: input.reason, stage: "accounting" } });
+        return { success: true, batchNowClosed: true, poNowClosed: false };
+      }
+    }
+
     const updated = await db.updatePOItemIfNotTerminal(input.itemId, {
       status: "rejected",
       managementRejectionReason: input.reason,
@@ -449,6 +495,22 @@ export const approvalsRouter = router({
     }
 
     if (input.rejectedItemIds && input.rejectedItemIds.length > 0) {
+      await db.withTransaction(tx => assertSingleReplacementRejection(tx, po.id, input.rejectedItemIds!));
+      if (input.rejectedItemIds.length === 1) {
+        let returned = false;
+        try {
+          returned = await db.withTransaction(tx => returnReplacementToDelegate(tx, ctx.user.id, ctx.user.role,
+            "management", batch.id, input.rejectedItemIds![0], input.rejectionReason || ""));
+        } catch (error) {
+          if (error instanceof ReturnFollowupError) throw new TRPCError({ code: error.code === "INVALID" ? "BAD_REQUEST" : error.code, message: error.message });
+          throw error;
+        }
+        if (returned) {
+          await db.createAuditLog({ userId: ctx.user.id, action: "return_replacement_for_repricing", entityType: "po_item",
+            entityId: input.rejectedItemIds[0], newValues: { reason: input.rejectionReason, stage: "management" } });
+          return { success: true };
+        }
+      }
       for (const itemId of input.rejectedItemIds) {
         const item = batchItems.find(i => i.id === itemId);
         if (item) {
@@ -485,14 +547,21 @@ export const approvalsRouter = router({
         input.rejectionReason || `تم إغلاق جميع أصناف الطلب أثناء اعتماد الإدارة بواسطة ${ctx.user.name || "مستخدم"}`
       );
     } else {
-      await db.updatePOPricingBatch(batch.id, {
+      let replacementApproved = false;
+      try {
+        replacementApproved = await db.withTransaction(tx => approveReplacementManagement(tx, ctx.user.id, batch.id, input.notes));
+      } catch (error) {
+        if (error instanceof ReturnFollowupError) throw new TRPCError({ code: error.code === "INVALID" ? "BAD_REQUEST" : error.code, message: error.message });
+        throw error;
+      }
+      if (!replacementApproved) await db.updatePOPricingBatch(batch.id, {
         status: "approved", managementApprovedById: ctx.user.id, managementApprovedAt: new Date(), managementNotes: input.notes,
       });
       await queuePurchaseTranslation("PO_BATCH", batch.id, [
         { fieldName: "managementNotes", text: input.notes },
       ], ctx.user.id);
 
-      for (const item of refreshedManagementBatchItems) {
+      for (const item of replacementApproved ? [] : refreshedManagementBatchItems) {
         if (item.status !== "rejected" && item.status !== "cancelled") {
           await db.updatePOItem(item.id, { status: "approved" });
         }
@@ -549,6 +618,7 @@ export const approvalsRouter = router({
     // يكون الطلب بالضبط بمرحلة pending_management (كان أي senior_management
     // يقدر يعتمد طلبًا تجاوز هذي المرحلة من زمان).
     assertCanPerformPOAction("approveManagement", ctx.user, po);
+    await db.withTransaction(tx => assertNoReplacementOrder(tx, po.id));
     const items = await db.getPOItems(input.id);
 
     // Process item rejections if any
@@ -704,6 +774,7 @@ export const approvalsRouter = router({
     // سابقًا. القاعدة (accountant فقط بـpending_accounting، senior_management
     // فقط بـpending_management، admin/owner دائمًا) معرَّفة الآن بـpolicy.ts فقط.
     assertCanPerformPOAction("reject", ctx.user, poReject);
+    await db.withTransaction(tx => assertNoReplacementOrder(tx, poReject.id));
 
     await db.updatePurchaseOrder(input.id, { status: "rejected", rejectedById: ctx.user.id, rejectedAt: new Date(), rejectionReason: input.reason });
     await queuePurchaseTranslation("PO", input.id, [

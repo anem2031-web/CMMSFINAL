@@ -226,12 +226,13 @@ describe("Operational order → existing physical issue → original-delivery re
 });
 
 describe("Central reference guard and rollout", () => {
-  it("allows IT manager creation through RPC and the route guard without granting warehouse operations or wider IT access", async () => {
+  it("retains IT manager access to existing own orders but closes the legacy catalog creation RPC", async () => {
     const f = fixture(); const actor = { ...manager, role: "it_manager" };
     const api = router({ operationalIssues: createOperationalIssuesRouter(f.ports, () => true) }).createCaller({ user: actor, req: {}, res: {} } as TrpcContext);
     expect(canRoleAccessPath(actor.role, "/operational-issues?source=menu")).toBe(true);
     expect(await api.operationalIssues.status()).toEqual({ enabled: true });
-    expect(await api.operationalIssues.create({ ...body, items: body.items.map(item => ({ ...item, unit: "حبة" })) })).toHaveProperty("id", 1);
+    await expect(api.operationalIssues.create({ ...body, items: body.items.map(item => ({ ...item, unit: "حبة" })) })).rejects.toMatchObject({code:"FORBIDDEN"});
+    await f.service.create(actor,body); // Existing order fixture; the new inventory creation RPC is tested separately.
     expect(await api.operationalIssues.detail({ id: 1 })).toHaveProperty("order.createdById", actor.id);
     await api.operationalIssues.list();
     expect(f.queries.at(-1)?.q).toContain("WHERE o.createdById=?");

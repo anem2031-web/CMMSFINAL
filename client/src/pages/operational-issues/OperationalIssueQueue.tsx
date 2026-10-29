@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { canProcessOperationalIssue, type OperationalDelivery } from "@shared/operational-issues";
 import { operationalIssueText } from "@/i18n/operationalIssues";
 import { OperationalStockPanel } from "./OperationalStockPanel";
+import { PreparedDispatchPanel } from "./PreparedDispatchPanel";
 
 export function OperationalIssueQueue({ process = false }: { process?: boolean }) {
   const { user } = useAuth(); const { language, dir } = useTranslation();
@@ -49,7 +50,8 @@ export function OperationalIssueQueue({ process = false }: { process?: boolean }
       </div>
       {canProcess && detail.data.order.status === "pending" && <Button disabled={approve.isPending} onClick={() => void run(() => approve.mutateAsync({ id: Number(id), revision: Number(detail.data!.order.revision) }))}>{text.approve}</Button>}
       {canSeeStock && stock.error && <p role="alert" className="text-destructive">{stock.error.message}</p>}
-      {detail.data.items.map(line => <OperationalStockPanel key={`${id}:${line.id}`} line={line} stock={stock.data?.items.find(item => item.itemId === Number(line.id))}
+      {detail.data.items.some(line => line.dispatchContext != null) ? <PreparedDispatchPanel key={id} order={detail.data.order} lines={detail.data.items} stocks={stock.data?.items}
+        canProcess={canProcess} loading={stock.isFetching} procurementReady={Boolean(stock.data?.procurementReady)} dispatch={detail.data.dispatch || []} refresh={refresh} /> : detail.data.items.map(line => <OperationalStockPanel key={`${id}:${line.id}`} line={line} stock={stock.data?.items.find(item => item.itemId === Number(line.id))}
         showStock={canSeeStock} loading={stock.isFetching} procurementReady={Boolean(stock.data?.procurementReady)}
         approved={detail.data!.order.status === "approved"} canProcess={canProcess} orderId={Number(id)} refresh={refresh} />)}
       {detail.data.deliveries.map(delivery => <OperationalReturnPanel key={delivery.id} delivery={delivery} orderId={Number(id)} canProcess={canProcess} refresh={refresh} />)}

@@ -4,6 +4,7 @@ import { executionRows as rows } from "../operational-issues/issue-reference";
 import { assertBundleItemEligible, canReadPricingBundles, PRICING_BUNDLE_LIMIT, type PricingBundleActor, type PricingBundleSnapshot, type PricingBundleRow } from "../../../shared/delegate-pricing-bundles";
 import { hasOwnPurchaseDocumentApproval, isPurchasePdfApprover, PURCHASE_PDF_APPROVAL_MESSAGE } from "../../_core/authz/purchase-document";
 import { documentDayBoundary, documentSearchPattern, type DocumentListPageInput } from "../../../shared/document-list";
+import { supplierReturnDatabaseEnabled } from "../../supplier-return-followup/feature";
 export interface PricingBundlePorts {
   database(): Promise<any>;
   submitPO(poId: number, actor: PricingBundleActor, options: { selectedItemIds: number[]; tx: any; purchasePackageSubmissionId?: number; skipArchive: true; bundleId: number; delegateSignatureSnapshot?: string | null }): Promise<any>;
@@ -220,6 +221,20 @@ export class PricingBundleService {
       if (bundle.status !== "open") return; // Idempotent repeated send; no second accounting batch.
       if (Number(bundle.revision) !== revision) fail("تغيرت محتويات الحزمة؛ حدّث الشاشة قبل الإرسال", "CONFLICT");
       const snapshot = await this.snapshot(tx, actor, bundle);
+      // Return compensation is approved per pricing batch (its custody is only
+      // the difference). A purchase-package submission would use the ordinary
+      // aggregate custody writer instead, so reject that combination before
+      // creating any accounting submission.
+      const packagedOrderIds = Array.from(new Set(snapshot.rows.filter(item => item.packageId != null).map(item => item.purchaseOrderId)));
+      if (packagedOrderIds.length) {
+        const [database] = await rows(tx, sql`SELECT DATABASE() AS databaseName`);
+        if (supplierReturnDatabaseEnabled(database?.databaseName)) {
+          const replacements = await rows(tx, sql`SELECT purchaseOrderId FROM supplier_return_replacement_plans
+            WHERE purchaseOrderId IN (${sql.join(packagedOrderIds.map(orderId => sql`${orderId}`), sql`,`)}) LIMIT 1`);
+          if (replacements.length) fail("طلب تعويض المرتجع يعتمد فرق السعر في دفعة مستقلة؛ أخرجه من حزمة الشراء قبل إرسال التسعير", "CONFLICT");
+        }
+      }
+      const compensations: NonNullable<PricingBundleSnapshot["compensations"]> = [];
       // Freeze the document inputs atomically with accounting; PDF rendering is deferred to download.
       const submissions = new Map<number, number>();
       for (const packageId of Array.from(new Set(snapshot.rows.map(item => item.packageId).filter((v): v is number => v != null))).sort((a,b) => a-b)) {
@@ -236,10 +251,11 @@ export class PricingBundleService {
         await tx.execute(sql`UPDATE purchase_orders SET requesterSignatureSnapshot=COALESCE(NULLIF(requesterSignatureSnapshot,''),${signature.requesterSource ?? null}),reviewerSignatureSnapshot=COALESCE(NULLIF(reviewerSignatureSnapshot,''),${signature.reviewerSource ?? null}) WHERE id=${poId}`);
         const batch = await this.ports.submitPO(poId, actor, { selectedItemIds: items.map(item => item.id), tx, purchasePackageSubmissionId: submissionId, skipArchive: true, bundleId: id, delegateSignatureSnapshot: snapshot.delegate.signatureSource });
         if (!batch.batchId || batch.itemCount !== items.length) fail("لم تتطابق دفعة الحسابات مع أصناف الحزمة", "CONFLICT");
+        if (batch.replacementCompensation) compensations.push(batch.replacementCompensation);
         await tx.execute(sql`INSERT INTO delegate_pricing_bundle_batches (bundleId,purchaseOrderId,pricingBatchId,purchasePackageSubmissionId) VALUES (${id},${poId},${batch.batchId},${submissionId ?? null})`);
       }
       await tx.execute(sql`UPDATE delegate_pricing_bundle_items SET reservedItemId=NULL WHERE bundleId=${id} AND removedAt IS NULL`);
-      await tx.execute(sql`UPDATE delegate_pricing_bundles SET status='archived',openDelegateId=NULL,sentAt=CURRENT_TIMESTAMP,revision=revision+1,snapshotJson=${JSON.stringify(snapshot)},pdfContent=NULL WHERE id=${id}`);
+      await tx.execute(sql`UPDATE delegate_pricing_bundles SET status='archived',openDelegateId=NULL,sentAt=CURRENT_TIMESTAMP,revision=revision+1,snapshotJson=${JSON.stringify(compensations.length ? { ...snapshot, compensations } : snapshot)},pdfContent=NULL WHERE id=${id}`);
       await this.audit(tx, actor.id, id, "pricing_bundle_sent", { itemIds: snapshot.rows.map(item => item.id) });
       await this.audit(tx, actor.id, id, "pricing_bundle_archived", { automatic: true });
     });

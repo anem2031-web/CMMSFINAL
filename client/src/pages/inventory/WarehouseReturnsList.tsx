@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, RotateCcw, FileText, Loader2, Plus } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { SupplierReturns } from "@/components/purchase/SupplierReturns";
 
 
 export default function WarehouseReturnsList() {
@@ -34,6 +35,8 @@ export default function WarehouseReturnsList() {
           <Loader2 className="w-5 h-5 animate-spin mx-auto" />
         </CardContent></Card>
       )}
+
+      {canCreateReturn && <SupplierReturns />}
 
       {!isLoading && (!docs || docs.length === 0) && (
         <Card>

@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { operationalIssuesEnabled } from "./feature";
+import { dispatchContext } from "../../../shared/operational-dispatch";
 
 export async function executionRows(tx: any, query: any): Promise<any[]> {
   const result = await tx.execute(query); return Array.isArray(result[0]) ? result[0] : [];
@@ -8,7 +9,7 @@ export async function executionRows(tx: any, query: any): Promise<any[]> {
 /** Runs in the existing physical writer transaction. No new table read when disabled. */
 export async function assertOperationalIssueReference(tx: any, input: {
   operationalIssueItemId?: number; ticketId?: number; ticketItemId?: number; pmv2TaskItemId?: number; selectedTicketItemId?: number;
-  deliveredToId?: number; performedById: number; catalogItemId: number | null; quantity: number; operationKey?: string;
+  deliveredToId?: number; performedById: number; catalogItemId: number | null; quantity: number; operationKey?: string; operationalBatchKey?: string;
 }) {
   if (!operationalIssuesEnabled()) {
     if (input.operationalIssueItemId) throw new Error("الصرف التشغيلي غير متاح حاليًا");
@@ -28,11 +29,20 @@ export async function assertOperationalIssueReference(tx: any, input: {
     WHERE i.id=${input.operationalIssueItemId} FOR UPDATE`);
   if (!line || line.status !== "approved") throw new Error("أمر الصرف غير معتمد أو تم استكماله");
   if (Number(line.actorActive) !== 1 || !["warehouse", "owner", "admin"].includes(line.actorRole)) throw new Error("الصرف للمستودع فقط");
-  if (Number(line.collectorActive) !== 1 || line.collectorRole !== "technician" || Number(line.collectorId) !== input.deliveredToId) throw new Error("المستلم يجب أن يكون الفني المحدد في أمر الصرف");
+  const context = dispatchContext(line.dispatchContext);
+  if (context) {
+    if (!input.operationalBatchKey) throw new Error("يلزم تأكيد صرف الطلب بالكامل");
+    const [batch] = await executionRows(tx, sql`SELECT inputJson FROM operational_issue_batches WHERE orderId=${Number(line.orderId)} AND operationKey=${input.operationalBatchKey} AND issuedById=${input.performedById}`);
+    const recipients = batch && (typeof batch.inputJson === "string" ? JSON.parse(batch.inputJson) : batch.inputJson);
+    const recipient = Array.isArray(recipients) && recipients.find(r => Number(r.itemId) === Number(line.id));
+    if (!recipient || Number(recipient.actualCollectorId) !== input.deliveredToId) throw new Error("المستلم لا يطابق عملية الصرف الجماعي");
+    const [person] = await executionRows(tx, sql`SELECT id FROM users WHERE id=${input.deliveredToId} AND isActive=1 AND role='technician'`);
+    if (!person) throw new Error("المستلم غير نشط أو ليس فنيًا");
+  } else if (Number(line.collectorActive) !== 1 || line.collectorRole !== "technician" || Number(line.collectorId) !== input.deliveredToId) throw new Error("المستلم يجب أن يكون الفني المحدد في أمر الصرف");
   if (Number(line.catalogItemId) !== input.catalogItemId) throw new Error("اللوت لا يطابق صنف أمر الصرف");
   const [used] = await executionRows(tx, sql`SELECT COALESCE(SUM(quantity),0) AS issued FROM operational_issue_deliveries WHERE orderItemId=${Number(line.id)}`);
   if (Math.round((Number(used.issued) + input.quantity) * 1000) > Math.round(Number(line.quantity) * 1000)) throw new Error("الكمية تتجاوز المتبقي المعتمد في أمر الصرف");
-  return { orderId: Number(line.orderId), itemId: Number(line.id), orderNumber: String(line.orderNumber), siteId: Number(line.siteId), sectionId: Number(line.sectionId) };
+  return { orderId: Number(line.orderId), itemId: Number(line.id), orderNumber: String(line.orderNumber), siteId: context?.siteId ?? Number(line.siteId), sectionId: context?.sectionId ?? Number(line.sectionId) };
 }
 
 export async function recordOperationalDelivery(tx: any, reference: NonNullable<Awaited<ReturnType<typeof assertOperationalIssueReference>>>, value: {

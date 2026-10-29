@@ -95,6 +95,10 @@ export default function CreatePurchaseOrder() {
   const { user } = useAuth();
   const searchStr = useSearch();
   const params = new URLSearchParams(searchStr);
+  const supplierReturnPlanId = Number(params.get("supplierReturnPlanId"));
+  const isReturnReplacement = Number.isSafeInteger(supplierReturnPlanId) && supplierReturnPlanId > 0;
+  const returnCatalogItemId = Number(params.get("returnCatalogItemId"));
+  const returnQuantity = Number(params.get("returnQuantity"));
   const ticketId = params.get("ticketId") ? parseInt(params.get("ticketId")!) : undefined;
   // بند بلاغ محدد ضمن بلاغ متعدد الجهات — الخطوة 4 (2026-08-08). غير مُمرَّر
   // لأي طلب شراء "عادي" مرتبط ببلاغ أحادي البند، فيسلك المسار القديم حرفيًا.
@@ -170,13 +174,13 @@ export default function CreatePurchaseOrder() {
   const relevantMaintenancePath = linkedTicketItemId ? linkedTicketItem?.maintenancePath : ticket?.maintenancePath;
   const relevantStatus = linkedTicketItemId ? linkedTicketItem?.status : ticket?.status;
   const isLinkedTicketInvalid = Boolean(
-    !isTicketMaterial && linkedTicketId &&
+    !isReturnReplacement && !isTicketMaterial && linkedTicketId &&
     ticket &&
     (!linkedTicketItemId || linkedTicketItem) &&
     (relevantMaintenancePath !== "B" || !allowedLinkedTicketStatuses.includes(relevantStatus || ""))
   );
   const isLinkedTicketActionBlocked = Boolean(
-    !isTicketMaterial && linkedTicketId && (
+    !isReturnReplacement && !isTicketMaterial && linkedTicketId && (
       isLinkedTicketLoading || !ticket ||
       (linkedTicketItemId && !linkedTicketItem) ||
       isLinkedTicketInvalid
@@ -186,10 +190,10 @@ export default function CreatePurchaseOrder() {
   // ✅ وحدات القياس من الكاتلوج — تُحدّث القائمة فور إضافة وحدة جديدة من تبويب الكاتلوج
   const { data: catalogUnits } = trpc.catalog.units.list.useQuery();
   // سياق طلب الشراء: الموقع ← القسم ← الأصل، مع تصنيف ديناميكي مستقل.
-  const [siteId, setSiteId] = useState(fromIdeaId || isTicketMaterial ? params.get("siteId") || "" : "");
-  const [sectionId, setSectionId] = useState(fromIdeaId || isTicketMaterial ? params.get("sectionId") || "" : "");
-  const [assetId, setAssetId] = useState(fromIdeaId || isTicketMaterial ? params.get("assetId") || "" : "");
-  const [categoryId, setCategoryId] = useState("");
+  const [siteId, setSiteId] = useState(fromIdeaId || isTicketMaterial || isReturnReplacement ? params.get("siteId") || "" : "");
+  const [sectionId, setSectionId] = useState(fromIdeaId || isTicketMaterial || isReturnReplacement ? params.get("sectionId") || "" : "");
+  const [assetId, setAssetId] = useState(fromIdeaId || isTicketMaterial || isReturnReplacement ? params.get("assetId") || "" : "");
+  const [categoryId, setCategoryId] = useState(isReturnReplacement ? params.get("categoryId") || "" : "");
   const { data: sites = [] } = trpc.sites.list.useQuery();
   const { data: sections = [] } = trpc.sections.list.useQuery(
     siteId ? { siteId: Number(siteId) } : undefined,
@@ -318,7 +322,18 @@ export default function CreatePurchaseOrder() {
   });
 
   const [draftLoaded, setDraftLoaded] = useState(false);
-  const [items, setItems] = useState<ItemForm[]>(() => hasMaterialPurchaseContext
+  const [items, setItems] = useState<ItemForm[]>(() => isReturnReplacement
+    ? [{ ...emptyItem(params.get("returnUnit") || "", {
+        siteId: params.get("itemSiteId") || params.get("siteId") || "",
+        sectionId: params.get("itemSectionId") || params.get("sectionId") || "",
+        assetId: params.get("itemAssetId") || params.get("assetId") || "",
+        categoryId: params.get("itemCategoryId") || params.get("categoryId") || "",
+      }), sourceType: Number.isSafeInteger(returnCatalogItemId) && returnCatalogItemId > 0 ? "catalog" : "manual",
+      catalogItemId: Number.isSafeInteger(returnCatalogItemId) && returnCatalogItemId > 0 ? returnCatalogItemId : null,
+      itemName: params.get("returnItemName") || "", quantity: Number.isFinite(returnQuantity) && returnQuantity > 0 ? returnQuantity : 1,
+      photoUrls: params.get("returnPhotoUrl") ? [params.get("returnPhotoUrl")!] : [],
+    }]
+    : hasMaterialPurchaseContext
     ? [{
         sourceType: "catalog",
         catalogItemId: materialCatalogItemId!,
@@ -673,7 +688,7 @@ const handleCatalogSelect = (catalogItem: any) => {
   };
 
   const handleSaveDraft = () => {
-    if (isTicketMaterial) return;
+    if (isTicketMaterial || isReturnReplacement) return;
     if (!validatePurchaseForm(false)) return;
     if (!validateMaterialLinkedPurchase()) return;
     if (isLinkedTicketActionBlocked) {
@@ -695,6 +710,7 @@ const handleCatalogSelect = (catalogItem: any) => {
       fromIdeaId,
       ticketId,
       ticketItemId,
+      supplierReturnPlanId: isReturnReplacement ? supplierReturnPlanId : undefined,
       pmv2RequestItemId: hasMaterialPurchaseContext && !isTicketMaterial ? materialRequestItemId : undefined,
       ...purchaseContextPayload(),
       notes: notes || undefined,
@@ -721,6 +737,7 @@ const handleCatalogSelect = (catalogItem: any) => {
 
   return (
     <div className="max-w-4xl space-y-6">
+      {isReturnReplacement && <Card className="border-amber-300 bg-amber-50"><CardContent className="p-4 text-sm text-amber-900">طلب شراء بديل للمرتجع. يُنشأ صنف واحد مرتبط بالطلب الأصلي، ويُحسب فرق السعر من رصيد المرتجع أثناء التسعير.</CardContent></Card>}
       {isTicketMaterial && <Card><CardContent className="space-y-3 p-4"><p className="font-semibold">{language === "ar" ? "طلب شراء مواد تذكرة الصيانة" : "Maintenance ticket material purchase"} — {materialTaskNumber}</p><p>{materialItemName}</p><WarehousePurchaseQuantities id="ticket-purchase" technicianQuantity={ticketTechnicianQuantity} purchaseQuantity={materialMinimumPurchaseUnits} extra={ticketWarehouseExtra} unit={materialUnit} language={language} disabled={createMut.isPending} onExtraChange={setTicketWarehouseExtra} /></CardContent></Card>}
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="icon" onClick={() => goBackOrFallback(setLocation, linkedTicketId ? `/tickets/${linkedTicketId}` : hasMaterialPurchaseContext ? "/scheduled-maintenance/warehouse-requests" : "/purchase-orders")}>
@@ -925,7 +942,7 @@ const handleCatalogSelect = (catalogItem: any) => {
           {t.purchaseOrders.itemName} #{idx + 1}
         </CardTitle>
 
-        {items.length > 1 && !isMaterialBoundItem && (
+        {items.length > 1 && !isMaterialBoundItem && !isReturnReplacement && (
           <Button
             variant="ghost"
             size="icon"
@@ -951,7 +968,7 @@ const handleCatalogSelect = (catalogItem: any) => {
 
         <select
           value={item.sourceType}
-          disabled={isMaterialBoundItem}
+          disabled={isMaterialBoundItem || isReturnReplacement}
           onChange={(e) => {
             const value = e.target.value as "catalog" | "manual";
 
@@ -979,7 +996,7 @@ const handleCatalogSelect = (catalogItem: any) => {
           )}
           <option value="catalog">{t.purchaseOrders.itemSourceCatalog}</option>
         </select>
-        {!isMaterialBoundItem && (
+        {!isMaterialBoundItem && !isReturnReplacement && (
           <Button variant="outline" size="sm" className="gap-2" onClick={() => {
             setCatalogTargetIndex(idx);
             setShowCatalogPicker(true);
@@ -1003,7 +1020,7 @@ const handleCatalogSelect = (catalogItem: any) => {
           aria-invalid={Boolean(itemErrors.itemName)}
           className={cn(itemErrors.itemName && "border-destructive focus-visible:ring-destructive")}
           onClick={() => {
-            if (item.sourceType === "catalog" && !isMaterialBoundItem) {
+            if (item.sourceType === "catalog" && !isMaterialBoundItem && !isReturnReplacement) {
               setCatalogTargetIndex(idx);
               setShowCatalogPicker(true);
             }
@@ -1111,7 +1128,7 @@ const handleCatalogSelect = (catalogItem: any) => {
             type="number"
             min={minimumQuantity}
             value={item.quantity}
-            disabled={isMaterialBoundItem}
+            disabled={isMaterialBoundItem || isReturnReplacement}
             aria-invalid={Boolean(itemErrors.quantity)}
             className={cn(isTicketMaterial && isMaterialBoundItem && "border-emerald-300 bg-emerald-50/50 font-semibold text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/20 dark:text-emerald-100", itemErrors.quantity && "border-destructive focus-visible:ring-destructive")}
             onChange={e =>
@@ -1135,7 +1152,7 @@ const handleCatalogSelect = (catalogItem: any) => {
           <Select
             value={item.unit}
             onValueChange={value => updateItem(idx, "unit", value)}
-            disabled={isMaterialBoundItem && Boolean(materialResolvedCatalogUnit)}
+            disabled={(isMaterialBoundItem && Boolean(materialResolvedCatalogUnit)) || isReturnReplacement}
           >
             <SelectTrigger
               id={`purchase-item-${idx}-unit`}
@@ -1289,7 +1306,7 @@ const handleCatalogSelect = (catalogItem: any) => {
 })}
 
 {/* طلب PM V2 المرتبط = عجز واحد / صنف واحد، لذلك لا يظهر زر إضافة صنف. */}
-{!hasMaterialPurchaseContext && (
+{!hasMaterialPurchaseContext && !isReturnReplacement && (
   <Button
     variant="outline"
     onClick={() => setItems(prev => [...prev, emptyItem("", { siteId, sectionId, assetId, categoryId })])}
@@ -1330,7 +1347,7 @@ const handleCatalogSelect = (catalogItem: any) => {
               </Button>
             ) : (
             <div className="flex gap-2">
-              {!hasMaterialPurchaseContext && (
+              {!hasMaterialPurchaseContext && !isReturnReplacement && (
                 <Button
                   variant="outline"
                   onClick={handleSaveDraft}

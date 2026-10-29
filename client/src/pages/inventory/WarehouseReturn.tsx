@@ -11,6 +11,7 @@ import { ArrowRight, Search, Package, RotateCcw, Loader2, CheckCircle2, Info, Qr
 import { toast } from "sonner";
 import BarcodeScanner from "@/components/common/BarcodeScanner";
 import { useTranslation } from "@/contexts/LanguageContext";
+import { SupplierReturnValuePreview } from "@/components/purchase/SupplierReturnValuePreview";
 
 function fmtDate(d: any) {
   if (!d) return "—";
@@ -25,6 +26,14 @@ export default function WarehouseReturn() {
   const [returnedQuantity, setReturnedQuantity] = useState(1);
   const [reason, setReason] = useState("");
   const [recipientName, setRecipientName] = useState("");
+  const [delegateId, setDelegateId] = useState("");
+  const [creationKeys] = useState(() => new Map<string, string>());
+  const followupStatus = trpc.supplierReturns.status.useQuery();
+  const delegateChoices = trpc.supplierReturns.delegates.useQuery(undefined, { enabled: followupStatus.data?.enabled === true });
+  const followupMut = trpc.supplierReturns.create.useMutation({
+    onSuccess: () => { toast.success("تم إنشاء المرتجع وإرساله للمندوب"); navigate("/warehouse/returns"); },
+    onError: error => toast.error(error.message),
+  });
   // مصدر الإرجاع (سند الاستلام) المُختار — null يعني "بلا مصدر معروف"
   const [selectedSource, setSelectedSource] = useState<any>(null);
   // المورد المُختار (المرحلة الأولى من الاختيار عند تعدد الموردين)
@@ -166,6 +175,11 @@ export default function WarehouseReturn() {
       return;
     }
 
+    if (returnMode === "supplier" && lotsEnabled && followupStatus.data?.enabled && (!Number.isInteger(returnedQuantity) || returnedQuantity <= 0)) {
+      toast.error("أدخل كمية صحيحة أكبر من صفر");
+      return;
+    }
+
     if (returnMode === "recipient") {
       if (!recipientSourceInfo?.sourceDeliveryDocumentId) {
         toast.error("يجب التحقق من سند الصرف الأصلي أولًا");
@@ -194,6 +208,17 @@ export default function WarehouseReturn() {
       }
       if (returnedQuantity > Number(returnLotInfo.availableQuantity || 0)) {
         toast.error(`الكمية (${returnedQuantity}) أكبر من رصيد الدفعة المتاح (${returnLotInfo.availableQuantity || 0})`);
+        return;
+      }
+      if (followupStatus.isLoading || followupStatus.error) {
+        toast.error("تعذر التحقق من مسار المرتجع؛ أعد المحاولة"); return;
+      }
+      if (followupStatus.data?.enabled) {
+        if (!delegateId) { toast.error("اختر المندوب المستلم للمرتجع"); return; }
+        const request = { trackingToken: returnLotInfo.trackingToken, warehouseId: Number(returnWarehouseId), delegateId: Number(delegateId), returnedQuantity, reason: reason.trim() };
+        const fingerprint = JSON.stringify(request);
+        if (!creationKeys.has(fingerprint)) creationKeys.set(fingerprint, crypto.randomUUID());
+        followupMut.mutate({ ...request, operationKey: creationKeys.get(fingerprint)! });
         return;
       }
       returnMut.mutate({
@@ -676,10 +701,18 @@ export default function WarehouseReturn() {
                 <Input
                   type="number"
                   min={1}
+                  step={1}
                   max={returnMode === "recipient" ? recipientSourceInfo?.returnableQuantity : (lotsEnabled ? returnLotInfo?.availableQuantity : selectedItem.quantity)}
-                  value={returnedQuantity}
-                  onChange={e => setReturnedQuantity(parseInt(e.target.value) || 1)}
+                  value={Number.isFinite(returnedQuantity) ? returnedQuantity : ""}
+                  onChange={e => setReturnedQuantity(returnMode === "supplier" && lotsEnabled && followupStatus.data?.enabled ? e.target.valueAsNumber : (parseInt(e.target.value) || 1))}
                 />
+                {returnMode === "supplier" && lotsEnabled && returnLotInfo && followupStatus.data?.enabled && <>
+                  <p className="text-xs text-muted-foreground">حدد الكمية المرتجعة؛ يمكن إرجاع جزء من رصيد اللوت أو كامل المتاح. تُثبّت الكمية بعد التأكيد.</p>
+                  {Number.isInteger(Number(returnLotInfo.availableQuantity)) && Number(returnLotInfo.availableQuantity) > 0 &&
+                    <Button type="button" size="sm" variant="outline" disabled={followupMut.isPending || returnMut.isPending}
+                      onClick={() => setReturnedQuantity(Number(returnLotInfo.availableQuantity))}>إرجاع كامل المتاح ({returnLotInfo.availableQuantity})</Button>}
+                  {followupStatus.data?.enabled && <SupplierReturnValuePreview warehouseId={Number(returnWarehouseId)} trackingToken={returnLotInfo.trackingToken} quantity={returnedQuantity} />}
+                </>}
               </div>
 
               <div className="space-y-1">
@@ -691,7 +724,14 @@ export default function WarehouseReturn() {
                 />
               </div>
 
-              {returnMode === "supplier" && (
+              {returnMode === "supplier" && lotsEnabled && followupStatus.data?.enabled && <div className="space-y-1">
+                <Label>المندوب المستلم للمرتجع *</Label>
+                <Select value={delegateId} onValueChange={setDelegateId}><SelectTrigger><SelectValue placeholder="اختر المندوب" /></SelectTrigger><SelectContent>
+                  {delegateChoices.data?.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name || person.username}</SelectItem>)}
+                </SelectContent></Select>
+                {delegateChoices.error && <p role="alert">{delegateChoices.error.message}</p>}
+              </div>}
+              {returnMode === "supplier" && !(lotsEnabled && followupStatus.data?.enabled) && (
                 <div className="space-y-1">
                   <Label>اسم المستلم (من استلم الصنف المرتجَع)</Label>
                   <Input
@@ -717,10 +757,10 @@ export default function WarehouseReturn() {
             </Button>
             <Button
               onClick={handleSubmit}
-              disabled={returnMut.isPending || recipientReturnMut.isPending || resolveReturnLotMut.isPending || resolveRecipientReturnSourceMut.isPending || !reason.trim() || returnedQuantity < 1 || (returnMode === "recipient" ? !recipientSourceInfo : (lotsEnabled && (!returnWarehouseId || !returnLotInfo)))}
+              disabled={followupMut.isPending || returnMut.isPending || recipientReturnMut.isPending || resolveReturnLotMut.isPending || resolveRecipientReturnSourceMut.isPending || !reason.trim() || !Number.isInteger(returnedQuantity) || returnedQuantity < 1 || (returnMode === "recipient" ? !recipientSourceInfo : (lotsEnabled && (!returnWarehouseId || !returnLotInfo)))}
               className="flex-1 gap-2"
             >
-              {(returnMut.isPending || recipientReturnMut.isPending)
+              {(followupMut.isPending || returnMut.isPending || recipientReturnMut.isPending)
                 ? <Loader2 className="w-4 h-4 animate-spin" />
                 : <RotateCcw className="w-4 h-4" />
               }

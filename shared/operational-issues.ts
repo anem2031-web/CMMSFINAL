@@ -1,5 +1,5 @@
 export type OperationalActor = { id: number; role: string; isActive?: number };
-export const OPERATIONAL_CREATE_ROLES = ["maintenance_manager", "general_maintenance_manager", "construction_procurement_manager", "it_manager", "owner", "admin"];
+export const OPERATIONAL_CREATE_ROLES = ["maintenance_manager", "general_maintenance_manager", "construction_procurement_manager", "it_manager", "owner", "admin", "warehouse"];
 export const OPERATIONAL_WAREHOUSE_ROLES = ["warehouse", "owner", "admin"];
 export function canCreateOperationalIssue(role?: string | null) { return OPERATIONAL_CREATE_ROLES.includes(role || ""); }
 export function canProcessOperationalIssue(role?: string | null) { return OPERATIONAL_WAREHOUSE_ROLES.includes(role || ""); }
@@ -10,6 +10,7 @@ export type OperationalOrder = {
   status: "pending" | "approved" | "completed"; revision: number; createdAt: string;
 };
 export type OperationalLine = {
+  dispatchContext?: unknown;
   id: number; orderId: number; catalogItemId: number; itemName: string; unit: string;
   quantity: number; issuedQuantity: number;
 };
@@ -18,6 +19,7 @@ export type OperationalDelivery = {
   lotUnitCost: number; cost: number; returnedQuantity: number; lotCode: string; createdAt: string;
 };
 export type OperationalLotChoice = {
+  receivedAt?: string;
   inventoryId: number; warehouseId: number; warehouseNameAr: string; warehouseNameEn: string | null;
   lotId: number; lotCode: string; trackingToken: string; quantity: number; unit: string; unitCost: number;
 };

@@ -28,7 +28,7 @@ function fixture() {
     if (q.includes("FROM operational_issue_orders o")) return result(state.orders.filter((o: any) => o.id === p[0]));
     if (q.startsWith("SELECT * FROM operational_issue_items")) return result(state.items.filter((i: any) => i.orderId === p[0]));
     if (q.startsWith("SELECT i.*,COALESCE")) return result(state.items.filter((i: any) => i.id === p[0] && i.orderId === p[1]));
-    if (q.includes("FROM inventory i INNER JOIN warehouses w")) return result(state.inventories.filter((i: any) => p.includes(i.linkedItemId) && i.active && !i.frozen));
+    if (q.includes("FROM inventory i INNER JOIN warehouses w")) return result(state.inventories.filter((i: any) => p.includes(i.linkedItemId) && i.active && !i.frozen && (!q.includes("AND w.id=?") || i.warehouseId === p.at(-1))));
     if (q.includes("FROM inventory_lot_balances b")) return result(state.lots.filter((l: any) => l.quantity > 0 && state.inventories.some((i: any) => i.id === l.inventoryId && p.includes(i.linkedItemId))));
     if (q.includes("FROM operational_issue_purchase_links k")) {
       return result(state.links.flatMap((k: any) => {
@@ -42,7 +42,7 @@ function fixture() {
       }));
     }
     if (q.includes("FROM catalog_items WHERE")) return result(flags.catalogActive ? [{ id: p[0], nameAr: "صنف رسمي", unit: "حبة" }] : []);
-    if (q.includes("FROM sections s INNER JOIN sites")) return result(flags.validSection && p[0] === 2 && p[1] === 1 ? [{ id: 2 }] : []);
+    if (q.includes("FROM sections s INNER JOIN sites")) return result(flags.validSection && ((p[0] === 2 && p[1] === 1) || (p[0] === 4 && p[1] === 3)) ? [{ id: p[0] }] : []);
     if (q.startsWith("SELECT p.id,p.poNumber")) return result(state.headers.filter((h: any) => h.id === p[0] && h.status === "draft" && h.requestedById === p[1] && h.siteId === p[2] && h.sectionId === p[3] && !h.ticketId));
     if (q.startsWith("SELECT COUNT(*) AS count")) return result([{ count: state.poItems.filter((i: any) => i.purchaseOrderId === p[0]).length }]);
     if (q.startsWith("SELECT id FROM purchase_order_items")) return result(state.poItems.filter((i: any) => i.purchaseOrderId === p[0] && i.catalogItemId === p[1]).slice(-1));
@@ -115,6 +115,22 @@ describe("Operational catalog availability and original physical lots", () => {
 });
 
 describe("Zero-stock requirement → existing purchase draft", () => {
+  it("retains the prepared line's site/section in its purchase draft and link comparison", async () => {
+    const f = fixture();
+    f.state().items[1].dispatchContext = JSON.stringify({version:1,warehouseId:1,warehouseName:"Main",siteId:3,siteName:"Site3",sectionId:4,sectionName:"Section4",collectorId:101,collectorName:"Technician",source:"catalog"});
+    await f.add(12);
+    expect(f.state().headers[0]).toMatchObject({siteId:3,sectionId:4});
+    expect((await f.service.availability(warehouse,1)).items[1].purchase).toMatchObject({changed:false});
+    expect(await f.add(12)).toMatchObject({existing:true});
+    expect(f.state().headers).toHaveLength(1);
+  });
+  it("checks the prepared source warehouse rather than blocking on another warehouse's stock", async () => {
+    const f = fixture();
+    f.state().items[0].dispatchContext = JSON.stringify({version:1,warehouseId:1,warehouseName:"Main",siteId:1,siteName:"Site",sectionId:2,sectionName:"Section",collectorId:101,collectorName:"Technician",source:"catalog"});
+    f.state().inventories.push(inventory(2,10));f.state().lots.push(lot(2,50,10));
+    expect(await f.add(11)).toMatchObject({quantity:3,existing:false});
+    expect(f.state().inventories[0].quantity).toBe(10);
+  });
   it("atomically saves draft, catalog line and exact source reference without issuing or submitting", async () => {
     const f = fixture(); const data = await f.caller().operationalIssues.addToPurchaseDraft({ orderId: 1, itemId: 11 });
     expect(data).toMatchObject({ purchaseOrderId: 1, purchaseOrderItemId: 1, quantity: 3, status: "draft", existing: false });

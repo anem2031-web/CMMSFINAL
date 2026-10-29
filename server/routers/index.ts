@@ -30,6 +30,7 @@ import { receiptsV2Router } from "./inventory/receipts.v2.router";
 import { inventoryCountRouter } from "./inventory/inventoryCount.router";
 import { invoiceDraftRouter } from "./inventory/invoiceDraft.router";
 import { returnsRouter } from "./inventory/returns.router";
+import { supplierReturnsRouter } from "./inventory/supplier-returns.router";
 import { stockRouter } from "./inventory/stock.router";
 import { warehouseRouter } from "./inventory/warehouse.router";
 import { transfersRouter } from "./inventory/transfers.router";
@@ -114,6 +115,7 @@ purchaseOrders: router({
   invoiceDraft: invoiceDraftRouter,
   inventoryCount: inventoryCountRouter,
   warehouseReturns: returnsRouter,
+  supplierReturns: supplierReturnsRouter,
   stock: stockRouter,
   warehouse: warehouseRouter,
   warehouseIssueBatches: warehouseIssueBatchesRouter,

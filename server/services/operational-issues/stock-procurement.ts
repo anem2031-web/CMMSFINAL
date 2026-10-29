@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { DEFAULT_PURCHASE_DELIVERY_DAYS } from "../../../shared/purchaseItemNeedDate";
 import type { OperationalActor, OperationalLine, OperationalOrder, OperationalPurchaseLink, OperationalStock } from "../../../shared/operational-issues";
 import { executionRows as rows } from "./issue-reference";
+import { dispatchContext } from "../../../shared/operational-dispatch";
 
 export interface OperationalPurchasePorts {
   nextNumber(): Promise<string>;
@@ -17,7 +18,7 @@ export async function operationalPurchaseReady(tx: any): Promise<boolean> {
   return found.length === 1;
 }
 
-export async function operationalPurchaseLinks(tx: any, orderId: number): Promise<OperationalPurchaseLink[]> {
+export async function operationalPurchaseLinks(tx: any, orderId: number, contexts: OperationalLine[] = []): Promise<OperationalPurchaseLink[]> {
   const links = await rows(tx, sql`SELECT k.orderItemId,k.purchaseOrderId,k.purchaseOrderItemId,k.quantity AS linkedQuantity,k.unit AS linkedUnit,
     p.poNumber,p.status,p.siteId,p.sectionId,p.ticketId,j.status AS itemStatus,j.catalogItemId,j.quantity,j.unit,
     i.catalogItemId AS expectedCatalogItemId,o.siteId AS expectedSiteId,o.sectionId AS expectedSectionId
@@ -26,6 +27,10 @@ export async function operationalPurchaseLinks(tx: any, orderId: number): Promis
     INNER JOIN purchase_orders p ON p.id=k.purchaseOrderId
     INNER JOIN purchase_order_items j ON j.id=k.purchaseOrderItemId AND j.purchaseOrderId=p.id
     WHERE i.orderId=${orderId} AND p.status<>'rejected' AND j.status NOT IN ('cancelled','rejected','purchase_cancelled')`);
+  for (const row of links) {
+    const context = dispatchContext(contexts.find(line => Number(line.id) === Number(row.orderItemId))?.dispatchContext);
+    if (context) { row.expectedSiteId = context.siteId; row.expectedSectionId = context.sectionId; }
+  }
   return links.map(row => ({
     orderItemId: Number(row.orderItemId), purchaseOrderId: Number(row.purchaseOrderId), purchaseOrderItemId: Number(row.purchaseOrderItemId),
     poNumber: String(row.poNumber), status: String(row.status), itemStatus: String(row.itemStatus),
@@ -37,15 +42,15 @@ export async function operationalPurchaseLinks(tx: any, orderId: number): Promis
 }
 
 /** Aggregate stock and physical lots separately, so joining lots never multiplies inventory totals. */
-export async function loadOperationalStock(tx: any, lines: OperationalLine[], lock = false): Promise<OperationalStock[]> {
+export async function loadOperationalStock(tx: any, lines: OperationalLine[], lock = false, warehouseId?: number): Promise<OperationalStock[]> {
   if (!lines.length) return [];
   const catalogIds = sql.join(lines.map(line => sql`${Number(line.catalogItemId)}`), sql`, `);
   const inventories = await rows(tx, sql`SELECT i.id,i.linkedItemId,i.quantity,COALESCE(NULLIF(i.issueUnit,''),i.unit) AS unit,
     w.id AS warehouseId,w.nameAr AS warehouseNameAr,w.nameEn AS warehouseNameEn
     FROM inventory i INNER JOIN warehouses w ON (w.id=i.warehouseId OR (i.warehouseId IS NULL AND w.id=(SELECT MIN(m.id) FROM warehouses m WHERE m.type='main' AND m.isActive=1)))
-    WHERE i.linkedItemId IN (${catalogIds}) AND i.isFrozen=0 AND w.isActive=1 ORDER BY i.id ${lock ? sql`FOR UPDATE` : sql``}`);
+    WHERE i.linkedItemId IN (${catalogIds}) AND i.isFrozen=0 AND w.isActive=1 ${warehouseId ? sql`AND w.id=${warehouseId}` : sql``} ORDER BY i.id ${lock ? sql`FOR UPDATE` : sql``}`);
   const lots = await rows(tx, sql`SELECT b.inventoryId,b.quantity,l.id AS lotId,l.catalogItemId,l.lotCode,l.trackingToken,
-    l.issueUnit,l.issueUnitCost,l.remainingQuantity
+    l.issueUnit,l.issueUnitCost,l.remainingQuantity,l.createdAt AS receivedAt
     FROM inventory_lot_balances b INNER JOIN inventory_lots l ON l.id=b.lotId
     INNER JOIN inventory i ON i.id=b.inventoryId WHERE i.linkedItemId IN (${catalogIds}) AND b.quantity>0 ORDER BY l.createdAt,l.id,b.inventoryId`);
   return lines.map(line => {
@@ -69,7 +74,7 @@ export async function loadOperationalStock(tx: any, lines: OperationalLine[], lo
         choices.push({ inventoryId: Number(inventory.id), warehouseId: Number(inventory.warehouseId),
           warehouseNameAr: String(inventory.warehouseNameAr), warehouseNameEn: inventory.warehouseNameEn || null,
           lotId: Number(lot.lotId), lotCode: String(lot.lotCode), trackingToken: String(lot.trackingToken),
-          quantity: Number(lot.quantity), unit: line.unit, unitCost: Number(lot.issueUnitCost) });
+          quantity: Number(lot.quantity), unit: line.unit, unitCost: Number(lot.issueUnitCost), receivedAt: lot.receivedAt instanceof Date ? lot.receivedAt.toISOString() : String(lot.receivedAt || "") });
       }
       if (Math.abs(covered - Number(inventory.quantity)) > 0.0005) needsReview = true;
     }
@@ -92,13 +97,16 @@ export async function addOperationalPurchaseDraft(tx: any, ports: OperationalPur
   const [line] = await rows(tx, sql`SELECT i.*,COALESCE((SELECT SUM(d.quantity) FROM operational_issue_deliveries d WHERE d.orderItemId=i.id),0) AS issuedQuantity
     FROM operational_issue_items i WHERE i.id=${itemId} AND i.orderId=${order.id} FOR UPDATE`) as OperationalLine[];
   if (!line) throw new TRPCError({ code: "BAD_REQUEST", message: "الصنف لا ينتمي إلى أمر الصرف" });
-  const links = await operationalPurchaseLinks(tx, order.id);
+  const context = dispatchContext(line.dispatchContext);
+  const contexts = context ? await rows(tx, sql`SELECT * FROM operational_issue_items WHERE orderId=${order.id} ORDER BY id`) as OperationalLine[] : [];
+  const links = await operationalPurchaseLinks(tx, order.id, contexts);
+  if (context) order = { ...order, siteId: context.siteId, sectionId: context.sectionId, collectorId: context.collectorId };
   const existing = links.find(link => link.orderItemId === itemId);
   // Repeated clicks return the same live document, even after submission or arrival of stock.
   if (existing) return { ...existing, existing: true };
   const remaining = Number(line.quantity) - Number(line.issuedQuantity);
   if (order.status !== "approved" || remaining <= 0 || !Number.isInteger(remaining)) throw new TRPCError({ code: "CONFLICT", message: "يلزم أمر معتمد وكمية متبقية صحيحة" });
-  const [stock] = await loadOperationalStock(tx, [line], true);
+  const [stock] = await loadOperationalStock(tx, [line], true, context?.warehouseId);
   if (stock.totalQuantity > 0 || stock.needsReview) throw new TRPCError({ code: "CONFLICT", message: "يوجد رصيد أو أرصدة تحتاج مراجعة؛ حدّث الصفحة واختر اللوت قبل طلب شراء" });
   const [catalog] = await rows(tx, sql`SELECT id,nameAr,nameEn,unit FROM catalog_items WHERE id=${Number(line.catalogItemId)} AND isActive=1`);
   if (!catalog) throw new TRPCError({ code: "BAD_REQUEST", message: "صنف الكتالوج غير نشط أو غير موجود" });

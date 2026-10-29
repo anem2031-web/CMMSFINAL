@@ -1970,11 +1970,12 @@ const visibleItems = useMemo(() => {
                 {isAccountant && batch.status === "pending_accounting" && batch.purchasePackageSubmissionId == null && (
                   <div className="flex gap-2 items-end flex-wrap">
                     <div className="space-y-1">
-                      <Label className="text-[11px] text-orange-700">{t.workflow.purchase.custodyAmount} ({currency}) *</Label>
+                      <Label className="text-[11px] text-orange-700">{batch.replacementFunding ? "عهدة فرق سعر البديل" : t.workflow.purchase.custodyAmount} ({currency}) *</Label>
+                      {batch.replacementFunding && <p className="text-[11px] text-orange-800">سعر البديل {batch.replacementFunding.quotedTotal} − رصيد المرتجع {batch.replacementFunding.creditAllocated} = الفرق {batch.replacementFunding.additionalFunding} ر.س</p>}
                       <Input
                         type="number"
                         placeholder="0.00"
-                        value={batchCustodyAmounts[batch.id] || ""}
+                        value={batchCustodyAmounts[batch.id] ?? (batch.replacementFunding?.additionalFunding ?? "")}
                         onChange={e => setBatchCustodyAmounts(p => ({ ...p, [batch.id]: e.target.value }))}
                         className="bg-white w-40"
                       />
@@ -1982,12 +1983,14 @@ const visibleItems = useMemo(() => {
                     <Button
                       size="sm"
                       className="bg-orange-600 hover:bg-orange-700"
-                      disabled={approveAccountingBatchMut.isPending || !(parseFloat(batchCustodyAmounts[batch.id] || "") > 0)}
+                      disabled={approveAccountingBatchMut.isPending || (batch.replacementFunding
+                        ? Number(batchCustodyAmounts[batch.id] ?? batch.replacementFunding.additionalFunding) !== Number(batch.replacementFunding.additionalFunding)
+                        : !(parseFloat(batchCustodyAmounts[batch.id] || "") > 0))}
                       onClick={() => {
                         printWindowRef.current = window.open("", "_blank");
                         approveAccountingBatchMut.mutate({
                           batchId: batch.id,
-                          custodyAmount: batchCustodyAmounts[batch.id] || undefined,
+                          custodyAmount: batchCustodyAmounts[batch.id] ?? (batch.replacementFunding?.additionalFunding || undefined),
                         });
                       }}
                     >

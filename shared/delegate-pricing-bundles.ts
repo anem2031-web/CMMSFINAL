@@ -10,6 +10,12 @@ export type PricingBundleRow = {
 export type PricingBundleSnapshot = {
   number: string; submittedAt: string; delegate: { id: number; name: string; signature: string; signatureSource?: string | null };
   rows: PricingBundleRow[];
+  compensations?: Array<{
+    planId: number; caseId: number; purchaseOrderItemId: number; originalPoNumber: string;
+    originalBundleNumber: string | null; returnNumber: string; returnedQuantity: string;
+    replacementQuantity: string; originalPurchaseValue: string; total: string;
+    creditAllocated: string; additionalFunding: string;
+  }>;
   signatures: Array<{
     purchaseOrderId: number;
     poNumber: string;

@@ -6,6 +6,7 @@ import {
   derivePathBTicketPurchaseStatus,
 } from "@shared/pathBPurchaseWorkflow";
 import * as db from "../../_core/db";
+import { activePathBItemsAfterReplacement } from "../../supplier-return-followup/path-b-replacement";
 import { assertTicketWorkflowManageable, assertTicketItemWorkflowManageable } from "../tickets/tickets.access";
 
 export const PATH_B_TICKET_PURCHASE_CREATOR_ROLES = new Set<string>([
@@ -143,9 +144,9 @@ export async function syncPathBTicketFromTicketId(
   if (await readTeamTicketExecution(ticket)) return;
 
   const linkedOrders = await db.getPurchaseOrdersByTicketId(ticketId);
-  const allItems = (
+  const allItems = await activePathBItemsAfterReplacement((
     await Promise.all(linkedOrders.map((linked: any) => db.getPOItems(linked.id)))
-  ).flat();
+  ).flat());
 
   const nextStatus = derivePathBTicketPurchaseStatus({
     purchaseOrders: linkedOrders.map((linked: any) => ({ id: linked.id, status: linked.status })),
@@ -185,9 +186,9 @@ export async function syncPathBTicketItemFromItemId(
   if (parentTicket && await readTeamTicketExecution(parentTicket,item.id)) return;
 
   const linkedOrders = await db.getPurchaseOrdersByTicketItemId(ticketItemId);
-  const allItems = (
+  const allItems = await activePathBItemsAfterReplacement((
     await Promise.all(linkedOrders.map((linked: any) => db.getPOItems(linked.id)))
-  ).flat();
+  ).flat());
 
   const nextStatus = derivePathBTicketPurchaseStatus({
     purchaseOrders: linkedOrders.map((linked: any) => ({ id: linked.id, status: linked.status })),
@@ -234,9 +235,9 @@ export async function assertPathBMaterialsDeliveredToTechnician(ticketId: number
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا يوجد طلب شراء نشط مرتبط بالبلاغ" });
   }
 
-  const allItems = (
+  const allItems = await activePathBItemsAfterReplacement((
     await Promise.all(activeOrders.map((po: any) => db.getPOItems(po.id)))
-  ).flat().filter((item: any) => !TERMINAL_ITEM_STATUSES.has(item.status));
+  ).flat().filter((item: any) => !TERMINAL_ITEM_STATUSES.has(item.status)));
 
   if (allItems.length === 0 || !allItems.every((item: any) => item.status === "delivered_to_requester")) {
     throw new TRPCError({
@@ -265,9 +266,9 @@ export async function assertPathBMaterialsDeliveredToTechnicianForItem(ticketIte
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا يوجد طلب شراء نشط مرتبط بهذا البند" });
   }
 
-  const allItems = (
+  const allItems = await activePathBItemsAfterReplacement((
     await Promise.all(activeOrders.map((po: any) => db.getPOItems(po.id)))
-  ).flat().filter((poItem: any) => !TERMINAL_ITEM_STATUSES.has(poItem.status));
+  ).flat().filter((poItem: any) => !TERMINAL_ITEM_STATUSES.has(poItem.status)));
 
   if (allItems.length === 0 || !allItems.every((poItem: any) => poItem.status === "delivered_to_requester")) {
     throw new TRPCError({

@@ -18,7 +18,7 @@ describe("Main Phase 5 / 5.2 — Supplier return hardening", () => {
     const end = source.indexOf("export async function createLegacySupplierReturn", start);
     const block = source.slice(start, end);
 
-    expect(block).toContain("return database.transaction(async (tx: any) => {");
+    expect(block).toContain("return existingTx ? executeReturn(existingTx) : database.transaction(executeReturn)");
     expect(block).toContain("resolveInventoryLotForSupplierReturn");
     expect(block).toContain("consumeInventoryLotForIssue");
     expect(block).toContain("FOR UPDATE");

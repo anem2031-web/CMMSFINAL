@@ -18,6 +18,7 @@ const sharedQueries = [
   "catalog.nodes.list", "catalog.items.list", "catalog.units.list",
   "attachments.list", "translation.getEntityTranslations", "translation.getBatchTranslations",
   ...paths("purchaseOrders", "list getById actionableForMe myRequestedItems itemHistory listPricingBatches documentPermission"),
+  ...paths("supplierReturns", "status list"),
   ...paths("purchasePackages", "list getById cards actionableSubmissionsForMe submissions"),
   ...paths("improvementIdeas", "listPaginated getById getGroupedClassifiedCounts getClassifiedByGroup executionSummary executionReference"),
   ...paths("inventoryReports", "stockBalance valuation valueDistribution accountingReview analytics movementMeta movements"),
@@ -27,6 +28,7 @@ const sharedMutations = [
   "auth.login", "auth.logout", "auth.changePassword", "translation.setLanguage",
   "notifications.markRead", "notifications.markAllRead", "push.subscribe", "push.unsubscribe", "audit.recordPwaUpdateDecision",
   "attachments.add", "attachments.delete", "improvementIdeas.create", "improvementIdeas.delete",
+  "supplierReturns.chooseReplacement", "supplierReturns.cancelAfterRefund",
   ...paths("purchaseOrders", "saveDraft submitDraft updateDraft create delete deleteItem editItem editAndResubmitReturnedItem cancelItem resubmit resubmitCancelledPurchase finalizeCancelledItem resubmitItemRevision update"),
 ];
 const documentQueries = [
@@ -48,6 +50,7 @@ const managementQueries = [
 ];
 const managementMutations = ["tickets.create", "tickets.createTicket", "tickets.update", "tickets.submitForTriage", "tickets.confirmCompletion", "improvementIdeas.decide", "ai.analyze"];
 const warehouseQueries = [
+  ...paths("supplierReturns", "status list delegates valuePreview"),
   ...paths("inventory", "list taxonomy lotSummaries listLots getTransactions issueCostAllocations scanBarcode getItemSummary getPurchaseHistory getLedger"),
   ...paths("inventoryCount", "searchCandidates uncountedItems countDiscrepancies"),
   ...paths("warehouseReceipts", "list getById getForPrint getByPO searchInventory"),
@@ -56,7 +59,7 @@ const warehouseQueries = [
   ...paths("stock", "getTransactions getLowStockItems"), "warehouse.getAvailableCategories",
   ...paths("transfers", "listCards getBatchDetail"),
   ...paths("purchaseOrders", "pendingDeliveryItems inventoryReadyForDelivery pendingPurchaseItems pendingWarehouseItems searchItemNames trackItem"),
-  ...paths("operationalIssues", "status list detail availability itemUnits choices"),
+  ...paths("operationalIssues", "status list detail availability itemUnits choices preparationOptions stockChoices preparedSelection"),
   ...paths("ticketTeamAssignments", "queue warehouseRequests"),
   ...paths("ticketTeamExecution", "details balances searchMaterialIdentityCandidates preview catalog"),
   ...paths("pmv2.warehouse", "waitingMaterialQueue searchMaterialIdentityCandidates readyToIssueQueue pendingReturns"),
@@ -83,6 +86,7 @@ const warehouseOversightQueries = [
   ...paths("purchaseOrders", "searchItemNames trackItem"),
 ];
 const warehouseMutations = [
+  ...paths("supplierReturns", "create command confirmRefund"),
   "externalMaintenance.returnForRouteReview",
   ...paths("inventoryCount", "saveSettlementDraft submitSettlementDraft correctCount"),
   "users.create", "deliveryDocuments.generate",
@@ -96,7 +100,7 @@ const warehouseMutations = [
   ...paths("warehouse", "create confirmDeliveryToWarehouse confirmDeliveryToRequester"),
   "transfers.resolveLot", "transfers.createBatch", "disposal.resolveLot", "disposal.create",
   ...paths("purchaseOrders", "confirmDeliveryToRequester incrementPrintCount confirmDeliveryToWarehouse deliverInventoryItem"),
-  ...paths("operationalIssues", "addToPurchaseDraft approve issue returnMaterial"),
+  ...paths("operationalIssues", "addToPurchaseDraft approve issue returnMaterial createPrepared issuePrepared"),
   ...paths("ticketTeamExecution", "prepareSupply issue transferFromForm request resolve provide purchaseReceipt returnMaterial"),
   ...paths("pmv2.warehouse", "resolveMaterialIdentity prepareTransferHandoff preparePurchaseHandoff linkPurchaseOrder linkConfirmedTransfers issueReadyRequirement linkConfirmedDelivery confirmPendingReturn"),
   ...paths("catalog.nodes", "create update"),

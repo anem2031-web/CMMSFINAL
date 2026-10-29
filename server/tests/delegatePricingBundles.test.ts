@@ -21,11 +21,13 @@ function extract(file: string, name: string) {
 const submitCode = extract("server/routers/purchase/purchase-orders.router.ts", "submitPricedBatchForPO");
 function fixture() {
   let state: any = { bundles: [], members: [], links: [], batches: [], submissions: [], items: Array.from({ length: 25 }, (_, index) => ({ id: index + 1, purchaseOrderId: index < 2 ? 101 : index % 2 ? 102 : 103, poNumber: index < 2 ? "PR-101" : index % 2 ? "PR-102" : "PR-103", packageId: index < 2 ? null : index % 2 ? 9 : 10, purchaseOrderStatus: "pending_estimate", delegateId: 11, catalogItemId: 55, itemName: `Material ${index + 1}`, sectionId: index + 1, sectionName: `Section ${index + 1}`, siteId: 1, siteName: "Site", categoryName: "Category", ticketId: index + 30, ticketItemId: index + 40, quantity: index === 0 ? 50 : 2, unit: "piece", estimatedUnitCost: "10.00", estimatedTotalCost: index === 0 ? "500.00" : "20.00", supplierName: `Supplier ${index + 1}`, status: "estimated", batchId: null })) };
-  const flags = { renderFail: false, batchFailPo: 0, syncFail: false }; let queue = Promise.resolve(); let transactionDepth = 0;
+  const flags = { renderFail: false, batchFailPo: 0, syncFail: false, replacementOrderId: 0 }; let queue = Promise.resolve(); let transactionDepth = 0;
   const queries: string[] = [];
   const tx: any = { execute: async (statement: any) => {
     const parsed = new MySqlDialect().sqlToQuery(statement), q = parsed.sql.replace(/\s+/g, " ").trim(), p: any[] = parsed.params; queries.push(q);
     const rows = (values: any[]) => [structuredClone(values), []];
+    if (q === "SELECT DATABASE() AS databaseName") return rows([{ databaseName: "copycmms2" }]);
+    if (q.startsWith("SELECT purchaseOrderId FROM supplier_return_replacement_plans")) return rows(p.includes(flags.replacementOrderId) ? [{ purchaseOrderId: flags.replacementOrderId }] : []);
     if (q.startsWith("SELECT id FROM users")) return rows(p[0] === 11 ? [{ id: 11 }] : []);
     if (q.startsWith("SELECT i.*,p.poNumber")) return rows(state.items.filter((i: any) => i.id === p[0]));
     if (q.startsWith("SELECT bundleId FROM delegate_pricing_bundle_items")) return rows(state.members.filter((m: any) => m.reservedItemId === p[0]));
@@ -66,6 +68,7 @@ function fixture() {
   const database: any = { execute: tx.execute, transaction: (work: any) => { const next = queue.then(async () => { const old = structuredClone(state); transactionDepth++; try { return await work(tx); } catch (error) { state = old; throw error; } finally { transactionDepth--; } }); queue = next.catch(() => {}); return next; } };
   const submit = vm.runInNewContext(submitCode, {
     TRPCError, pricingBundlesEnabled: () => true, reservedPricingItemIds,
+    reserveReplacementPricing: async () => null,
     isItemAssignedToPODelegate: (user: any, item: any) => user.id === item.delegateId,
     db: {
       getPurchaseOrderById: async (id: number, transaction: any) => { expect(transaction).toBe(tx); return { id, poNumber: `PR-${id}`, status: "pending_estimate" }; },
@@ -90,6 +93,13 @@ function fixture() {
 beforeEach(() => vi.stubEnv("DELEGATE_PRICING_BUNDLES_ENABLED", "true"));
 afterEach(() => vi.unstubAllEnvs());
 describe("Pricing bundle → existing accounting batches, isolated with no database", () => {
+  it("rejects a replacement purchase in a purchase package before creating accounting documents", async () => {
+    const f = fixture(); const id = await f.add(3); f.flags.replacementOrderId = 103;
+    await expect(f.service.send(actor, id, 1)).rejects.toThrow("دفعة مستقلة");
+    expect(f.state().submissions).toHaveLength(0);
+    expect(f.state().batches).toHaveLength(0);
+    expect(f.state().bundles[0].status).toBe("open");
+  });
   it("does not allocate a number on read; allocates one open bundle for concurrent adds and duplicate clicks", async () => {
     const f = fixture(); expect(await f.service.list(actor)).toEqual([]); expect(f.state().bundles).toHaveLength(0);
     await Promise.all([f.service.add(actor,1), f.service.add(actor,2), f.service.add(actor,1)]);
@@ -239,6 +249,22 @@ describe("Pricing bundle → existing accounting batches, isolated with no datab
 });
 
 describe("Existing PDF template with exact immutable bundle snapshot",()=>{
+  it("shows the original transaction and only the VAT-inclusive difference as replacement custody",async()=>{
+    const f=fixture(); const id=await f.add(1); await f.service.send(actor,id,1);
+    const snapshot=JSON.parse(f.state().bundles[0].snapshotJson); let html="";
+    snapshot.compensations=[{planId:9,caseId:3,purchaseOrderItemId:1,originalPoNumber:"PR-ORIGINAL",
+      originalBundleNumber:"DPB-ORIGINAL",returnNumber:"RTN-ORIGINAL",returnedQuantity:"1",replacementQuantity:"1",
+      originalPurchaseValue:"100.0000",total:"120.0000",creditAllocated:"100.0000",additionalFunding:"20.0000"}];
+    const render=vm.runInNewContext(extract("server/services/export/exportService.ts","generatePurchaseRequestPDF"),{
+      db:new Proxy({}, {get:()=>()=>{throw Error("Live reads/writes forbidden in immutable bundle PDF");}}),
+      getSignatureDataUrl:async()=>"", escapeHtml:(s:any)=>String(s).replaceAll("<","&lt;"), fmtSAR:(n:number)=>n.toFixed(2), amountToArabicCurrencyPhrase:(n:number)=>`CUSTODY:${n}`,
+      readAccountingSignature, htmlToPdf:async(value:string)=>{html=value;return Buffer.from("%PDF-local");},
+    });
+    await render(0,actor.id,undefined,undefined,snapshot);
+    expect(html).toContain("PR-ORIGINAL"); expect(html).toContain("DPB-ORIGINAL"); expect(html).toContain("RTN-ORIGINAL");
+    expect(html).toContain("فرق العهدة"); expect(html).toContain("20.00 ر.س");
+    expect(html).toContain(`CUSTODY:${Math.max(0, snapshot.rows.reduce((sum:number,row:any)=>sum+Number(row.estimatedTotalCost),0)-100)}`);
+  });
   it("renders original PR/section and groups each approval actor once without accessing live source data",async()=>{
     const f=fixture(); const id=await f.add(1,3); await f.service.send(actor,id,2); const snapshot=JSON.parse(f.state().bundles[0].snapshotJson); let html="";
     snapshot.signatures[1].requesterId=snapshot.signatures[0].requesterId;
@@ -295,7 +321,7 @@ describe("Compatibility with the existing submission outside the new delegate la
     const items=[{id:1,delegateId:11,status:"estimated",batchId:null,estimatedTotalCost:"30"},{id:2,delegateId:22,status:"estimated",batchId:null},{id:3,delegateId:11,status:"pending",batchId:null}];
     const db={getPurchaseOrderById:vi.fn(async()=>({id:101,poNumber:"PR-101",status:"pending_estimate"})),getPOItems:vi.fn(async()=>items),getNextBatchNumber:vi.fn(async()=>2),createPOPricingBatch:vi.fn(async(..._args:any[])=>17),updatePOItem:vi.fn((..._args:any[])=>{}),updatePurchaseOrder:vi.fn()};
     const finalize=vi.fn(),archive=vi.fn(async()=>true);
-    const submit=vm.runInNewContext(submitCode,{db,TRPCError,pricingBundlesEnabled:()=>false,reservedPricingItemIds,isItemAssignedToPODelegate:(user:any,item:any)=>item.delegateId===user.id,finalizePricedBatchForPO:finalize,archiveDelegatePricingBatchPdf:archive});
+    const submit=vm.runInNewContext(submitCode,{db:{...db,getDb:async()=>null},TRPCError,pricingBundlesEnabled:()=>false,reservedPricingItemIds,isItemAssignedToPODelegate:(user:any,item:any)=>item.delegateId===user.id,finalizePricedBatchForPO:finalize,archiveDelegatePricingBatchPdf:archive});
     vi.stubEnv("DELEGATE_PRICING_BUNDLES_ENABLED","false");const result=await submit(101,actor);
     expect(result).toMatchObject({batchId:17,itemCount:1,pricingDocumentArchived:true});expect(db.createPOPricingBatch.mock.calls[0][0]).toMatchObject({purchaseOrderId:101,batchNumber:2,itemCount:1,status:"pending_accounting"});
     expect(db.updatePOItem.mock.calls[0][0]).toBe(1); expect(finalize).toHaveBeenCalledOnce();expect(archive).toHaveBeenCalledOnce();

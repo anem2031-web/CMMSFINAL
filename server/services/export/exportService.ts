@@ -4,6 +4,7 @@ import * as db from "../../_core/db";
 import { htmlToPdf } from "../pdf/htmlToPdfService";
 import { getSignatureDataUrl } from "../pdf/signatureImage";
 import { readAccountingSignature } from "../pdf/accountingSignature";
+import { replacementDocumentForBatch } from "../../supplier-return-followup/pricing-bridge";
 
 // ============================================================
 // EXCEL EXPORT HELPERS
@@ -927,6 +928,20 @@ export async function generatePurchaseRequestPDF(
         <td>${fmtSAR(r.rowTotal)} ر.س</td>
       </tr>`).join("");
 
+  const compensationDb = !bundleSnapshot && batchId && !packageSubmissionId ? await db.getDb() : null;
+  const compensationRows = bundleSnapshot?.compensations ?? (compensationDb && batchId
+    ? await replacementDocumentForBatch(compensationDb, batchId, purchaseOrderId) : []);
+  const supplierCreditsUsed = compensationRows.reduce((sum, item) => sum + Number(item.creditAllocated), 0);
+  const requestedCustody = Math.max(0, grandTotal - supplierCreditsUsed);
+  const compensationHtml = compensationRows.length ? `<div class="info-card" style="margin-bottom:8px;border-color:#d69e2e;page-break-inside:avoid;">
+      <strong>تعويض مرتجع مورد — العهدة المطلوبة هي فرق السعر فقط</strong>
+      ${compensationRows.map(c => `<div style="margin-top:4px;border-top:1px solid #e2e8f0;padding-top:4px;">
+        الطلب الأصلي: ${escapeHtml(c.originalPoNumber)} · حزمة التسعير الأصلية: ${escapeHtml(c.originalBundleNumber || "غير مرتبطة بحزمة")} · المرتجع: ${escapeHtml(c.returnNumber)}<br>
+        الكمية المرتجعة: ${escapeHtml(c.returnedQuantity)} · كمية البديل: ${escapeHtml(c.replacementQuantity)}<br>
+        قيمة المرتجع الأصلية: ${fmtSAR(Number(c.originalPurchaseValue))} ر.س · رصيد المرتجع المستخدم: ${fmtSAR(Number(c.creditAllocated))} ر.س · سعر البديل شامل الضريبة: ${fmtSAR(Number(c.total))} ر.س · فرق العهدة: <strong>${fmtSAR(Number(c.additionalFunding))} ر.س</strong>
+      </div>`).join("")}
+    </div>` : "";
+
   const html = `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -1027,7 +1042,7 @@ export async function generatePurchaseRequestPDF(
     </div>
 
     <div class="intro-text">
-        الرجاء التكرم بالإيعاز لمن يلزم بصرف عُهدة قدرها <strong>${amountToArabicCurrencyPhrase(grandTotal)}</strong>، لتوريد خدمات / شراء الآتي:
+        الرجاء التكرم بالإيعاز لمن يلزم بصرف عُهدة قدرها <strong>${amountToArabicCurrencyPhrase(requestedCustody)}</strong>، لتوريد خدمات / شراء الآتي:
     </div>
 
     <table class="items-table">
@@ -1051,6 +1066,8 @@ export async function generatePurchaseRequestPDF(
             </tr>
         </tbody>
     </table>
+
+    ${compensationHtml}
 
     <div class="declaration-box">
         ☑ نحن الموقعين أدناه نؤكد بأن هذه الأصناف لا توجد بالمستودع (خاص بكادر المشتريات).

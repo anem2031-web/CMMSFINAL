@@ -28,6 +28,8 @@ import { createReceiptInventoryLot, isInventoryLotsEnabled } from "../../_core/i
 import { getPurchaseReceiptContext, lockAndValidatePurchaseReceiptItems, receiptOrderScope } from "../../services/inventory/purchaseReceiptEligibility";
 
 import { createPurchaseReceiptContextProcedure } from "./purchaseReceiptContext.procedure";
+import { readRows, trialEnabled } from "../../supplier-return-followup/runtime";
+import { linkReplacementReceipt } from "../../supplier-return-followup/receipt-bridge";
 
 // ─── مخطط الصنف المستلم ─────────────────────────────────────
 const receivedItemSchema = z.object({
@@ -558,6 +560,11 @@ export const receiptsV2Router = router({
       const lotsEnabled = isInventoryLotsEnabled();
       const { receiptId, receiptNumber, processedItems } = await db.withTransaction(async (tx) => {
         await lockAndValidatePurchaseReceiptItems(tx, input.purchaseOrderId, input.items, input.purchaseOrderIds, input.sourceInvoiceNumber);
+        const replacementItemIds = await trialEnabled(tx)
+          ? new Set((await readRows(tx, sql`SELECT purchaseOrderItemId FROM supplier_return_replacement_plans
+              WHERE purchaseOrderId IN (${sql.join(receiptOrderIds.map(id => sql`${id}`), sql`,`)}) AND purchaseOrderItemId IS NOT NULL`))
+              .map(row => Number(row.purchaseOrderItemId)))
+          : new Set<number>();
         const receiptNumber = await db.getNextReceiptNumber(tx);
 
         const receiptId = await db.createWarehouseReceiptV2({
@@ -742,6 +749,15 @@ export const receiptsV2Router = router({
               transactionType: "purchase",
               receiptId: receiptId!,
             }, tx);
+          }
+
+          if (item.purchaseOrderItemId && replacementItemIds.has(Number(item.purchaseOrderItemId))) {
+            if (!receiptItemId || !inOrderUnits || !orderedItem?.unit) throw new TRPCError({ code: "CONFLICT", message: "تعذر تحديد كمية البديل بوحدة طلب الشراء" });
+            await linkReplacementReceipt(tx, ctx.user.id, {
+              purchaseOrderId: Number(sourcePurchaseOrderId), purchaseOrderItemId: Number(item.purchaseOrderItemId),
+              receiptId: Number(receiptId), receiptItemId: Number(receiptItemId), lotId: processed.lotId ?? null,
+              quantityInOrderUnits: String(inOrderUnits.quantity), orderUnit: orderedItem.unit,
+            });
           }
 
           // 2B-5: إنشاء/إعادة استخدام Catalog Item Candidate للصنف الجديد

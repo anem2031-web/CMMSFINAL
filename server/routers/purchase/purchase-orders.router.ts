@@ -50,6 +50,8 @@ import { APP_ROLE, MAINTENANCE_RESPONSIBLE_DEPARTMENT, canRoleViewAllPurchaseSup
 import { createTranslatedProcurementComment, queuePurchaseTranslation } from "./translation-queue";
 import { isPurchasePdfApprover, purchaseDocumentPermission, withPurchaseDocumentPermissions } from "../../_core/authz/purchase-document";
 import { loadDocumentListPort } from "../../_core/db/document-list";
+import { reserveReplacementPricing, markReplacementPurchased } from "../../supplier-return-followup/pricing-bridge";
+import { trialEnabled, readRows } from "../../supplier-return-followup/runtime";
 
 // ── دالة مشتركة: ترجمة أصناف طلب الشراء في الخلفية ──────────────────────────
 async function queuePOItemsTranslation(items: any[], userId: number): Promise<void> {
@@ -657,6 +659,19 @@ export async function submitPricedBatchForPO(
   }
 
   if (selected && readyItems.length !== selected.size) throw new TRPCError({ code: "CONFLICT", message: "تغيرت أصناف الحزمة قبل الإرسال" });
+  // Compensation remains in the existing pricing workflow. Reserve the
+  // returned supplier credit before the accounting batch is inserted, under
+  // the same bundle transaction. Normal purchase orders return immediately.
+  let replacementCompensation: Awaited<ReturnType<typeof reserveReplacementPricing>> = null;
+  if (opts?.tx) {
+    replacementCompensation = await reserveReplacementPricing(opts.tx, user.id, purchaseOrderId, readyItems.map((item: any) => ({ id: item.id, estimatedTotalCost: item.estimatedTotalCost })));
+  } else {
+    const database = await db.getDb();
+    if (database && await trialEnabled(database)) {
+      const [replacement] = await readRows(database, sql`SELECT id FROM supplier_return_replacement_plans WHERE purchaseOrderId=${purchaseOrderId} LIMIT 1`);
+      if (replacement) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "أرسل تسعير البديل من حزمة التسعير حتى يُحجز رصيد المرتجع مع الدفعة في معاملة واحدة" });
+    }
+  }
   const batchNumber = await db.getNextBatchNumber(purchaseOrderId, opts?.tx);
   const totalBatchCost = readyItems.reduce((sum: number, i: any) => sum + parseFloat(i.estimatedTotalCost || "0"), 0);
 
@@ -713,6 +728,7 @@ export async function submitPricedBatchForPO(
     batchId,
     batchNumber,
     itemCount: readyItems.length,
+    ...(replacementCompensation ? { replacementCompensation } : {}),
     pricingDocumentArchived,
   };
 }
@@ -1106,13 +1122,31 @@ export const purchaseOrdersRouter = router({
     const isExternalMaintenance =
       purchaseContext.ticket?.maintenancePath === "C" && !!purchaseContext.externalJob;
 
-    await db.updatePOItem(input.itemId, {
+    const purchaseWrite = {
       status: "purchased",
       purchasedAt: new Date(),
       purchasedById: ctx.user.id,
       purchasedPhotoUrl: input.purchasedPhotoUrl,
       invoicePhotoUrl: input.invoicePhotoUrl,
-    });
+    } as const;
+    const purchaseDb = await db.getDb();
+    const replacementLinked = purchaseDb && await trialEnabled(purchaseDb)
+      ? (await readRows(purchaseDb, sql`SELECT id FROM supplier_return_replacement_plans WHERE purchaseOrderItemId=${input.itemId} LIMIT 1`)).length > 0
+      : false;
+    let replacementPurchase = false;
+    if (replacementLinked) {
+      try {
+        await db.withTransaction(async tx => {
+          replacementPurchase = await markReplacementPurchased(tx, ctx.user.id, input.itemId);
+          if (!replacementPurchase) throw new TRPCError({ code: "CONFLICT", message: "رابط طلب التعويض تغير؛ حدّث الصفحة" });
+          await db.updatePOItem(input.itemId, purchaseWrite, tx);
+        });
+      } catch (error) {
+        const { ReturnFollowupError } = await import("../../supplier-return-followup/policy");
+        if (error instanceof ReturnFollowupError) throw new TRPCError({ code: error.code === "INVALID" ? "BAD_REQUEST" : error.code, message: error.message });
+        throw error;
+      }
+    } else await db.updatePOItem(input.itemId, purchaseWrite);
     // Update PO status. Path C uses the same pricing/approval/execution cycle,
     // but the completed service returns through gate entry rather than goods receiving.
     const poItems = await db.getPOItems(item.purchaseOrderId);
@@ -1454,6 +1488,7 @@ export const purchaseOrdersRouter = router({
   }),
 
   create: protectedProcedure.input(z.object({
+    supplierReturnPlanId: z.number().int().positive().optional(),
     ticketTeam: z.object({ assignmentId: z.number().int().positive(), needId: z.number().int().positive(), expectedRevision: z.number().int().nonnegative(), operationKey: z.string().trim().min(1).max(120), warehouseExtraQuantity: z.number().int().nonnegative().max(MAX_TICKET_PURCHASE_QUANTITY).optional() }).strict().optional(),
     fromIdeaId: z.number().int().positive().optional(),
     itPurchaseNeedId: z.number().int().positive().optional(),
@@ -1494,8 +1529,9 @@ export const purchaseOrdersRouter = router({
     await assertValidCatalogItemLinks(input.items);
     await assertNoInactiveCatalogUnitUsage(input.items);
     if (input.ticketTeam && (input.fromIdeaId || input.pmv2RequestItemId || input.itPurchaseNeedId)) throw new TRPCError({ code: "BAD_REQUEST", message: "اختر مصدر طلب واحدًا" });
+    if (input.supplierReturnPlanId && (input.ticketTeam || input.fromIdeaId || input.pmv2RequestItemId || input.itPurchaseNeedId)) throw new TRPCError({ code: "BAD_REQUEST", message: "طلب تعويض المرتجع لا يُدمج مع مصدر إنشاء آخر" });
     if (input.ticketTeam && (ctx.user.isActive !== 1 || !["warehouse", "owner", "admin"].includes(ctx.user.role))) throw new TRPCError({ code: "FORBIDDEN", message: "توفير مواد الفريق للمستودع فقط" });
-    if (!input.ticketTeam) await assertTicketAllowsNewPurchaseOrder(ctx.user, input.ticketId, { ticketItemId: input.ticketItemId });
+    if (!input.ticketTeam && !input.supplierReturnPlanId) await assertTicketAllowsNewPurchaseOrder(ctx.user, input.ticketId, { ticketItemId: input.ticketItemId });
     const purchaseContext = await resolveAndValidatePurchaseOrderContext(input);
     if (!purchaseContext.categoryId) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "يجب اختيار التصنيف قبل إرسال طلب الشراء للمراجعة" });
@@ -1510,6 +1546,11 @@ export const purchaseOrdersRouter = router({
     let ticketTeamCreated = true;
     try {
       poId = await db.withTransaction(async (tx: any) => {
+        const replacement = input.supplierReturnPlanId
+          ? await (await import("../../supplier-return-followup/purchase-bridge")).prepareReplacementPurchase(tx, ctx.user, input.supplierReturnPlanId, {
+              ticketId: input.ticketId, ticketItemId: input.ticketItemId, items: input.items, context: purchaseContext,
+            })
+          : null;
         if (input.ticketTeam) {
           const linked = await createTicketMaterialPurchase(tx, { id: ctx.user.id, role: ctx.user.role, active: ctx.user.isActive === 1 }, input, async handoff => {
             const breakdown = ticketPurchaseBreakdown(handoff, handoff.unit);
@@ -1531,7 +1572,7 @@ export const purchaseOrdersRouter = router({
           const linked = await db.getTicketById(input.ticketId, tx);
           if (linked?.maintenanceResponsibleDepartment === MAINTENANCE_RESPONSIBLE_DEPARTMENT.IT) {
             const active = await tx.execute(sql`SELECT id FROM purchase_orders WHERE ticketId=${input.ticketId} AND status IN ('draft','pending_review','pending_estimate','pending_accounting','pending_management','approved','partial_purchase','purchased','received','revision_needed') LIMIT 1`);
-            if (active[0]?.length) throw new TRPCError({ code: "CONFLICT", message: "يوجد طلب شراء نشط لهذه المهمة" });
+            if (active[0]?.length && !replacement) throw new TRPCError({ code: "CONFLICT", message: "يوجد طلب شراء نشط لهذه المهمة" });
           }
         }
         if (input.itPurchaseNeedId) {
@@ -1556,12 +1597,17 @@ export const purchaseOrdersRouter = router({
           requestedById: ctx.user.id,
           status: "pending_review",
           submittedAt,
-          notes: input.notes,
+          notes: replacement ? [input.notes?.trim(), `تعويض مرتجع المورد #${replacement.caseId} — طلب الشراء الأصلي #${replacement.originalOrderId}`].filter(Boolean).join("\n") : input.notes,
           ...purchaseContext,
         }, tx);
         // delegateId is optional at creation — assigned during reviewItems step
         const itemsData = input.items.map((item, index) => ({ ...item, ...itemContexts[index], ...resolvePurchaseItemNeedTiming(item, submittedAt), purchaseOrderId: newPoId!, status: "pending" }));
         await db.createPOItems(itemsData, tx);
+        if (replacement) {
+          const createdItems = await db.getPOItems(newPoId!, tx);
+          if (createdItems.length !== 1 || !createdItems[0]?.id) throw new TRPCError({ code: "CONFLICT", message: "تعذر تثبيت بند التعويض" });
+          await (await import("../../supplier-return-followup/purchase-bridge")).linkReplacementPurchase(tx, replacement, Number(newPoId), Number(createdItems[0].id));
+        }
 
         if (input.itPurchaseNeedId) await tx.update(itPurchaseNeeds).set({ status: "ordered", purchaseOrderId: newPoId }).where(eq(itPurchaseNeeds.id, input.itPurchaseNeedId));
 
@@ -1590,6 +1636,10 @@ export const purchaseOrdersRouter = router({
         return Number(newPoId);
       });
     } catch (error) {
+      if (input.supplierReturnPlanId) {
+        const { ReturnFollowupError } = await import("../../supplier-return-followup/policy");
+        if (error instanceof ReturnFollowupError) throw new TRPCError({ code: error.code === "INVALID" ? "BAD_REQUEST" : error.code, message: error.message });
+      }
       if (input.ticketTeam && error instanceof TeamTicketError) throw new TRPCError({ code: error.code === "FORBIDDEN" ? "FORBIDDEN" : error.code === "INVALID" ? "BAD_REQUEST" : "CONFLICT", message: error.message });
       if (input.pmv2RequestItemId) mapPmv2AtomicPurchaseError(error);
       throw error;
@@ -1601,7 +1651,8 @@ export const purchaseOrdersRouter = router({
     queuePOItemsTranslation(poItemsCreated, ctx.user.id);
     if (input.notes) queuePONotesTranslation(poId!, input.notes, ctx.user.id);
 
-    await syncPathBTicketFromPurchaseOrder(poId!, ctx.user.id, "تم إنشاء طلب شراء مرتبط بالبلاغ");
+    await syncPathBTicketFromPurchaseOrder(poId!, ctx.user.id,
+      input.supplierReturnPlanId ? "تم إنشاء طلب تعويض المرتجع لنفس احتياج البلاغ" : "تم إنشاء طلب شراء مرتبط بالبلاغ");
     // Notify maintenance managers, owners, and admins about the new PO
     const managers = await db.getPurchaseManagerUsers();
     for (const mgr of managers) {
@@ -2211,11 +2262,23 @@ export const purchaseOrdersRouter = router({
     await rejectEmptyPendingPricingBatches(input.purchaseOrderId);
     const batches = await db.getPOPricingBatches(input.purchaseOrderId);
     const visible = ctx.user.role === "delegate" ? batches.filter(batch => Number(batch.submittedById) === ctx.user.id) : batches;
+    const pricingDb = typeof db.getDb === "function" ? await db.getDb() : null;
+    const replacementRows = pricingDb && await trialEnabled(pricingDb)
+      ? await readRows(pricingDb, sql`SELECT p.id,p.quotedTotal,p.creditAllocated,p.additionalFunding,i.batchId
+          FROM supplier_return_replacement_plans p INNER JOIN purchase_order_items i ON i.id=p.purchaseOrderItemId AND i.purchaseOrderId=p.purchaseOrderId
+          WHERE p.purchaseOrderId=${input.purchaseOrderId}`)
+      : [];
+    const replacementByBatch = new Map(replacementRows.filter(row => row.batchId != null).map(row => [Number(row.batchId), row]));
     const scope = isPurchasePdfApprover(ctx.user) ? await loadDocumentListPort(visible.map(batch => ({
       entityType: batch.purchasePackageSubmissionId == null ? "po_financial_batch" : "purchase_package_submission_financial",
       entityId: batch.purchasePackageSubmissionId ?? batch.id,
     })), undefined, { actor: ctx.user, orders: [po] }) : undefined;
     return Promise.all(visible.map(async batch => ({ ...batch,
+      ...(replacementByBatch.has(batch.id) ? { replacementFunding: {
+        quotedTotal: String(replacementByBatch.get(batch.id).quotedTotal),
+        creditAllocated: String(replacementByBatch.get(batch.id).creditAllocated),
+        additionalFunding: String(replacementByBatch.get(batch.id).additionalFunding),
+      } } : {}),
       ...(isPurchasePdfApprover(ctx.user) ? await purchaseDocumentPermission(ctx.user, input.purchaseOrderId, batch.purchasePackageSubmissionId == null ? batch.id : undefined, batch.purchasePackageSubmissionId ?? undefined, scope) : { pdfAllowed: true, pdfBlockedReason: null }),
     })));
   }),
