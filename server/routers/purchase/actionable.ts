@@ -91,7 +91,8 @@ export function getDelegateItemActionMode(
 
   if (
     ["approved", "funded"].includes(item.status) &&
-    [PO_STATUS.APPROVED, PO_STATUS.PARTIAL_PURCHASE].includes(poStatus as any)
+    ([PO_STATUS.APPROVED, PO_STATUS.PARTIAL_PURCHASE].includes(poStatus as any) ||
+      ([PO_STATUS.PENDING_ACCOUNTING, PO_STATUS.PENDING_MANAGEMENT].includes(poStatus as any) && !!item.batchId))
   ) {
     return "purchase";
   }

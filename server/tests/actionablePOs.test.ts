@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeActionablePOs } from "../routers/purchase/actionable";
+import { computeActionablePOs, getDelegateItemActionMode } from "../routers/purchase/actionable";
 import { ROLE } from "../_core/authz/policy";
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -8,6 +8,16 @@ import { ROLE } from "../_core/authz/policy";
 
 const po = (over: Partial<any> = {}) => ({
   id: 1, poNumber: "PO-0001", status: "pending_review", requestedById: 99, ...over,
+});
+
+describe("قائمة أصناف المندوب بعد اعتماد دفعة جزئية", () => {
+  it("يعرض شراء الصنف المعتمد في دفعة رغم انتظار حالة الطلب العامة للحسابات", () => {
+    expect(getDelegateItemActionMode("pending_accounting", { status: "approved", batchId: 10, delegateChangeRequestedAt: null })).toBe("purchase");
+  });
+  it("لا يعرض شراء صنف بلا دفعة معتمدة أو صنف مرفوض", () => {
+    expect(getDelegateItemActionMode("pending_accounting", { status: "approved", batchId: null, delegateChangeRequestedAt: null })).toBeNull();
+    expect(getDelegateItemActionMode("pending_accounting", { status: "rejected", batchId: 10, delegateChangeRequestedAt: null })).toBeNull();
+  });
 });
 
 describe("الفئة 1 — طلب بمرحلة يستطيع دور المستخدم التصرف فيها", () => {
