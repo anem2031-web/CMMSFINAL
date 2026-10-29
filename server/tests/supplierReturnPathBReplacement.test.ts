@@ -156,6 +156,11 @@ describe("quantity-based replacement fulfillment", () => {
     expect(await activePathBItemsAfterReplacement(items)).toEqual(items);
     expect(state.queries).toHaveLength(4);
   });
+  it("deduplicates repeated item identifiers before loading scope", async () => {
+    const items = Array.from({length:1200},()=>({...source}));
+    expect(await activePathBItemsAfterReplacement(items)).toEqual(items);
+    expect(state.queries).toHaveLength(2);
+  });
   it("updates only the derived status and preserves terminal items", async () => {
     state.links = [
       {
