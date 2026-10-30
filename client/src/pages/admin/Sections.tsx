@@ -360,7 +360,14 @@ export default function Sections() {
             <Button
               onClick={() => {
                 if (!editForm.name.trim()) { toast.error("اسم القسم مطلوب"); return; }
-                updateMut.mutate({ id: selectedSection.id, name: editForm.name.trim(), description: editForm.description || undefined, isActive: editForm.isActive });
+                const name = editForm.name.trim();
+                const originalName = String(selectedSection.sourceName || selectedSection.name).trim();
+                updateMut.mutate({
+                  id: selectedSection.id,
+                  ...(name !== originalName ? { name } : {}),
+                  description: editForm.description,
+                  isActive: editForm.isActive,
+                });
               }}
               disabled={updateMut.isPending}
             >

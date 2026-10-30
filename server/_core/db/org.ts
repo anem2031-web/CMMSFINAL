@@ -73,16 +73,26 @@ export async function getSections(siteId?: number) {
   if (siteId) return db.select().from(sections).where(eq(sections.siteId, siteId)).orderBy(asc(sections.name));
   return db.select().from(sections).orderBy(asc(sections.siteId), asc(sections.name));
 }
+export async function getSectionById(id: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select().from(sections).where(eq(sections.id, id)).limit(1);
+  return rows[0] || null;
+}
 export async function createSection(data: InsertSection) {
   const db = await getDb();
   if (!db) return null;
   const result = await db.insert(sections).values(data);
   return result[0].insertId;
 }
-export async function updateSection(id: number, data: { name?: string; description?: string; isActive?: boolean }) {
+export async function updateSection(id: number, data: { name?: string; description?: string; isActive?: boolean; nameEn?: string | null; nameUr?: string | null }) {
   const db = await getDb();
   if (!db) return;
-  await db.update(sections).set(data).where(eq(sections.id, id));
+  const { isActive, ...fields } = data;
+  await db.update(sections).set({
+    ...fields,
+    ...(isActive !== undefined ? { isActive: isActive ? 1 : 0 } : {}),
+  }).where(eq(sections.id, id));
 }
 export async function deleteSection(id: number) {
   const db = await getDb();

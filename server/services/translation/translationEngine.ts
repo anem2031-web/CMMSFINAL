@@ -22,7 +22,7 @@ import {
   type SupportedLanguage, supportedLanguages, auditLogs,
   tickets, assets, pmWorkOrders, purchaseOrderItems,
   preventivePlans, pmExecutionResults, pmExecutionSessions, pmChecklistItems,
-  centerCategories, assetCategories, users,
+  centerCategories, assetCategories, users, sections,
 } from "../../../drizzle/schema";
 import { invokeLLM } from "../../_core/llm";
 import { getDb } from "../../_core/db";
@@ -362,6 +362,7 @@ export async function ensureStoredNameTranslations(
   entityType: string,
   records: NamedTranslationRecord[],
   languageCode: SupportedLanguage,
+  options?: { translateMissing?: boolean },
 ): Promise<Map<number, string>> {
   const output = new Map<number, string>();
   const unique = new Map<number, NamedTranslationRecord>();
@@ -391,8 +392,12 @@ export async function ensureStoredNameTranslations(
           ? record.nameAr?.trim()
           : undefined;
     if (legacy) {
-      const stored = await storeCompletedEntityTranslation(entityType, id, "name", languageCode, legacy);
-      output.set(id, stored || legacy);
+      if (options?.translateMissing === false) {
+        output.set(id, legacy);
+      } else {
+        const stored = await storeCompletedEntityTranslation(entityType, id, "name", languageCode, legacy);
+        output.set(id, stored || legacy);
+      }
       continue;
     }
 
@@ -401,7 +406,7 @@ export async function ensureStoredNameTranslations(
       output.set(id, source);
       continue;
     }
-    needsExternal.push({ id, text: source });
+    if (options?.translateMissing !== false) needsExternal.push({ id, text: source });
   }
 
   for (let offset = 0; offset < needsExternal.length; offset += MASTER_NAME_BATCH_SIZE) {
@@ -543,7 +548,8 @@ async function writeBackToDirectColumn(
   entityId: number,
   fieldName: string,
   language: SupportedLanguage,
-  translatedText: string
+  translatedText: string,
+  sourceText?: string,
 ): Promise<void> {
   try {
     // ✅ إصلاح: schema.ts الجديد (المسحوب من القاعدة) يسمّي كل حقل مترجَم
@@ -564,6 +570,12 @@ async function writeBackToDirectColumn(
       await db.update(tickets)
         .set({ [columnName]: translatedText })
         .where(eq(tickets.id, entityId));
+
+    } else if (entityType === "SECTION") {
+      if (fieldName !== "name" || !sourceText || !["en", "ur"].includes(language)) return;
+      await db.update(sections)
+        .set({ [columnName]: translatedText })
+        .where(and(eq(sections.id, entityId), eq(sections.name, sourceText)));
 
     } else if (entityType === "ASSET") {
       const validColumns = [
@@ -712,7 +724,7 @@ async function saveTranslatedJob(db: any, job: any, translated: string): Promise
         // كتابة الترجمة في الأعمدة المباشرة أيضاً حتى تظهر في القوائم والبحث
         await writeBackToDirectColumn(
           db, job.entityType, job.entityId,
-          job.fieldName, job.targetLanguage as SupportedLanguage, translated
+          job.fieldName, job.targetLanguage as SupportedLanguage, translated, job.sourceText
         );
       }
 

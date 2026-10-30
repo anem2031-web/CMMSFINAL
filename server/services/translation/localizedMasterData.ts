@@ -13,12 +13,14 @@ export async function localizeNamedRecords<T extends { id: number; name?: string
   entityType: string,
   records: T[],
   language: SupportedLanguage,
+  options?: { translateMissing?: boolean },
 ): Promise<Array<T & { sourceName?: string | null }>> {
   if (!records.length) return records as Array<T & { sourceName?: string | null }>;
   const translatedNames = await ensureStoredNameTranslations(
     entityType,
     records as Array<T & { nameAr?: string | null; nameEn?: string | null; nameUr?: string | null }>,
     language,
+    options,
   );
 
   return records.map((record) => {

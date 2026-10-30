@@ -18,6 +18,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { localizeApiError } from "@/i18n/apiError";
+import { ReferenceSearchSelect, type ReferenceOption } from "@/components/tickets/ReferenceSearchSelect";
 
 type FileStatus = "pending" | "uploading" | "done" | "error";
 
@@ -107,13 +108,31 @@ export default function CreateTicket({ linkedPmv2ItemId, onCreated, onCancel, on
     return v ? Number(v) : undefined;
   })();
 
-  const { data: directorySections } = trpc.sections.list.useQuery(
-    form.siteId ? { siteId: Number(form.siteId) } : undefined,
-    { enabled: !!form.siteId && !restrictedTechnician }
+  // Load the reference list once. The selected site's sections can then appear
+  // immediately without waiting for a second request after choosing a site.
+  const { data: directorySections, isLoading: sectionsLoading, error: sectionsError } = trpc.sections.list.useQuery(
+    undefined,
+    { enabled: !!user && !restrictedTechnician }
   );
   const sites = restrictedTechnician ? pmv2ContextQuery.data?.references?.sites : directorySites;
-  const sections = restrictedTechnician ? pmv2ContextQuery.data?.references?.sections : directorySections;
-  const assets = restrictedTechnician ? pmv2ContextQuery.data?.references?.assets.filter(asset => !form.sectionId || Number(asset.sectionId) === Number(form.sectionId)) : directoryAssets;
+  // PMV2 references are already scoped by the server and omit siteId.
+  const sections = restrictedTechnician
+    ? pmv2ContextQuery.data?.references?.sections
+    : directorySections?.filter(section => Number(section.siteId) === Number(form.siteId));
+  const assets = restrictedTechnician
+    ? pmv2ContextQuery.data?.references?.assets.filter(asset => !form.sectionId || Number(asset.sectionId) === Number(form.sectionId))
+    : form.sectionId
+      ? directoryAssets?.filter(asset => Number(asset.sectionId) === Number(form.sectionId))
+      : [];
+  const referenceOptions = (records: any[] | undefined): ReferenceOption[] => (records || []).map(record => {
+    const label = getLocalizedName(record, language);
+    return {
+      value: String(record.id),
+      label,
+      searchText: [label, record.name, record.sourceName, record.nameAr, record.nameEn, record.nameUr]
+        .filter(Boolean).join(" "),
+    };
+  });
   const centerCategories = restrictedTechnician ? pmv2ContextQuery.data?.references?.categories ?? [] : directoryCategories;
   const [fileEntries, setFileEntries] = useState<FileEntry[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -423,35 +442,34 @@ if (f.size > maxSize) {
           {/* Site + Asset */}
           <div className="space-y-2">
             <Label>{t.tickets.site} *</Label>
-            <Select disabled={restrictedTechnician && !!pmv2ContextQuery.data?.siteId} value={form.siteId} onValueChange={v => setForm(f => ({ ...f, siteId: v, sectionId: "" }))}>
-              <SelectTrigger><SelectValue placeholder={t.workflow.ticket.chooseSite} /></SelectTrigger>
-              <SelectContent>
-                {sites?.map(s => <SelectItem key={s.id} value={String(s.id)}>{getLocalizedName(s, language)}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            <ReferenceSearchSelect options={referenceOptions(sites)} value={form.siteId}
+              disabled={restrictedTechnician && !!pmv2ContextQuery.data?.siteId}
+              onValueChange={v => setForm(f => ({ ...f, siteId: v, sectionId: "", assetId: "" }))}
+              placeholder={t.workflow.ticket.chooseSite} searchPlaceholder={t.common.searchPlaceholder}
+              emptyText={t.common.noData} />
           </div>
 
           {/* Section */}
           {form.siteId && (
             <div className="space-y-2">
               <Label>{t.tickets.section} *</Label>
-              <Select disabled={restrictedTechnician && pmv2ContextQuery.data?.sectionId != null} value={form.sectionId} onValueChange={v => setForm(f => ({ ...f, sectionId: v }))}>
-                <SelectTrigger><SelectValue placeholder={t.workflow.ticket.chooseSection} /></SelectTrigger>
-                <SelectContent>
-                  {(sections || []).map(s => <SelectItem key={s.id} value={String(s.id)}>{getLocalizedName(s, language)}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <ReferenceSearchSelect options={referenceOptions(sections)} value={form.sectionId}
+                disabled={restrictedTechnician && pmv2ContextQuery.data?.sectionId != null}
+                onValueChange={v => setForm(f => ({ ...f, sectionId: v, assetId: "" }))}
+                placeholder={t.workflow.ticket.chooseSection} searchPlaceholder={t.common.searchPlaceholder}
+                emptyText={!restrictedTechnician && sectionsLoading ? t.common.loading : t.common.noData} />
+              {!restrictedTechnician && sectionsError &&
+                <p className="text-sm text-destructive">{localizeApiError(sectionsError.message)}</p>}
             </div>
           )}
 
           <div className="space-y-2">
             <Label>{t.assets.title}</Label>
-            <Select disabled={restrictedTechnician && pmv2ContextQuery.data?.assetId != null} value={form.assetId} onValueChange={v => setForm(f => ({ ...f, assetId: v }))}>
-              <SelectTrigger><SelectValue placeholder={t.assets.title} /></SelectTrigger>
-              <SelectContent>
-                {assets?.map((a: any) => <SelectItem key={a.id} value={String(a.id)}>{a.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            <ReferenceSearchSelect options={referenceOptions(assets)} value={form.assetId}
+              disabled={!form.sectionId || (restrictedTechnician && pmv2ContextQuery.data?.assetId != null)}
+              onValueChange={v => setForm(f => ({ ...f, assetId: v }))}
+              placeholder={t.assets.title} searchPlaceholder={t.common.searchPlaceholder}
+              emptyText={t.common.noData} />
           </div>
 
           {/* Location Detail */}

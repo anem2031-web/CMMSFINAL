@@ -583,6 +583,16 @@ export default function PurchaseCycle() {
   const resolveDeliveryLotMut = trpc.inventory.resolveDeliveryLot.useMutation({
     onSuccess: (data: any) => {
       setDeliveryLotInfo(data);
+      setDeliveryDialog((current: any) => current ? {
+        ...current,
+        poNumber: data.poNumber,
+        ticketNumber: data.ticketNumber,
+        ticketAssignedToId: data.ticketAssignedToId,
+        ticketAssignedToName: data.ticketAssignedToName,
+        ticketResponsibleDepartment: data.ticketResponsibleDepartment,
+        supplierName: data.supplierName,
+        actualUnitCost: data.issueUnitCost,
+      } : current);
       if (data.unit) setDeliveryUnit(data.unit);
       toast.success(t.workflow.purchase.lotRecognized.replace("{code}", data.lotCode));
     },
@@ -1205,22 +1215,22 @@ export default function PurchaseCycle() {
                             <Package className="w-3 h-3" />
                             {item.quantity} {displayUnit(item.unit)}
                           </span>
-                          {item.vendorName && (
+                          {!lotsEnabled && item.vendorName && (
                             <span className="flex items-center gap-1">
                               🏪 {item.vendorName}
                             </span>
                           )}
-                          {item.poNumber && (
+                          {!lotsEnabled && item.poNumber && (
                             <span className="font-mono text-[10px] bg-muted px-1.5 py-0.5 rounded">
                               {item.poNumber}
                             </span>
                           )}
-                          {item.ticketNumber && item.ticketAssignedToName && (
+                          {!lotsEnabled && item.ticketNumber && item.ticketAssignedToName && (
                             <span className="text-[10px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">
                               {t.workflow.purchase.ticketAssignedSummary.replace("{ticket}", item.ticketNumber).replace("{name}", item.ticketAssignedToName)}
                             </span>
                           )}
-                          {item.averageCost > 0 && (
+                          {!lotsEnabled && item.averageCost > 0 && (
                             <span className="font-mono">{parseFloat(item.averageCost).toFixed(2)} {t.common.currency}</span>
                           )}
                         </div>
@@ -1239,12 +1249,21 @@ export default function PurchaseCycle() {
                           // نمرر بيانات الصنف من المخزون للـ dialog
                           setDeliveryDialog({
                             ...item,
+                            ...(lotsEnabled ? {
+                              poNumber: null,
+                              ticketNumber: null,
+                              ticketAssignedToId: null,
+                              ticketAssignedToName: null,
+                              ticketResponsibleDepartment: null,
+                              supplierName: null,
+                              actualUnitCost: null,
+                            } : {}),
                             id:           item.id,
                             itemName:     displayItemName(item),
                             quantity:     item.quantity,
                             unit:         item.unit,
-                            supplierName: item.vendorName,
-                            actualUnitCost: item.averageCost,
+                            supplierName: lotsEnabled ? null : item.vendorName,
+                            actualUnitCost: lotsEnabled ? null : item.averageCost,
                             isInventoryItem: true,
                           });
                         }}

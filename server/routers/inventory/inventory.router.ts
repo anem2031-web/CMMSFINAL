@@ -10,6 +10,7 @@ import { and, desc, eq, gt, or, sql } from "drizzle-orm";
 import { issueCostAllocationsSchema } from "./issue-cost-allocation.schema";
 import { isItTeamRole, MAINTENANCE_RESPONSIBLE_DEPARTMENT } from "@shared/roles";
 import { createCatalogStockProcedure } from "./catalog-stock.procedure";
+import { shouldExposeTicketMaterialLink } from "@shared/ticketMaterialDelivery";
 
 export const inventoryRouter = router({
   catalogStock: createCatalogStockProcedure(db.getDb),
@@ -298,28 +299,52 @@ export const inventoryRouter = router({
       const item = await db.getInventoryItemById(input.inventoryId);
       if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "الصنف غير موجود في المخزون" });
 
+      let lot;
       try {
-        const lot = await resolveInventoryLotForIssue({
+        lot = await resolveInventoryLotForIssue({
           tx: database,
           trackingToken: input.trackingToken,
           inventoryId: input.inventoryId,
           inventoryCatalogItemId: (item as any).linkedItemId ?? null,
         });
-        return {
-          lotId: lot.lotId,
-          lotCode: lot.lotCode,
-          trackingToken: lot.trackingToken,
-          sourceType: lot.sourceType,
-          catalogItemId: lot.catalogItemId,
-          receiptId: lot.receiptId,
-          availableQuantity: lot.balanceQuantity,
-          remainingQuantity: lot.remainingQuantity,
-          issueUnitCost: Number(lot.issueUnitCost || 0),
-          unit: String((item as any).issueUnit || item.unit || ""),
-        };
       } catch (error: any) {
         throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "رقم اللوت أو QR الدفعة غير صالح للصرف" });
       }
+      // Inventory can contain receipts from several purchase orders. Show the
+      // provenance of the scanned lot, not the inventory's first receipt.
+      const poItem = lot.purchaseOrderItemId
+        ? await db.getPOItemById(lot.purchaseOrderItemId)
+        : null;
+      const po = poItem ? await db.getPurchaseOrderById(poItem.purchaseOrderId) : null;
+      const ticket = po?.ticketId ? await db.getTicketById(po.ticketId) : null;
+      const assigned = ticket?.assignedToId ? await db.getUserById(ticket.assignedToId) : null;
+      const receipt = lot.receiptId ? await db.getWarehouseReceiptById(lot.receiptId) : null;
+      const exposeTicket = shouldExposeTicketMaterialLink({
+        ticketId: ticket?.id ?? null,
+        ticketStatus: ticket?.status ?? null,
+        maintenancePath: ticket?.maintenancePath ?? null,
+        assignedTechnicianId: ticket?.assignedToId ?? null,
+        purchaseOrderItemId: poItem?.id ?? null,
+        purchaseOrderItemStatus: poItem?.status ?? null,
+      });
+      return {
+        lotId: lot.lotId,
+        lotCode: lot.lotCode,
+        trackingToken: lot.trackingToken,
+        sourceType: lot.sourceType,
+        catalogItemId: lot.catalogItemId,
+        receiptId: lot.receiptId,
+        availableQuantity: lot.balanceQuantity,
+        remainingQuantity: lot.remainingQuantity,
+        issueUnitCost: Number(lot.issueUnitCost || 0),
+        unit: String((item as any).issueUnit || item.unit || ""),
+        poNumber: po?.poNumber ?? null,
+        supplierName: receipt?.vendorName ?? null,
+        ticketNumber: exposeTicket ? ticket?.ticketNumber ?? null : null,
+        ticketAssignedToId: exposeTicket ? ticket?.assignedToId ?? null : null,
+        ticketAssignedToName: exposeTicket ? assigned?.name ?? null : null,
+        ticketResponsibleDepartment: exposeTicket ? ticket?.maintenanceResponsibleDepartment ?? null : null,
+      };
     }),
 
   // مسار توافق قديم للتسليم من المخزون. أُحكم بنفس قواعد المسار المركزي:
